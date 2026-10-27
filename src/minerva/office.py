@@ -1,4 +1,4 @@
-"""오피스 화면: Claude와 서브에이전트가 일하는 모습을 보여준다.
+"""오피스 패널 API: 메인 화면 아래쪽에 Claude와 서브에이전트가 일하는 모습을 보여준다.
 
 이벤트는 `scripts/office_hook.py`가 쓰는 JSONL 로그에서 읽는다.
 토큰 파일(`~/.minerva/office/token`)이나 MINERVA_OFFICE_TOKEN이 있으면 토큰이 맞아야 볼 수 있다.
@@ -12,9 +12,6 @@ import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
-
-STATIC_DIR = Path(__file__).parent / "static"
 
 router = APIRouter()
 
@@ -56,11 +53,6 @@ def read_events(after: int, limit: int = 500) -> tuple[list[dict], int]:
         rec["seq"] = i + 1
         events.append(rec)
     return events, total
-
-
-@router.get("/office", include_in_schema=False)
-def office_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "office.html")
 
 
 @router.get("/api/office/events")

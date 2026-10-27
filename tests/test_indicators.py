@@ -106,3 +106,37 @@ def test_dmi_uptrend_has_pdi_above_mdi_and_rising_adx():
     assert pdi[-1] > mdi[-1]
     assert adx[-1] is not None and adx[-1] > 50
     assert adx[26] is None and adx[27] is not None
+
+
+def test_fetch_yahoo_uses_fresh_cache(tmp_path, monkeypatch):
+    from minerva.strategy import report
+
+    monkeypatch.setattr(report, "CACHE_DIR", tmp_path)
+    payload = {
+        "chart": {
+            "result": [
+                {
+                    "timestamp": [1767225600],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [1.0],
+                                "high": [2.0],
+                                "low": [0.5],
+                                "close": [1.5],
+                                "volume": [10],
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    report._cache_file("SPY", "max").write_text(__import__("json").dumps(payload))
+
+    def no_network(*a, **k):
+        raise AssertionError("network used")
+
+    monkeypatch.setattr(report.urllib.request, "urlopen", no_network)
+    bars = report.fetch_yahoo("SPY", "max", ttl=60)
+    assert bars[0].close == 1.5

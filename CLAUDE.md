@@ -52,12 +52,20 @@ Minerva/
 - 지표 값은 `.venv/bin/python -m minerva.strategy.report <심볼...>`로 계산한다.
 - 규칙 검증은 `.venv/bin/python -m minerva.strategy.backtest <심볼...> --help` 참고.
 
-## 일일 분석 (메인 화면 "오늘의 전략")
-- `python -m minerva.strategy.daily --notify`: 관심 종목(`WATCHLIST`)에 검증된 규칙을 적용해 `~/.minerva/daily/latest.json`을 쓰고, 텔레그램으로 요약을 보낸다.
-- systemd 타이머 `minerva-daily.timer`가 매일 09:10(미국장·코인 확정), 16:30(국내장 확정) KST에 실행한다. 놓친 실행은 기동 직후 돈다.
-- 진행 중인 봉은 버린다(`completed`). 검증 규칙은 SPY·QQQ·SOXX 기준이고, 나머지 종목은 화면에 "미검증"으로 표시한다.
+## 일일 분석과 화면 (프로세스 분리)
+| 프로세스 | 하는 일 | 쓰는 곳 |
+|---|---|---|
+| `minerva` (웹) | 화면·읽기 전용 API만. 계산·주문·증권사 키 없음 | `src/minerva/main.py`, `routes.py` |
+| `minerva-daily.timer` (배치) | 09:10·16:30 KST 종목 분석 → `~/.minerva/daily/latest.json` + 텔레그램 | `strategy/daily.py` |
+| (예정) 계좌 연동 | 한국투자증권 API로 잔고·주문·거래내역 → `~/.minerva/account/latest.json` | 키는 이 프로세스만 읽는다 |
 
-## 오피스 패널 (메인 화면 하단)
+- 대상: 코스피 지수·시총 상위 50(보통주), SPY·나스닥100 E-mini 선물(NQ=F)·나스닥 시총 상위 10, 비트코인, 인버스 4종(2배까지). 레버리지 상품은 다루지 않는다. 순위는 `strategy/universe.py`가 네이버 증권에서 하루 1번 받는다.
+- 종목별 "검증됨/부적합/미검증"은 `verify()`가 그 종목 차트로 롱·숏 규칙을 백테스트해 정한다(거래 30회 이상 + 표본 안·밖 우위 > 0, 주 1회 재계산, `~/.minerva/data/verify/`). 종목이 많아 우연 통과가 섞일 수 있다.
+- `actions`(API `/api/signals`): 오늘 낼 주문 — LONG_ENTRY·LONG_EXIT·SHORT_ENTRY·SHORT_EXIT·BUY/SELL(인버스). 자동매매가 읽는 목록이다. 진입은 다음 거래일 시가, 손절은 장중 스톱 주문 가정.
+- 진행 중인 봉은 버린다(`completed`).
+- 화면 탭: 🎯 오늘 할 일 / 📈 종목 분석 / 💼 계좌 / 🏢 오피스 (`#today` 같은 해시로 이동).
+
+## 오피스 패널 (🏢 오피스 탭)
 - Claude와 서브에이전트가 일하는 모습을 보여준다. 코드: `static/office.{js,css}`, API `src/minerva/office.py`. 훅 `scripts/office_hook.py`가 `~/.minerva/office/events.jsonl`에 이벤트를 쌓는다.
 - 기록하는 건 이벤트 종류, 도구 이름, 짧은 라벨(Bash 설명, 파일 이름)뿐이다. 프롬프트·명령 원문·파일 내용은 기록하지 않는다.
 - 훅 등록: `python3 scripts/install_office_hooks.py` (사용자 설정 `~/.claude/settings.json`에 추가)

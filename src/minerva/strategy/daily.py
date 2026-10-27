@@ -2,7 +2,11 @@
 
 사용: python -m minerva.strategy.daily [--out PATH] [--notify]
 - 확정된 일봉만 쓴다 (장중·당일 미마감 봉은 버림).
-- 규칙: momentum-tm §2 TM 눌림 규칙, vol-regime §2-1 공포 초입 매수, §2 레짐 비중 한도.
+- 규칙: momentum-tm §2 TM 눌림 롱, §4-1 TM 되돌림 숏, vol-regime §2-1 공포 초입 매수,
+  §2 레짐 비중 한도.
+- 대상: 코스피 지수·시총 상위 50, S&P500·나스닥100 선물·나스닥 시총 상위 10, 비트코인,
+  인버스(2배까지). 종목별 검증 여부는 자기 차트 백테스트로 자동 판정한다(`verify`).
+- `actions`: 오늘 낼 주문(롱 진입·롱 청산·숏 진입·숏 청산). 자동매매가 읽는 목록이다.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from minerva.strategy.backtest import Context, Rule, run
+from minerva.strategy.backtest import Context, Rule, evaluate, run
 from minerva.strategy.indicators import (
     Bar,
     crossed_down,
@@ -27,20 +31,18 @@ from minerva.strategy.indicators import (
     tm_states,
 )
 from minerva.strategy.regime import htf_direction, vix_regimes
-from minerva.strategy.report import fetch_yahoo
-from minerva.strategy.short import ShortRule, run_short
+from minerva.strategy.report import CACHE_DIR, fetch_yahoo
+from minerva.strategy.short import ShortRule, evaluate_short, run_short
+from minerva.strategy.universe import kospi_top, nasdaq_top
 
 OUT = Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
 
 TM_RULE = Rule(level=1, above_ma=50, hold=20, stop=0.10, vix="calm", align=True)
 FEAR_LO, FEAR_HI, FEAR_HOLD = 0.05, 0.15, 60
-# 종목별 검증 결과 (docs/backtests/2026-10-28-results.md "관심 종목별 적용")
-VERIFIED = {"SPY", "QQQ", "SOXX", "^KS11", "^KQ11", "005930.KS", "000660.KS"}
-UNSUITED = {"BTC-USD", "AAPL", "NVDA", "TSLA"}  # 롱 규칙이 표본 안팎에서 성립하지 않음
 NOTE = (
-    "롱 규칙 검증: SPY·QQQ·SOXX·코스피·코스닥·삼성전자·하이닉스. "
-    "비트코인·애플·엔비디아·테슬라는 '규칙 부적합'. "
-    "숏 규칙 검증: QQQ·SOXX·코스피·코스닥·비트코인·엔비디아. 투자 판단과 책임은 본인에게."
+    "검증됨 = 그 종목 자기 차트로 백테스트해 거래 30회 이상, 표본 안·밖 우위가 모두 + 인 경우 "
+    "(주 1회 재검증). 종목이 많아 우연히 통과하는 것도 섞일 수 있으니 비중은 작게. "
+    "투자 판단과 책임은 본인에게."
 )
 
 
@@ -54,28 +56,23 @@ class Asset:
     mult: int = 1
 
 
-WATCHLIST = [
+CORE = [
     Asset("^KS11", "코스피", "KR"),
-    Asset("^KQ11", "코스닥", "KR"),
     Asset("SPY", "S&P500 (SPY)", "US"),
-    Asset("QQQ", "나스닥100 (QQQ)", "US"),
-    Asset("SOXX", "반도체 (SOXX)", "US"),
+    Asset("NQ=F", "나스닥100 E-mini 선물", "US"),
     Asset("BTC-USD", "비트코인", "CRYPTO"),
-    Asset("005930.KS", "삼성전자", "KR"),
-    Asset("000660.KS", "SK하이닉스", "KR"),
-    Asset("AAPL", "애플", "US"),
-    Asset("NVDA", "엔비디아", "US"),
-    Asset("TSLA", "테슬라", "US"),
 ]
 
-# 사용자 방침: 2배까지만 다룬다 (3배 상품 제외).
-# 레버리지는 기초자산 신호를 따르고(KODEX 200 계열은 코스피 지수로 근사),
-# 인버스는 상품 자체 차트에 같은 TM 규칙을 적용한다 (미검증: 2026-10-28 백테스트에서 우위 없음).
+
+def watchlist() -> list[Asset]:
+    kr = [Asset(s, n, "KR") for s, n in kospi_top(50)]
+    us = [Asset(s, n, "US") for s, n in nasdaq_top(10)]
+    return CORE + kr + us
+
+
+# 사용자 방침: 레버리지 상품은 다루지 않고, 인버스는 2배까지만.
+# 인버스 신호는 기초자산의 TM 되돌림 숏 규칙에서 나온다.
 PRODUCTS = [
-    Asset("122630.KS", "KODEX 레버리지", "KR", "lev", "^KS11", 2),
-    Asset("233740.KS", "KODEX 코스닥150레버리지", "KR", "lev", "^KQ11", 2),
-    Asset("QLD", "QLD (나스닥 2배)", "US", "lev", "QQQ", 2),
-    Asset("USD", "USD (반도체 2배)", "US", "lev", "SOXX", 2),
     Asset("114800.KS", "KODEX 인버스", "KR", "inv", "^KS11", -1),
     Asset("252670.KS", "KODEX 200선물인버스2X (곱버스)", "KR", "inv", "^KS11", -2),
     Asset("QID", "QID (나스닥 −2배)", "US", "inv", "QQQ", -2),
@@ -84,7 +81,45 @@ PRODUCTS = [
 
 SHORT_RULE = ShortRule(hold=20, stop=0.07)
 # 숏 규칙이 표본 안팎 모두 + 인 기초자산 (SPY는 표본 밖 −, 삼성·하이닉스·애플·테슬라 ❌)
-SHORT_VERIFIED = {"QQQ", "SOXX", "^KS11", "^KQ11", "BTC-USD", "NVDA"}
+VERIFY_TTL = 7 * 24 * 3600
+VERIFY_MIN_TRADES = 30
+
+
+def _verdict(res: dict) -> dict:
+    a, i, o = res["all"], res["in_sample"], res["out_of_sample"]
+    n = a.get("trades", 0)
+    edges = (a.get("edge"), i.get("edge"), o.get("edge"))
+    if n >= VERIFY_MIN_TRADES and all(e is not None and e > 0 for e in edges[1:]):
+        label = "검증됨"
+    elif n >= VERIFY_MIN_TRADES and all(e is not None and e <= 0 for e in edges):
+        label = "부적합"
+    else:
+        label = "미검증"
+    return {
+        "label": label,
+        "trades": n,
+        "win_rate": a.get("win_rate"),
+        "edge": a.get("edge"),
+        "edge_in": i.get("edge"),
+        "edge_out": o.get("edge"),
+    }
+
+
+def verify(symbol: str, bars: list[Bar], ctx: Context) -> dict:
+    """그 종목 자기 차트로 롱·숏 규칙을 백테스트한다. 결과는 주 1회만 다시 계산한다."""
+    import time
+
+    path = CACHE_DIR / "verify" / f"{symbol.replace('^', '_').replace('=', '_')}.json"
+    if path.exists() and time.time() - path.stat().st_mtime < VERIFY_TTL:
+        return json.loads(path.read_text())
+    out = {
+        "long": _verdict(evaluate(bars, TM_RULE, ctx)),
+        "short": _verdict(evaluate_short(bars, short_flags(bars)[0], SHORT_RULE)),
+        "asof": bars[-1].day.isoformat(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(out, ensure_ascii=False))
+    return out
 
 
 def short_flags(bars: list[Bar]) -> tuple[list[bool], dict]:
@@ -116,6 +151,16 @@ def short_status(under: list[Bar]) -> dict:
     flags, conds = short_flags(under)
     trades = run_short(under, flags, SHORT_RULE)
     last = under[-1]
+    if trades and trades[-1].reason != "open" and trades[-1].exit_day == last.day:
+        t = trades[-1]
+        return {
+            "state": "청산 신호",
+            "entry_day": t.entry_day.isoformat(),
+            "reason": EXIT_REASON[t.reason],
+            "exit_px": _r(t.entry),  # 가격을 뒤집어 저장했으므로 entry 칸이 청산가
+            "pnl": _r(t.ret, 4),
+            "exit": "손절은 장중 체결" if t.reason == "stop" else "다음 거래일 시가 청산",
+        }
     if trades and trades[-1].reason == "open":
         t = trades[-1]
         entry = t.exit  # run_short는 숏 수익 계산을 위해 가격을 뒤집어 저장한다
@@ -123,6 +168,7 @@ def short_status(under: list[Bar]) -> dict:
             "state": "보유 중",
             "entry_day": t.entry_day.isoformat(),
             "stop": f"기초자산 {_r(entry * (1 + SHORT_RULE.stop))} 돌파 시 손절",
+            "stop_px": _r(entry * (1 + SHORT_RULE.stop)),
             "pnl": _r(entry / last.close - 1, 4),
             "days_left": SHORT_RULE.hold - t.bars,
             "exit_rule": "기초자산 Stoch 20 상향 돌파 익절 / +7% 손절 / 20거래일",
@@ -132,6 +178,8 @@ def short_status(under: list[Bar]) -> dict:
             "state": "진입 신호",
             "entry": "다음 거래일 시가 (인버스 매수)",
             "stop": f"기초자산 {_r(last.close * (1 + SHORT_RULE.stop))} 돌파 시 손절",
+            "stop_px": _r(last.close * (1 + SHORT_RULE.stop)),
+            "ref_price": _r(last.close),
             "max_days": SHORT_RULE.hold,
             "exit_rule": "기초자산 Stoch 20 상향 돌파 익절 / +7% 손절 / 20거래일",
         }
@@ -139,7 +187,7 @@ def short_status(under: list[Bar]) -> dict:
     return _with_wait({"state": "대기", "missing": missing}, wait_levels(under, "short"))
 
 
-DECAY_NOTE = "감쇠: 배수가 클수록, 오래 들수록 커진다 (3배 기준 1년 중앙값 −11.6%p)"
+EXIT_REASON = {"take": "익절 조건", "stop": "손절가 도달", "time": "20거래일 만료"}
 INVERSE_NOTE = (
     "기초자산 TM 되돌림 숏 규칙(검증: 개발 3/3, 독립 5/6, 우위 작음) · 비중은 롱의 1/2 이하"
 )
@@ -227,6 +275,17 @@ def tm_status(bars: list[Bar], ctx: Context) -> dict:
         "월봉 10개월선 위": ctx.monthly_up.get(last.day, False),
     }
     trades = run(bars, TM_RULE, ctx)
+    if trades and trades[-1].reason != "open" and trades[-1].exit_day == last.day:
+        t = trades[-1]
+        return {
+            "state": "청산 신호",
+            "entry_day": t.entry_day.isoformat(),
+            "reason": EXIT_REASON.get(t.reason, t.reason),
+            "exit_px": _r(t.exit),
+            "pnl": _r(t.ret, 4),
+            "exit": "손절은 장중 체결" if t.reason == "stop" else "다음 거래일 시가 청산",
+            "conditions": conds,
+        }
     if trades and trades[-1].reason == "open":
         t = trades[-1]
         return {
@@ -282,20 +341,16 @@ SIZE_BY_REGIME = {"R0": "계획대로", "R1": "계획대로", "R2": "계획의 1
 
 def analyze(asset: Asset, vix: list[Bar], vix_ma50: float | None = None) -> dict:
     daily = completed(fetch_yahoo(asset.symbol, "max"), asset.market)
-    ctx = Context(
-        regime=_regime_by_day(vix, daily),
-        weekly_up=htf_direction(daily, "W", 20),
-        monthly_up=htf_direction(daily, "M", 10),
-    )
+    ctx = _ctx(vix, daily)
     last = daily[-1]
     snap = ma_snapshot([b.close for b in daily])
     st = tm_states(daily)[-1]
+    ver = verify(asset.symbol, daily, ctx)
     return {
         "symbol": asset.symbol,
         "name": asset.name,
         "market": asset.market,
-        "verified": asset.symbol in VERIFIED,
-        "unsuited": asset.symbol in UNSUITED,
+        "verify": ver,
         "date": last.day.isoformat(),
         "close": _r(last.close),
         "change": _r(last.close / daily[-2].close - 1, 4) if len(daily) > 1 else None,
@@ -306,7 +361,6 @@ def analyze(asset: Asset, vix: list[Bar], vix_ma50: float | None = None) -> dict
         "ma200": _r(snap["ma"].get(200)),
         "tm": _with_wait(tm_status(daily, ctx), wait_levels(daily, "long", vix_ma50)),
         "short": base_short(daily, vix),
-        "short_verified": asset.symbol in SHORT_VERIFIED,
     }
 
 
@@ -326,58 +380,35 @@ def regime_is_fear(vix: list[Bar] | None) -> bool:
     return bool(m3) and m3[-1].day == vix[-1].day and vix[-1].close >= m3[-1].close
 
 
-def product_status(p: Asset, base: dict, regime: str | None, vix: list[Bar] | None = None) -> dict:
-    """레버리지: 기초자산 결과 + 레짐 제약. 인버스: 자기 차트에 TM 규칙(미검증)."""
-    daily = completed(fetch_yahoo(p.symbol, "max" if p.kind == "inv" else "1y"), p.market)
+def _ctx(vix: list[Bar], daily: list[Bar]) -> Context:
+    return Context(
+        regime=_regime_by_day(vix, daily),
+        weekly_up=htf_direction(daily, "W", 20),
+        monthly_up=htf_direction(daily, "M", 10),
+    )
+
+
+def product_status(p: Asset, vix: list[Bar], names: dict[str, str]) -> dict:
+    """인버스: 기초자산 TM 되돌림 숏 신호를 그대로 따른다 (진입 = 인버스 매수)."""
+    daily = completed(fetch_yahoo(p.symbol, "1y"), p.market)
     last = daily[-1]
-    out = {
+    under = completed(fetch_yahoo(p.underlying, "max"), p.market)
+    tm = base_short(under, vix)
+    tm["wait"] = [f"[{names.get(p.underlying, p.underlying)}] {w}" for w in tm.get("wait", [])]
+    tm["note"] = INVERSE_NOTE
+    return {
         "symbol": p.symbol,
         "name": p.name,
         "market": p.market,
         "kind": p.kind,
         "mult": p.mult,
-        "underlying": base.get("name", p.underlying),
-        "verified": False,
+        "underlying": names.get(p.underlying, p.underlying),
+        "verify": {"short": verify(p.underlying, under, _ctx(vix, under))["short"]},
         "date": last.day.isoformat(),
         "close": _r(last.close),
         "change": _r(last.close / daily[-2].close - 1, 4) if len(daily) > 1 else None,
+        "tm": tm,
     }
-    btm = base.get("tm", {})
-    if p.kind == "lev":
-        allowed = regime in ("R0", "R1")
-        if btm.get("state") == "진입 신호" and allowed:
-            tm = {
-                "state": "진입 신호",
-                "entry": "다음 거래일 시가 (기초자산 신호)",
-                "stop": f"기초자산 {btm.get('stop')} 이탈 시 정리",
-                "max_days": TM_RULE.hold,
-                "exit_rule": "기초자산 Stoch 80 하향 이탈 / 기초 −10% / 20거래일",
-            }
-        elif btm.get("state") == "보유 중":
-            tm = {
-                "state": "보유 중",
-                "entry_day": btm.get("entry_day"),
-                "days_left": btm.get("days_left"),
-                "stop": f"기초자산 {btm.get('stop')}",
-                "exit_rule": btm.get("exit_rule"),
-                "pnl": None,
-            }
-        else:
-            missing = list(btm.get("missing", []))
-            if not allowed:
-                missing.insert(0, f"레짐 {regime}: 레버리지 금지")
-            tm = {"state": "대기", "missing": missing}
-        tm["note"] = DECAY_NOTE
-    else:
-        under = completed(fetch_yahoo(p.underlying, "max"), p.market)
-        tm = short_status(under)
-        if tm["state"] == "진입 신호" and regime_is_fear(vix):
-            tm = {"state": "대기", "missing": ["백워데이션 중 신규 숏 금지"]}
-        tm["wait"] = [f"[{out['underlying']}] {w}" for w in tm.get("wait", [])]
-        tm["note"] = INVERSE_NOTE
-        out["verified"] = p.underlying in SHORT_VERIFIED
-    out["tm"] = tm
-    return out
 
 
 def _with_wait(tm: dict, levels: dict[str, str]) -> dict:
@@ -404,20 +435,18 @@ def build() -> dict:
     vix3m = completed(fetch_yahoo("^VIX3M", "max"), "US")
     regime = vix_regimes(vix).get(vix[-1].day)
     vix_ma50 = sma([b.close for b in vix], 50)[-1]
+    universe = watchlist()
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {a.symbol: pool.submit(analyze, a, vix, vix_ma50) for a in WATCHLIST}
+        futures = {a.symbol: pool.submit(analyze, a, vix, vix_ma50) for a in universe}
     assets = []
-    for a in WATCHLIST:
+    for a in universe:
         try:
             assets.append(futures[a.symbol].result())
         except Exception as exc:  # noqa: BLE001 — 한 종목 실패가 전체를 막지 않게
             assets.append({"symbol": a.symbol, "name": a.name, "error": type(exc).__name__})
-    by_symbol = {a["symbol"]: a for a in assets}
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        pfut = {
-            p.symbol: pool.submit(product_status, p, by_symbol.get(p.underlying, {}), regime, vix)
-            for p in PRODUCTS
-        }
+    names = {a["symbol"]: a["name"] for a in assets} | {"QQQ": "나스닥100", "SOXX": "반도체"}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pfut = {p.symbol: pool.submit(product_status, p, vix, names) for p in PRODUCTS}
     products = []
     for p in PRODUCTS:
         try:
@@ -432,69 +461,145 @@ def build() -> dict:
             "close": _r(vix[-1].close),
             "regime": regime,
             "size_limit": SIZE_BY_REGIME.get(regime, "?"),
-            "leverage": "허용(단기)" if regime in ("R0", "R1") else "금지",
             "ma50": _r(vix_ma50),
         },
         "fear": fear_status(vix, vix3m),
+        "actions": make_actions(assets, products),
         "assets": assets,
         "products": products,
         "note": NOTE,
     }
 
 
+ACTION_LABEL = {
+    "LONG_ENTRY": "롱 진입",
+    "LONG_EXIT": "롱 청산",
+    "SHORT_ENTRY": "숏 진입",
+    "SHORT_EXIT": "숏 청산",
+    "BUY": "인버스 매수",
+    "SELL": "인버스 매도",
+}
+
+
+def _action(a: dict, side: str, st: dict, code: str) -> dict:
+    v = a.get("verify", {}).get(side, {})
+    out = {
+        "action": code,
+        "label": ACTION_LABEL[code],
+        "symbol": a["symbol"],
+        "name": a["name"],
+        "market": a["market"],
+        "verified": v.get("label") == "검증됨",
+        "verify": v.get("label", "미검증"),
+        "date": a["date"],
+    }
+    if code.endswith("ENTRY") or code == "BUY":
+        out.update(
+            when="다음 거래일 시가",
+            ref_price=st.get("ref_price"),
+            stop=st.get("stop_px", st.get("stop")),
+            stop_on="기초자산" if code == "BUY" else a["symbol"],
+            take=(
+                "Stoch 80 하향 이탈 종가" if side == "long" else "기초자산 Stoch 20 상향 돌파 종가"
+            ),
+            max_days=20,
+        )
+    else:
+        out.update(
+            when=st.get("exit"),
+            reason=st.get("reason"),
+            exit_px=st.get("exit_px"),
+            pnl=st.get("pnl"),
+        )
+    return out
+
+
+def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
+    """오늘 낼 주문 목록. 검증된 것을 앞에 둔다."""
+    out = []
+    for a in assets:
+        if "error" in a:
+            continue
+        for side, st, codes in (
+            ("long", a["tm"], ("LONG_ENTRY", "LONG_EXIT")),
+            ("short", a["short"], ("SHORT_ENTRY", "SHORT_EXIT")),
+        ):
+            if st["state"] == "진입 신호":
+                out.append(_action(a, side, st, codes[0]))
+            elif st["state"] == "청산 신호":
+                out.append(_action(a, side, st, codes[1]))
+    for p in products:
+        if "error" in p:
+            continue
+        if p["tm"]["state"] == "진입 신호":
+            out.append(_action(p, "short", p["tm"], "BUY"))
+        elif p["tm"]["state"] == "청산 신호":
+            out.append(_action(p, "short", p["tm"], "SELL"))
+    return sorted(out, key=lambda x: (not x["verified"], x["action"]))
+
+
+def _holds(data: dict) -> list[tuple[dict, str, dict]]:
+    out = []
+    for a in data["assets"]:
+        for side in ("long", "short"):
+            st = a.get("tm" if side == "long" else "short", {})
+            if st.get("state") == "보유 중":
+                out.append((a, side, st))
+    return out
+
+
+def _near(data: dict, n: int = 5) -> list[tuple[dict, str, dict]]:
+    """검증된 규칙 중 빠진 조건이 1개뿐인 후보."""
+    out = []
+    for a in data["assets"]:
+        for side in ("long", "short"):
+            st = a.get("tm" if side == "long" else "short", {})
+            ok = a.get("verify", {}).get(side, {}).get("label") == "검증됨"
+            if ok and st.get("state") == "대기" and len(st.get("missing", [])) == 1:
+                out.append((a, side, st))
+    return out[:n]
+
+
+SIDE = {"long": "롱", "short": "숏"}
+
+
+def _action_line(x: dict) -> str:
+    tag = "✅" if x["verified"] else "⚠️미검증"
+    if "stop" in x:
+        return (
+            f"{x['label']} {x['name']} [{tag}] {x['when']} · 손절 {x['stop']} · "
+            f"익절 {x['take']} · 최대 {x['max_days']}일"
+        )
+    pnl = "" if x.get("pnl") is None else f" ({x['pnl']:+.1%})"
+    return f"{x['label']} {x['name']} [{tag}] {x['reason']}{pnl} · {x['when']}"
+
+
 def write_summary(data: dict) -> list[str]:
     """분석 JSON만 근거로 쓴 요약문 (숫자는 모두 data에서 온다)."""
-    v, f = data["vix"], data["fear"]
+    v = data["vix"]
     out = []
     if v["regime"] in ("R0", "R1"):
         out.append(f"VIX {v['close']}로 50일선({v['ma50']}) 아래라 롱 규칙이 열려 있어요.")
     else:
         out.append(
-            f"VIX {v['close']}가 50일선({v['ma50']}) 위({v['regime']})라 "
-            "롱 신규 진입은 막혀 있어요. "
-            f"VIX가 {v['ma50']} 아래로 마감하면 롱 규칙이 다시 열려요."
+            f"VIX {v['close']}가 50일선({v['ma50']}) 위({v['regime']})라 롱 신규 진입은 막혀 "
+            f"있어요. VIX가 {v['ma50']} 아래로 마감하면 다시 열려요. 숏 규칙은 VIX와 무관해요."
         )
+    f = data["fear"]
     if f.get("state", "없음") != "없음":
         out.append(f"공포 초입 매수: {f['state']}.")
-    rows = [a for a in data["assets"] + data.get("products", []) if "tm" in a]
-    active = [a for a in rows if a["tm"]["state"] in ("진입 신호", "보유 중")]
-    for a in active:
-        out.append(f"{a['name']}: {a['tm']['state']} — {a['tm'].get('stop', '')}")
-    for a in data["assets"]:
-        sh = a.get("short", {})
-        if sh.get("state") in ("진입 신호", "보유 중"):
-            tag = "" if a.get("short_verified") else " (숏 미검증)"
-            out.append(f"{a['name']}{tag}: 숏 {sh['state']} — {sh.get('stop', '')}")
-    near = sorted(
-        (
-            a
-            for a in data["assets"]
-            if a.get("tm", {}).get("state") == "대기" and not a.get("unsuited")
-        ),
-        key=lambda a: len(a["tm"].get("missing", [])),
-    )[:3]
-    for a in near:
-        waits = a["tm"].get("wait") or a["tm"].get("missing", [])
-        out.append(f"{a['name']}(빠진 조건 {len(a['tm']['missing'])}개): " + " / ".join(waits))
-    shorts = sorted(
-        (a for a in data.get("products", []) if a.get("kind") == "inv" and "tm" in a),
-        key=lambda a: len(a["tm"].get("missing", [])),
-    )[:1]
-    base_shorts = sorted(
-        (a for a in data["assets"] if a.get("short_verified") and "short" in a),
-        key=lambda a: len(a["short"].get("missing", [])),
-    )[:2]
-    for a in base_shorts:
-        if a["short"]["state"] == "대기":
-            out.append(
-                f"{a['name']} 숏 대기(빠진 조건 {len(a['short']['missing'])}개): "
-                + " / ".join(a["short"].get("wait") or a["short"]["missing"])
-            )
-    for a in shorts:
-        if a["tm"]["state"] == "대기":
-            out.append(
-                f"숏 쪽 가장 가까운 후보 {a['name']}: " + " / ".join(a["tm"].get("wait", []))
-            )
+    acts = data.get("actions", [])
+    if acts:
+        ok = [x for x in acts if x["verified"]]
+        out.append(f"오늘 주문 {len(acts)}건 (검증된 규칙 {len(ok)}건).")
+    else:
+        out.append("오늘 새로 낼 주문은 없어요.")
+    holds = _holds(data)
+    if holds:
+        items = [f"{a['name']} {SIDE[side]}({st['days_left']}일 남음)" for a, side, st in holds]
+        out.append("보유 중: " + ", ".join(items))
+    for a, side, st in _near(data):
+        out.append(f"{a['name']} {SIDE[side]} 임박: " + " / ".join(st.get("wait") or st["missing"]))
     return out
 
 
@@ -502,48 +607,20 @@ def telegram_summary(data: dict) -> str:
     v, f = data["vix"], data["fear"]
     lines = [
         f"📊 미네르바 일일 분석 ({data['generated_at'][:16].replace('T', ' ')})",
-        f"🌡 VIX {v['close']} · {v['regime']} → 신규 비중 {v['size_limit']}, "
-        f"레버리지 {v['leverage']}",
+        f"🌡 VIX {v['close']} · {v['regime']} → 신규 비중 {v['size_limit']}",
         f"😨 공포 초입: {f['state']} (VIX/VIX3M {f['premium']:+.1%})"
         if f.get("premium") is not None
         else "😨 공포 초입: 데이터 없음",
+        "",
     ]
-    rows = data["assets"] + data.get("products", [])
-    for a in rows:
-        if "error" in a:
-            lines.append(f"• {a['name']}: 데이터 오류")
-            continue
-        tm = a["tm"]
-        badge = "" if a.get("verified") else " (미검증)"
-        if tm["state"] == "진입 신호" and a.get("kind") == "inv":
-            lines.append(f"🔻 {a['name']}: 숏 진입 신호(인버스 매수) · {tm['stop']} · 최대 20일")
-        elif tm["state"] == "진입 신호":
-            lines.append(f"🟢 {a['name']}{badge}: 진입 신호 · 손절 {tm['stop']} · 최대 20일")
-        elif tm["state"] == "보유 중":
-            pnl = "" if tm.get("pnl") is None else f" {tm['pnl']:+.1%}"
-            lines.append(
-                f"🔵 {a['name']}{badge}: 보유 중{pnl} · 손절 {tm['stop']} · "
-                f"{tm['days_left']}일 남음"
-            )
-        sh = a.get("short", {})
-        tag = "" if a.get("short_verified") else " (숏 미검증)"
-        if sh.get("state") == "진입 신호":
-            lines.append(f"🔻 {a['name']}{tag}: 숏 진입 신호 · {sh['stop']} · 최대 20일")
-        elif sh.get("state") == "보유 중":
-            lines.append(
-                f"🔻 {a['name']}{tag}: 숏 보유 중 {sh['pnl']:+.1%} · {sh['stop']} · "
-                f"{sh['days_left']}일 남음"
-            )
-    live = ("진입 신호", "보유 중")
-    if not any(
-        a.get("tm", {}).get("state") in live or a.get("short", {}).get("state") in live
-        for a in rows
-    ):
-        lines.append("• 오늘은 진입 신호·보유 포지션 없음 (전 종목 대기)")
-    if data.get("products"):
-        lines.append(
-            f"• 레버리지(2배까지): {data['vix']['leverage']} · 인버스: TM 되돌림 숏 규칙 적용"
-        )
+    acts = data.get("actions", [])
+    if acts:
+        lines.append(f"🎯 오늘 할 일 {len(acts)}건")
+        lines.extend(f"• {_action_line(x)}" for x in acts[:20])
+        if len(acts) > 20:
+            lines.append(f"• 외 {len(acts) - 20}건은 화면에서")
+    else:
+        lines.append("🎯 오늘 할 일: 없음 (진입·청산 신호 없음)")
     if data.get("summary"):
         lines.append("")
         lines.append("📝 미네르바 요약")

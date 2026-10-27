@@ -37,39 +37,85 @@ def test_fear_signal_detected_on_entry_day():
     assert out["last_signal"] == "2026-01-03" and out["state"].startswith("신호 발생")
 
 
-def test_summary_mentions_unverified_and_no_signal():
-    data = {
+def _data(**kw):
+    base = {
         "generated_at": "2026-10-28T09:10",
-        "vix": {"close": 18.4, "regime": "R2", "size_limit": "계획의 1/2", "leverage": "금지"},
+        "vix": {"close": 18.4, "regime": "R2", "size_limit": "계획의 1/2", "ma50": 16.0},
         "fear": {"state": "없음", "premium": -0.08},
-        "assets": [{"name": "코스피", "verified": False, "tm": {"state": "대기"}}],
+        "assets": [],
+        "actions": [],
     }
-    text = telegram_summary(data)
-    assert "전 종목 대기" in text and "R2" in text
-    data["products"] = [
-        {
-            "name": "SOXL",
-            "verified": False,
-            "tm": {"state": "보유 중", "pnl": None, "stop": "기초 1", "days_left": 3},
-        }
-    ]
-    text = telegram_summary(data)
-    assert "SOXL" in text and "TM 되돌림 숏" in text
+    base.update(kw)
+    return base
 
 
-def test_inverse_uses_own_chart_and_lev_follows_base(monkeypatch):
+def test_telegram_without_actions_says_nothing_to_do():
+    text = telegram_summary(_data())
+    assert "오늘 할 일: 없음" in text and "R2" in text
+
+
+def test_actions_from_entries_and_exits():
+    from minerva.strategy.daily import make_actions, telegram_summary
+
+    ver = {"long": {"label": "검증됨"}, "short": {"label": "미검증"}}
+    asset = {
+        "symbol": "SPY",
+        "name": "SPY",
+        "market": "US",
+        "date": "2026-10-27",
+        "verify": ver,
+        "tm": {"state": "진입 신호", "ref_price": 100, "stop": 90},
+        "short": {
+            "state": "청산 신호",
+            "reason": "익절 조건",
+            "pnl": 0.03,
+            "exit": "다음 거래일 시가 청산",
+        },
+    }
+    inv = {
+        "symbol": "QID",
+        "name": "QID",
+        "market": "US",
+        "date": "2026-10-27",
+        "kind": "inv",
+        "verify": {"short": {"label": "검증됨"}},
+        "tm": {"state": "진입 신호", "stop_px": 107},
+    }
+    acts = make_actions([asset], [inv])
+    assert [a["action"] for a in acts] == ["BUY", "LONG_ENTRY", "SHORT_EXIT"]
+    assert acts[0]["stop"] == 107 and acts[1]["stop"] == 90 and not acts[2]["verified"]
+    text = telegram_summary(_data(actions=acts))
+    assert "🎯 오늘 할 일 3건" in text and "롱 진입 SPY [✅]" in text
+
+
+def test_inverse_follows_underlying_short(monkeypatch):
     from minerva.strategy import daily
 
     bars = bars_until(date(2026, 10, 20), 5)
     monkeypatch.setattr(daily, "fetch_yahoo", lambda s, r: bars)
-    inv = daily.Asset("SQQQ", "SQQQ", "US", "inv", "QQQ", -3)
-    base = {"name": "QQQ", "close": 90, "ma50": 100, "tm": {"state": "진입 신호", "stop": 81}}
-    out = daily.product_status(inv, base, "R0")
-    assert out["tm"]["state"] == "대기" and "숏" in out["tm"]["note"]
-    lev = daily.Asset("TQQQ", "TQQQ", "US", "lev", "QQQ", 3)
-    assert daily.product_status(lev, base, "R0")["tm"]["state"] == "진입 신호"
-    blocked = daily.product_status(lev, base, "R2")["tm"]
-    assert blocked["state"] == "대기" and blocked["missing"][0].startswith("레짐 R2")
+    monkeypatch.setattr(daily, "short_status", lambda b: {"state": "진입 신호", "stop_px": 1})
+    monkeypatch.setattr(daily, "regime_is_fear", lambda vix: False)
+    monkeypatch.setattr(daily, "verify", lambda s, b, c: {"short": {"label": "검증됨"}})
+    inv = daily.Asset("QID", "QID", "US", "inv", "QQQ", -2)
+    out = daily.product_status(inv, bars, {"QQQ": "나스닥100"})
+    assert out["tm"]["state"] == "진입 신호" and out["underlying"] == "나스닥100"
+    assert all(abs(p.mult) <= 2 and p.kind == "inv" for p in daily.PRODUCTS)
+
+
+def test_verdict_labels():
+    from minerva.strategy.daily import _verdict
+
+    def res(n, i, o):
+        return {
+            "all": {"trades": n, "edge": (i + o) / 2},
+            "in_sample": {"edge": i},
+            "out_of_sample": {"edge": o},
+        }
+
+    assert _verdict(res(40, 0.01, 0.002))["label"] == "검증됨"
+    assert _verdict(res(40, -0.01, -0.002))["label"] == "부적합"
+    assert _verdict(res(40, 0.01, -0.002))["label"] == "미검증"
+    assert _verdict(res(10, 0.01, 0.02))["label"] == "미검증"
 
 
 def test_wait_levels_give_prices_and_dates():
@@ -95,28 +141,3 @@ def test_base_asset_gets_short_side_and_fear_blocks_it(monkeypatch):
     assert daily.base_short([], None)["state"] == "진입 신호"
     monkeypatch.setattr(daily, "regime_is_fear", lambda vix: True)
     assert daily.base_short([], None)["missing"] == ["백워데이션 중 신규 숏 금지"]
-    assert "BTC-USD" in daily.SHORT_VERIFIED and "TSLA" not in daily.SHORT_VERIFIED
-
-
-def test_telegram_lists_base_short_signal():
-    data = {
-        "generated_at": "2026-10-28T09:10",
-        "vix": {"close": 18.4, "regime": "R2", "size_limit": "계획의 1/2", "leverage": "금지"},
-        "fear": {"state": "없음", "premium": -0.08},
-        "assets": [
-            {
-                "name": "비트코인",
-                "short_verified": True,
-                "tm": {"state": "대기"},
-                "short": {"state": "진입 신호", "stop": "기초자산 85,000 돌파 시 손절"},
-            }
-        ],
-    }
-    text = daily_telegram(data)
-    assert "🔻 비트코인: 숏 진입 신호" in text and "전 종목 대기" not in text
-
-
-def daily_telegram(data):
-    from minerva.strategy.daily import telegram_summary
-
-    return telegram_summary(data)

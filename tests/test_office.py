@@ -114,3 +114,16 @@ def test_daily_endpoint_pending_then_data(tmp_path, monkeypatch):
     out.write_text(json.dumps({"vix": {"regime": "R1"}, "assets": []}))
     assert client.get("/api/daily").json()["vix"]["regime"] == "R1"
     assert 'id="daily-list"' in client.get("/").text
+    out.write_text(json.dumps({"vix": {"regime": "R1"}, "actions": [{"action": "BUY"}]}))
+    assert client.get("/api/signals").json()["actions"] == [{"action": "BUY"}]
+
+
+def test_account_not_connected_until_snapshot(tmp_path, monkeypatch):
+    snap = tmp_path / "account.json"
+    monkeypatch.setenv("MINERVA_ACCOUNT_OUT", str(snap))
+    client = TestClient(app)
+    assert client.get("/api/account").json()["status"] == "not_connected"
+    snap.write_text(json.dumps({"status": "ok", "positions": []}))
+    assert client.get("/api/account").json()["status"] == "ok"
+    page = client.get("/").text
+    assert 'id="tab-account"' in page and "/static/account.js" in page

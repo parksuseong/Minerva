@@ -43,10 +43,11 @@ Minerva/
 ## 트레이딩 플레이북
 투자 질문(종목·지수·코인·변동성)에는 감이 아니라 플레이북으로 답한다.
 - `/market-check` — 종합 점검 절차 (진입점)
-- `vol-regime` — 변동성 레짐 R0~R4, 정상화 신호
-- `momentum-tm` — 삼중 모멘텀(Stoch·CCI·RSI) L1~L3, 월·주·일 정렬
+- `vol-regime` — 변동성 레짐 R0~R3 → 비중 한도 (방향 예측 아님)
+- `momentum-tm` — 삼중 모멘텀 L1~L3, 검증된 TM 눌림 규칙(유일한 진입 규칙)
 - `risk-rules` — 비중·손절·레버리지 한도 (모든 신호보다 우선)
 - `backtest-guard` — 패턴·승률 검증 규칙 (사후 맞춤 금지)
+- 검증 현황: `docs/backtests/2026-10-28-results.md` (가설 A~N 판정, 다음 후보 P1~P4)
 - 에이전트: `strategist`(분석), `risk-officer`(반박·검증), `backtester`(규칙 검증)
 - 지표 값은 `.venv/bin/python -m minerva.strategy.report <심볼...>`로 계산한다.
 - 규칙 검증은 `.venv/bin/python -m minerva.strategy.backtest <심볼...> --help` 참고.

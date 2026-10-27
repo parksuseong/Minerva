@@ -22,7 +22,7 @@ from minerva.strategy.indicators import (
     tm_states,
 )
 
-YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?range={rng}&interval=1d"
+YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?{span}&interval=1d"
 
 
 def parse_yahoo(payload: dict) -> list[Bar]:
@@ -39,7 +39,9 @@ def parse_yahoo(payload: dict) -> list[Bar]:
 
 
 def fetch_yahoo(symbol: str, rng: str = "10y") -> list[Bar]:
-    url = YAHOO_URL.format(sym=urllib.parse.quote(symbol), rng=rng)
+    # range=max는 야후가 월봉으로 내려주므로 기간을 직접 지정한다
+    span = "period1=0&period2=9999999999" if rng == "max" else f"range={rng}"
+    url = YAHOO_URL.format(sym=urllib.parse.quote(symbol), span=span)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         return parse_yahoo(json.load(resp))

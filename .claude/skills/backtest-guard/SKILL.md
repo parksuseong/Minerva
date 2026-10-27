@@ -32,4 +32,7 @@ description: 매매 패턴이나 승률 주장을 검증할 때의 규칙. "이 
 성공률만 말하지 않는다. 최악 사례와 최대 역행폭을 항상 같이 말한다.
 
 ## 4. 도구
-`src/minerva/strategy/indicators.py`의 `tm_states`, `resample`, `ma_snapshot`을 쓴다. 새 백테스트 코드는 `src/minerva/strategy/`에 두고, 고정된 합성 데이터로 테스트를 같이 쓴다(`tests/`, 네트워크 금지).
+- 기본은 `backtester` 에이전트에 맡긴다.
+- 직접 돌릴 때: `.venv/bin/python -m minerva.strategy.backtest SOXX --frame D --level 3 --hold 20 --stop 0.10`
+  - 출력: 전체/표본 내/표본 밖 성과, `edge`(무조건 기대수익 대비 우위), 청산 사유 분포
+- 새 지표는 `src/minerva/strategy/indicators.py`의 `tm_states`, `resample`, `ma_snapshot`, `dmi`를 쓴다. 새 백테스트 코드는 `src/minerva/strategy/`에 두고, 고정된 합성 데이터로 테스트를 같이 쓴다(`tests/`, 네트워크 금지).

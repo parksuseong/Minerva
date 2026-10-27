@@ -16,7 +16,7 @@ Minerva/
 │   ├── skills/          # 반복 작업 절차 (/스킬명 으로 호출)
 │   └── agents/          # 전문 서브에이전트
 ├── src/minerva/         # FastAPI 앱 (main.py, static/)
-│   └── strategy/        # 지표 계산(indicators.py)과 점검 CLI(report.py)
+│   └── strategy/        # 지표(indicators.py), 점검 CLI(report.py), 백테스트(backtest.py)
 └── tests/               # pytest 테스트
 ```
 
@@ -47,8 +47,9 @@ Minerva/
 - `momentum-tm` — 삼중 모멘텀(Stoch·CCI·RSI) L1~L3, 월·주·일 정렬
 - `risk-rules` — 비중·손절·레버리지 한도 (모든 신호보다 우선)
 - `backtest-guard` — 패턴·승률 검증 규칙 (사후 맞춤 금지)
-- 에이전트: `strategist`(분석), `risk-officer`(반박·검증)
+- 에이전트: `strategist`(분석), `risk-officer`(반박·검증), `backtester`(규칙 검증)
 - 지표 값은 `.venv/bin/python -m minerva.strategy.report <심볼...>`로 계산한다.
+- 규칙 검증은 `.venv/bin/python -m minerva.strategy.backtest <심볼...> --help` 참고.
 
 ## 환경 메모
 - EC2에서 작업 중이며 매일 01:00~08:00(KST) 인스턴스가 꺼진다. 오래 걸리는 작업은 그 전에 끝나도록 한다.

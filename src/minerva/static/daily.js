@@ -10,7 +10,10 @@
     if (a.error) return `<div class="asset"><b>${esc(a.name)}</b> <span class="detail">데이터 오류</span></div>`;
     const tm = a.tm || {};
     const badge = a.verified ? "" : '<span class="badge">미검증</span>';
-    let state = `<div class="state">⏳ 대기 · 빠진 조건: ${esc((tm.missing || []).join(", "))}</div>`;
+    const waits = (tm.wait || []).map((w) => `<li>${esc(w)}</li>`).join("");
+    let state = `<div class="state">⏳ 대기 · 빠진 조건 ${(tm.missing || []).length}개</div>` +
+      (waits ? `<ul class="detail" style="margin:2px 0 0 16px;padding:0">${waits}</ul>` :
+        `<div class="detail">${esc((tm.missing || []).join(", "))}</div>`);
     if (tm.state === "진입 신호") {
       state = `<div class="state go">🟢 진입 신호 · ${esc(tm.entry)}</div>
         <div class="detail">손절 ${num(tm.stop)} (−10%) · 익절: Stoch 80 하향 이탈 · 최대 ${tm.max_days}거래일</div>`;
@@ -55,5 +58,10 @@
     $("daily-list").innerHTML = d.assets.map(assetHtml).join("") +
       (products ? `<h2 style="margin-top:16px">⚡ 레버리지 · 인버스 · 곱버스</h2>${products}` : "");
     $("daily-note").textContent = d.note;
+    if (d.summary && d.summary.length) {
+      $("daily-meta").insertAdjacentHTML("beforeend",
+        `<div class="asset"><b>📝 미네르바 요약</b><ul style="margin:4px 0 0 16px;padding:0">${
+          d.summary.map((s) => `<li class="detail" style="color:inherit">${esc(s)}</li>`).join("")}</ul></div>`);
+    }
   }).catch(() => { $("daily-meta").textContent = "분석 데이터를 불러오지 못했어요"; });
 })();

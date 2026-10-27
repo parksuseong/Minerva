@@ -23,7 +23,8 @@ Minerva/
 - 설치: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
 - 테스트: `.venv/bin/pytest`
 - 린트/포맷: `.venv/bin/ruff check . && .venv/bin/ruff format .`
-- 서버 실행: `.venv/bin/uvicorn minerva.main:app --host 0.0.0.0 --port 8000` (포트 8000)
+- 서버 실행 (HTTPS 443): `sudo .venv/bin/uvicorn minerva.main:app --host 0.0.0.0 --port 443 --ssl-certfile ~/.minerva/tls/cert.pem --ssl-keyfile ~/.minerva/tls/key.pem`
+  - 인증서는 저장소 밖 `~/.minerva/tls/`에 있다 (자체서명, 커밋 금지). 자동 시작용 systemd 유닛: `deploy/minerva.service` (미설치)
 
 ## 작업 원칙
 - 변경 전에 관련 코드를 먼저 읽고, 기존 스타일을 따른다.

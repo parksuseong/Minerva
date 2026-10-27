@@ -223,3 +223,42 @@ def ma_snapshot(closes: Sequence[float]) -> dict:
         "bull_aligned": len(vals) >= 3 and all(a > b for a, b in zip(vals, vals[1:])),
         "bear_aligned": len(vals) >= 3 and all(a < b for a, b in zip(vals, vals[1:])),
     }
+
+
+def dmi(bars: Sequence[Bar], n: int = 14) -> tuple[list[Num], list[Num], list[Num]]:
+    """Wilder 방식 (+DI, -DI, ADX)."""
+    size = len(bars)
+    pdi: list[Num] = [None] * size
+    mdi: list[Num] = [None] * size
+    adx: list[Num] = [None] * size
+    if size <= n:
+        return pdi, mdi, adx
+    tr_s = pdm_s = mdm_s = 0.0
+    dxs: list[float] = []
+    adx_v: Num = None
+    for i in range(1, size):
+        cur, prev = bars[i], bars[i - 1]
+        up, down = cur.high - prev.high, prev.low - cur.low
+        pdm = up if up > down and up > 0 else 0.0
+        mdm = down if down > up and down > 0 else 0.0
+        tr = max(cur.high - cur.low, abs(cur.high - prev.close), abs(cur.low - prev.close))
+        if i <= n:
+            tr_s, pdm_s, mdm_s = tr_s + tr, pdm_s + pdm, mdm_s + mdm
+            if i < n:
+                continue
+        else:
+            tr_s = tr_s - tr_s / n + tr
+            pdm_s = pdm_s - pdm_s / n + pdm
+            mdm_s = mdm_s - mdm_s / n + mdm
+        p = 0.0 if tr_s == 0 else 100 * pdm_s / tr_s
+        m = 0.0 if tr_s == 0 else 100 * mdm_s / tr_s
+        pdi[i], mdi[i] = p, m
+        dx = 0.0 if p + m == 0 else 100 * abs(p - m) / (p + m)
+        if adx_v is None:
+            dxs.append(dx)
+            if len(dxs) == n:
+                adx_v = sum(dxs) / n
+        else:
+            adx_v = (adx_v * (n - 1) + dx) / n
+        adx[i] = adx_v
+    return pdi, mdi, adx

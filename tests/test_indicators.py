@@ -96,3 +96,12 @@ def test_parse_yahoo_skips_null_rows():
     assert len(bars) == n - 1
     daily = summarize(bars)["D"]
     assert daily["bull_aligned"] and "rsi" in daily["overbought"]
+
+
+def test_dmi_uptrend_has_pdi_above_mdi_and_rising_adx():
+    from minerva.strategy.indicators import dmi
+
+    pdi, mdi, adx = dmi(make_bars([100.0 + i * 2 for i in range(60)]))
+    assert pdi[-1] > mdi[-1]
+    assert adx[-1] is not None and adx[-1] > 50
+    assert adx[26] is None and adx[27] is not None

@@ -55,7 +55,8 @@ Minerva/
 - Claude와 서브에이전트가 일하는 모습을 보여준다. 코드: `static/office.{js,css}`, API `src/minerva/office.py`. 훅 `scripts/office_hook.py`가 `~/.minerva/office/events.jsonl`에 이벤트를 쌓는다.
 - 기록하는 건 이벤트 종류, 도구 이름, 짧은 라벨(Bash 설명, 파일 이름)뿐이다. 프롬프트·명령 원문·파일 내용은 기록하지 않는다.
 - 훅 등록: `python3 scripts/install_office_hooks.py` (사용자 설정 `~/.claude/settings.json`에 추가)
-- 접근 토큰은 `~/.minerva/office/token`에 있다(커밋 금지). 접속 주소는 `https://<서버>/?token=<토큰>`.
+- 기본은 토큰 없이 공개(사용자 요청). 잠그려면 서비스 환경변수 `MINERVA_OFFICE_TOKEN`을 설정한다.
+- 서버가 기동하면 `src/minerva/notify.py`가 텔레그램으로 알린다. 설정은 저장소 밖 `~/.minerva/telegram.env` (커밋 금지).
 
 ## 환경 메모
-- EC2에서 작업 중이며 매일 01:00~08:00(KST) 인스턴스가 꺼진다. 오래 걸리는 작업은 그 전에 끝나도록 한다.
+- EC2에서 작업 중이며 매일 02:00~08:00(KST) 인스턴스가 꺼진다. 오래 걸리는 작업은 그 전에 끝나도록 한다.

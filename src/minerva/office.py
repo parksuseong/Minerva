@@ -1,7 +1,7 @@
 """오피스 패널 API: 메인 화면 아래쪽에 Claude와 서브에이전트가 일하는 모습을 보여준다.
 
 이벤트는 `scripts/office_hook.py`가 쓰는 JSONL 로그에서 읽는다.
-토큰 파일(`~/.minerva/office/token`)이나 MINERVA_OFFICE_TOKEN이 있으면 토큰이 맞아야 볼 수 있다.
+기본은 공개다. MINERVA_OFFICE_TOKEN 환경변수를 설정했을 때만 토큰을 요구한다.
 """
 
 from __future__ import annotations
@@ -21,11 +21,7 @@ def log_path() -> Path:
 
 
 def expected_token() -> str | None:
-    env = os.environ.get("MINERVA_OFFICE_TOKEN")
-    if env:
-        return env
-    f = log_path().parent / "token"
-    return f.read_text().strip() if f.exists() else None
+    return os.environ.get("MINERVA_OFFICE_TOKEN") or None
 
 
 def check_token(token: str) -> None:

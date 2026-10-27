@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from minerva.strategy.indicators import (
     LEVELS,
     Bar,
+    dmi,
     load_csv,
     ma_snapshot,
     resample,
@@ -52,6 +53,7 @@ def summarize(bars: list[Bar], cci_n: int = 20) -> dict:
             continue
         s = tm_states(fb, cci_n=cci_n)[-1]
         ma = ma_snapshot([b.close for b in fb])
+        pdi, mdi, adx = (x[-1] for x in dmi(fb))
         out[frame] = {
             "date": s.day.isoformat(),
             "close": round(s.close, 4),
@@ -62,6 +64,9 @@ def summarize(bars: list[Bar], cci_n: int = 20) -> dict:
             "overbought": [n for n, _, hi in LEVELS if _in(getattr(s, n), hi, below=False)],
             "long_level": s.long_level,
             "short_level": s.short_level,
+            "pdi": _r(pdi),
+            "mdi": _r(mdi),
+            "adx": _r(adx),
             "above_ma": [n for n, up in ma["above"].items() if up],
             "bull_aligned": ma["bull_aligned"],
             "bear_aligned": ma["bear_aligned"],

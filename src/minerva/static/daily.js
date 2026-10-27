@@ -18,12 +18,18 @@
       state = `<div class="state hold">🔵 보유 중 ${pct(tm.pnl)} · ${tm.days_left}거래일 남음</div>
         <div class="detail">진입 ${esc(tm.entry_day)} @ ${num(tm.entry)} · 손절 ${num(tm.stop)} · ${esc(tm.exit_rule)}</div>`;
     }
+    if (tm.state === "규칙 없음") {
+      state = `<div class="state">🚫 ${esc((tm.missing || []).join(", "))}</div>`;
+    }
+    const info = a.kind
+      ? `${a.mult > 0 ? "레버리지" : "인버스"} ${Math.abs(a.mult)}배 · 기초자산 ${esc(a.underlying)}${tm.note ? " · " + esc(tm.note) : ""}`
+      : `${esc(a.date)} 종가 · Stoch ${a.stoch} · CCI ${a.cci} · RSI ${a.rsi} · 50일선 ${num(a.ma50)}`;
     const ch = a.change == null ? "" : `<span class="${a.change >= 0 ? "up" : "down"}">${pct(a.change)}</span>`;
     return `<div class="asset">
       <div class="asset-head"><div><b>${esc(a.name)}</b>${badge}</div>
         <div class="px">${num(a.close)} ${ch}</div></div>
       ${state}
-      <div class="detail">${esc(a.date)} 종가 · Stoch ${a.stoch} · CCI ${a.cci} · RSI ${a.rsi} · 50일선 ${num(a.ma50)}</div>
+      <div class="detail">${info}</div>
     </div>`;
   }
 
@@ -38,7 +44,9 @@
         <span class="chip">레버리지 ${esc(v.leverage)}</span>
         <span class="chip ${fearCls}">공포 초입: ${esc(f.state)} (VIX/VIX3M ${pct(f.premium)})</span>
       </div><div class="detail">분석 시각 ${esc(d.generated_at.replace("T", " "))} KST · 매일 09:10·16:30 갱신</div>`;
-    $("daily-list").innerHTML = d.assets.map(assetHtml).join("");
+    const products = (d.products || []).map(assetHtml).join("");
+    $("daily-list").innerHTML = d.assets.map(assetHtml).join("") +
+      (products ? `<h2 style="margin-top:16px">⚡ 레버리지 · 인버스 · 곱버스</h2>${products}` : "");
     $("daily-note").textContent = d.note;
   }).catch(() => { $("daily-meta").textContent = "분석 데이터를 불러오지 못했어요"; });
 })();

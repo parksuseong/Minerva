@@ -46,3 +46,27 @@ def test_summary_mentions_unverified_and_no_signal():
     }
     text = telegram_summary(data)
     assert "전 종목 대기" in text and "R2" in text
+    data["products"] = [
+        {
+            "name": "SOXL",
+            "verified": False,
+            "tm": {"state": "보유 중", "pnl": None, "stop": "기초 1", "days_left": 3},
+        }
+    ]
+    text = telegram_summary(data)
+    assert "SOXL" in text and "인버스·곱버스: 검증된 진입 규칙 없음" in text
+
+
+def test_inverse_product_never_signals(monkeypatch):
+    from minerva.strategy import daily
+
+    bars = bars_until(date(2026, 10, 20), 5)
+    monkeypatch.setattr(daily, "fetch_yahoo", lambda s, r: bars)
+    inv = daily.Asset("SQQQ", "SQQQ", "US", "inv", "QQQ", -3)
+    base = {"name": "QQQ", "close": 90, "ma50": 100, "tm": {"state": "진입 신호", "stop": 81}}
+    out = daily.product_status(inv, base, "R0")
+    assert out["tm"]["state"] == "규칙 없음" and "하락 추세" in out["tm"]["note"]
+    lev = daily.Asset("TQQQ", "TQQQ", "US", "lev", "QQQ", 3)
+    assert daily.product_status(lev, base, "R0")["tm"]["state"] == "진입 신호"
+    blocked = daily.product_status(lev, base, "R2")["tm"]
+    assert blocked["state"] == "대기" and blocked["missing"][0].startswith("레짐 R2")

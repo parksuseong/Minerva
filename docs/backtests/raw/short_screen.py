@@ -17,10 +17,11 @@ def flags(d):
         out["S1"].append(s1); out["S2"].append(s1 and reg.get(b.day) in ("R2", "R3"))
         out["S3"].append(s3); out["S5"].append(s3 and bw)
     return out
-for sym in ["SPY", "QQQ", "SOXX", "IWM", "DIA", "EFA", "EWJ", "EEM", "^KS11"]:
-    d = fetch_yahoo(sym, "max"); F = flags(d); row = []
-    for k, f in F.items():
-        r = study(d, f, horizons=(20,), gap=5)["by_h"][20]
-        se = lambda s: None if not s.get("n") else round(-s["edge"], 4)
-        row.append(f"{k}: n={r['all'].get('n',0)} 숏edge={se(r['all'])} 내={se(r['in'])} 밖={se(r['out'])}")
-    print(sym, " | ".join(row))
+if __name__ == "__main__":
+  for sym in ["SPY", "QQQ", "SOXX", "IWM", "DIA", "EFA", "EWJ", "EEM", "^KS11"]:
+        d = fetch_yahoo(sym, "max"); F = flags(d); row = []
+        for k, f in F.items():
+            r = study(d, f, horizons=(20,), gap=5)["by_h"][20]
+            se = lambda s: None if not s.get("n") else round(-s["edge"], 4)
+            row.append(f"{k}: n={r['all'].get('n',0)} 숏edge={se(r['all'])} 내={se(r['in'])} 밖={se(r['out'])}")
+        print(sym, " | ".join(row))

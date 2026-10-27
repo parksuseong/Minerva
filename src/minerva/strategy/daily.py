@@ -39,7 +39,8 @@ VERIFIED = {"SPY", "QQQ", "SOXX", "^KS11", "^KQ11", "005930.KS", "000660.KS"}
 UNSUITED = {"BTC-USD", "AAPL", "NVDA", "TSLA"}  # 롱 규칙이 표본 안팎에서 성립하지 않음
 NOTE = (
     "롱 규칙 검증: SPY·QQQ·SOXX·코스피·코스닥·삼성전자·하이닉스. "
-    "비트코인·애플·엔비디아·테슬라는 '규칙 부적합'. 투자 판단과 책임은 본인에게."
+    "비트코인·애플·엔비디아·테슬라는 '규칙 부적합'. "
+    "숏 규칙 검증: QQQ·SOXX·코스피·코스닥·비트코인·엔비디아. 투자 판단과 책임은 본인에게."
 )
 
 
@@ -82,7 +83,8 @@ PRODUCTS = [
 ]
 
 SHORT_RULE = ShortRule(hold=20, stop=0.07)
-SHORT_VERIFIED = {"QQQ", "SOXX", "^KS11", "^KQ11"}  # 숏 규칙이 표본 안팎 모두 + 인 기초자산
+# 숏 규칙이 표본 안팎 모두 + 인 기초자산 (SPY는 표본 밖 −, 삼성·하이닉스·애플·테슬라 ❌)
+SHORT_VERIFIED = {"QQQ", "SOXX", "^KS11", "^KQ11", "BTC-USD", "NVDA"}
 
 
 def short_flags(bars: list[Bar]) -> tuple[list[bool], dict]:
@@ -303,7 +305,17 @@ def analyze(asset: Asset, vix: list[Bar], vix_ma50: float | None = None) -> dict
         "ma50": _r(snap["ma"].get(50)),
         "ma200": _r(snap["ma"].get(200)),
         "tm": _with_wait(tm_status(daily, ctx), wait_levels(daily, "long", vix_ma50)),
+        "short": base_short(daily, vix),
+        "short_verified": asset.symbol in SHORT_VERIFIED,
     }
+
+
+def base_short(daily: list[Bar], vix: list[Bar] | None) -> dict:
+    """기초자산 자체의 숏(S1) 판정. 인버스 상품이 없는 종목은 선물·공매도로 실행한다."""
+    tm = short_status(daily)
+    if tm["state"] == "진입 신호" and regime_is_fear(vix):
+        tm = {"state": "대기", "missing": ["백워데이션 중 신규 숏 금지"]}
+    return tm
 
 
 def regime_is_fear(vix: list[Bar] | None) -> bool:
@@ -448,8 +460,17 @@ def write_summary(data: dict) -> list[str]:
     active = [a for a in rows if a["tm"]["state"] in ("진입 신호", "보유 중")]
     for a in active:
         out.append(f"{a['name']}: {a['tm']['state']} — {a['tm'].get('stop', '')}")
+    for a in data["assets"]:
+        sh = a.get("short", {})
+        if sh.get("state") in ("진입 신호", "보유 중"):
+            tag = "" if a.get("short_verified") else " (숏 미검증)"
+            out.append(f"{a['name']}{tag}: 숏 {sh['state']} — {sh.get('stop', '')}")
     near = sorted(
-        (a for a in data["assets"] if a.get("tm", {}).get("state") == "대기"),
+        (
+            a
+            for a in data["assets"]
+            if a.get("tm", {}).get("state") == "대기" and not a.get("unsuited")
+        ),
         key=lambda a: len(a["tm"].get("missing", [])),
     )[:3]
     for a in near:
@@ -459,6 +480,16 @@ def write_summary(data: dict) -> list[str]:
         (a for a in data.get("products", []) if a.get("kind") == "inv" and "tm" in a),
         key=lambda a: len(a["tm"].get("missing", [])),
     )[:1]
+    base_shorts = sorted(
+        (a for a in data["assets"] if a.get("short_verified") and "short" in a),
+        key=lambda a: len(a["short"].get("missing", [])),
+    )[:2]
+    for a in base_shorts:
+        if a["short"]["state"] == "대기":
+            out.append(
+                f"{a['name']} 숏 대기(빠진 조건 {len(a['short']['missing'])}개): "
+                + " / ".join(a["short"].get("wait") or a["short"]["missing"])
+            )
     for a in shorts:
         if a["tm"]["state"] == "대기":
             out.append(
@@ -494,7 +525,20 @@ def telegram_summary(data: dict) -> str:
                 f"🔵 {a['name']}{badge}: 보유 중{pnl} · 손절 {tm['stop']} · "
                 f"{tm['days_left']}일 남음"
             )
-    if not any(a.get("tm", {}).get("state") in ("진입 신호", "보유 중") for a in rows):
+        sh = a.get("short", {})
+        tag = "" if a.get("short_verified") else " (숏 미검증)"
+        if sh.get("state") == "진입 신호":
+            lines.append(f"🔻 {a['name']}{tag}: 숏 진입 신호 · {sh['stop']} · 최대 20일")
+        elif sh.get("state") == "보유 중":
+            lines.append(
+                f"🔻 {a['name']}{tag}: 숏 보유 중 {sh['pnl']:+.1%} · {sh['stop']} · "
+                f"{sh['days_left']}일 남음"
+            )
+    live = ("진입 신호", "보유 중")
+    if not any(
+        a.get("tm", {}).get("state") in live or a.get("short", {}).get("state") in live
+        for a in rows
+    ):
         lines.append("• 오늘은 진입 신호·보유 포지션 없음 (전 종목 대기)")
     if data.get("products"):
         lines.append(

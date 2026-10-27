@@ -9,17 +9,17 @@
   function assetHtml(a) {
     if (a.error) return `<div class="asset"><b>${esc(a.name)}</b> <span class="detail">데이터 오류</span></div>`;
     const tm = a.tm || {};
-    const badge = a.unsuited ? '<span class="badge">규칙 부적합</span>'
-      : a.verified ? '<span class="badge" style="color:#16a34a">검증됨</span>' : '<span class="badge">미검증</span>';
+    const badge = a.unsuited ? `<span class="badge">${a.kind ? "" : "롱 "}규칙 부적합</span>`
+      : a.verified ? `<span class="badge" style="color:#16a34a">${a.kind ? "" : "롱 "}검증됨</span>` : '<span class="badge">미검증</span>';
     const waits = (tm.wait || []).map((w) => `<li>${esc(w)}</li>`).join("");
-    let state = `<div class="state">⏳ 대기 · 빠진 조건 ${(tm.missing || []).length}개</div>` +
+    let state = `<div class="state">⏳ ${a.kind ? "" : "롱 "}대기 · 빠진 조건 ${(tm.missing || []).length}개</div>` +
       (waits ? `<ul class="detail" style="margin:2px 0 0 16px;padding:0">${waits}</ul>` :
         `<div class="detail">${esc((tm.missing || []).join(", "))}</div>`);
     if (tm.state === "진입 신호") {
-      state = `<div class="state go">🟢 진입 신호 · ${esc(tm.entry)}</div>
+      state = `<div class="state go">🟢 롱 진입 신호 · ${esc(tm.entry)}</div>
         <div class="detail">손절 ${num(tm.stop)} (−10%) · 익절: Stoch 80 하향 이탈 · 최대 ${tm.max_days}거래일</div>`;
     } else if (tm.state === "보유 중") {
-      state = `<div class="state hold">🔵 보유 중 ${pct(tm.pnl)} · ${tm.days_left}거래일 남음</div>
+      state = `<div class="state hold">🔵 롱 보유 중 ${pct(tm.pnl)} · ${tm.days_left}거래일 남음</div>
         <div class="detail">진입 ${esc(tm.entry_day)} @ ${num(tm.entry)} · 손절 ${num(tm.stop)} · ${esc(tm.exit_rule)}</div>`;
     }
     if (a.kind && tm.state === "진입 신호") {
@@ -32,6 +32,24 @@
     if (tm.state === "규칙 없음") {
       state = `<div class="state">🚫 ${esc((tm.missing || []).join(", "))}</div>`;
     }
+    let short = "";
+    if (!a.kind && a.short) {
+      const sh = a.short;
+      const sb = a.short_verified ? '<span class="badge" style="color:#16a34a">숏 검증됨</span>'
+        : '<span class="badge">숏 미검증</span>';
+      const sw = (sh.wait || []).map((w) => `<li>${esc(w)}</li>`).join("");
+      if (sh.state === "진입 신호") {
+        short = `<div class="state go">🔻 숏 진입 신호${sb} · ${esc(sh.entry)}</div>
+          <div class="detail">${esc(sh.stop)} · 익절·청산: ${esc(sh.exit_rule)}</div>`;
+      } else if (sh.state === "보유 중") {
+        short = `<div class="state hold">🔻 숏 보유 중 ${pct(sh.pnl)} · ${sh.days_left}거래일 남음${sb}</div>
+          <div class="detail">진입 ${esc(sh.entry_day)} · ${esc(sh.stop)} · ${esc(sh.exit_rule)}</div>`;
+      } else {
+        short = `<div class="state">⏳ 숏 대기 · 빠진 조건 ${(sh.missing || []).length}개${sb}</div>` +
+          (sw ? `<ul class="detail" style="margin:2px 0 0 16px;padding:0">${sw}</ul>` :
+            `<div class="detail">${esc((sh.missing || []).join(", "))}</div>`);
+      }
+    }
     const info = a.kind
       ? `${a.mult > 0 ? "레버리지" : "인버스"} ${Math.abs(a.mult)}배 · 기초자산 ${esc(a.underlying)}${tm.note ? " · " + esc(tm.note) : ""}`
       : `${esc(a.date)} 종가 · Stoch ${a.stoch} · CCI ${a.cci} · RSI ${a.rsi} · 50일선 ${num(a.ma50)}`;
@@ -40,6 +58,7 @@
       <div class="asset-head"><div><b>${esc(a.name)}</b>${badge}</div>
         <div class="px">${num(a.close)} ${ch}</div></div>
       ${state}
+      ${short}
       <div class="detail">${info}</div>
     </div>`;
   }

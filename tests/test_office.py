@@ -96,6 +96,10 @@ def test_events_endpoint_requires_token_when_configured(office_env, monkeypatch)
     assert client.get("/api/office/events?token=s3cret").status_code == 200
 
 
-def test_office_page_served():
-    r = TestClient(app).get("/office")
-    assert r.status_code == 200 and "MINERVA OFFICE" in r.text
+def test_office_panel_is_on_main_page():
+    client = TestClient(app)
+    page = client.get("/")
+    assert 'id="office"' in page.text and "/static/office.js" in page.text
+    assert client.get("/static/office.js").status_code == 200
+    assert client.get("/static/office.css").status_code == 200
+    assert client.get("/office").status_code == 404

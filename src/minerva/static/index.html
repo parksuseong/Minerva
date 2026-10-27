@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f1115">
   <title>Minerva</title>
+  <link rel="stylesheet" href="/static/office.css">
   <style>
     :root {
       --bg: #f6f7f9; --card: #ffffff; --text: #14161a; --muted: #6b7280;
@@ -60,6 +61,33 @@
     <div class="row"><div><div class="name">애플</div><div class="ticker">AAPL</div></div><div class="placeholder">시세 연동 예정</div></div>
   </section>
 
+  <section id="office" aria-label="Claude 작업 현황">
+    <header>
+      <span class="of-live" id="of-live"></span>
+      <h1>🦉 MINERVA OFFICE</h1>
+      <span class="of-spacer"></span>
+      <span class="of-clock" id="of-clock"></span>
+    </header>
+    <main id="of-app">
+      <section class="of-floor" id="of-floor">
+        <div class="of-desks" id="of-desks"></div>
+        <div class="of-door"></div>
+        <div class="of-boss" id="of-boss"><div class="of-who">🧑‍💼</div><div class="of-name">사장님</div></div>
+      </section>
+      <aside>
+        <div class="of-board">
+          <h2>📋 오늘의 화이트보드</h2>
+          <div class="of-stats">
+            <div><b id="of-s-tools">0</b><span>도구 호출</span></div>
+            <div><b id="of-s-agents">0</b><span>투입 에이전트</span></div>
+            <div><b id="of-s-commits">0</b><span>커밋·푸시</span></div>
+          </div>
+        </div>
+        <div class="of-feed"><h2>📜 작업 로그</h2><ol id="of-feed"></ol></div>
+      </aside>
+    </main>
+  </section>
+
   <footer>투자 판단의 책임은 본인에게 있습니다.</footer>
 
   <script>
@@ -75,5 +103,6 @@
         document.getElementById("status").textContent = "서버 연결 실패";
       });
   </script>
+  <script src="/static/office.js"></script>
 </body>
 </html>

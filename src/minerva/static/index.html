@@ -54,6 +54,30 @@
     .state.hold { color: var(--accent); font-weight: 700; }
     .detail { font-size: 12px; color: var(--muted); margin-top: 2px; }
     .up { color: var(--up); } .down { color: var(--down); }
+    .tabs { position: sticky; top: 0; z-index: 5; display: flex; gap: 4px; overflow-x: auto;
+      background: var(--bg); padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .tabs button { flex: 0 0 auto; border: 0; background: transparent; color: var(--muted);
+      font: inherit; font-size: 14px; font-weight: 600; padding: 8px 12px; border-radius: 999px;
+      cursor: pointer; }
+    .tabs button[aria-selected="true"] { background: var(--text); color: var(--bg); }
+    .panel[hidden] { display: none; }
+    .act { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; padding: 10px 0;
+      border-top: 1px solid var(--line); }
+    .act .tag { font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 8px;
+      align-self: start; white-space: nowrap; }
+    .tag.LONG_ENTRY, .tag.BUY { background: #dcfce7; color: #14532d; }
+    .tag.SHORT_ENTRY { background: #fee2e2; color: #7f1d1d; }
+    .tag.LONG_EXIT, .tag.SHORT_EXIT, .tag.SELL { background: #e0e7ff; color: #1e3a8a; }
+    .filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 4px; }
+    .filters button { border: 1px solid var(--line); background: var(--card); color: var(--text);
+      font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; cursor: pointer; }
+    .filters button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .filters label { font-size: 13px; color: var(--muted); }
+    details.asset summary { list-style: none; cursor: pointer; }
+    details.asset summary::-webkit-details-marker { display: none; }
+    .mini { font-size: 12px; color: var(--muted); }
+    table.acct { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.acct th, table.acct td { text-align: left; padding: 6px 4px; border-top: 1px solid var(--line); }
     footer { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0 24px; }
   </style>
 </head>
@@ -63,18 +87,60 @@
     <p class="sub">주식 · 비트코인 분석</p>
   </header>
 
-  <section class="card">
-    <h2>서버 상태</h2>
-    <div class="status"><span id="dot" class="dot"></span><span id="status">확인 중…</span></div>
-  </section>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="today" aria-selected="true">🎯 오늘 할 일</button>
+    <button role="tab" data-tab="analysis" aria-selected="false">📈 종목 분석</button>
+    <button role="tab" data-tab="account" aria-selected="false">💼 계좌</button>
+    <button role="tab" data-tab="office" aria-selected="false">🏢 오피스</button>
+  </nav>
 
-  <section class="card" id="daily">
-    <h2>📊 오늘의 전략</h2>
-    <div id="daily-meta" class="placeholder">불러오는 중…</div>
-    <div id="daily-list"></div>
-    <p class="placeholder" id="daily-note"></p>
-  </section>
+  <div class="panel" id="tab-today">
+    <section class="card" id="daily">
+      <h2>🎯 오늘 할 일</h2>
+      <div id="daily-meta" class="placeholder">불러오는 중…</div>
+      <div id="today-actions"></div>
+    </section>
+    <section class="card">
+      <h2>🔵 보유 중 (규칙상)</h2>
+      <div id="today-holds" class="placeholder">-</div>
+    </section>
+    <section class="card">
+      <h2>👀 임박 (검증된 규칙, 조건 1개 남음)</h2>
+      <div id="today-near" class="placeholder">-</div>
+    </section>
+    <section class="card">
+      <h2>서버 상태</h2>
+      <div class="status"><span id="dot" class="dot"></span><span id="status">확인 중…</span></div>
+    </section>
+  </div>
 
+  <div class="panel" id="tab-analysis" hidden>
+    <section class="card">
+      <h2>📈 종목 분석 <span class="mini" id="an-count"></span></h2>
+      <div class="filters" id="an-filters">
+        <button data-m="all" class="on">전체</button>
+        <button data-m="KR">국내</button>
+        <button data-m="US">미국</button>
+        <button data-m="CRYPTO">코인</button>
+        <button data-m="inv">인버스</button>
+        <label><input type="checkbox" id="an-verified"> 검증된 규칙만</label>
+      </div>
+      <div id="daily-list"></div>
+      <p class="placeholder" id="daily-note"></p>
+    </section>
+  </div>
+
+  <div class="panel" id="tab-account" hidden>
+    <section class="card">
+      <h2>💼 계좌</h2>
+      <div id="acct-status" class="placeholder">불러오는 중…</div>
+    </section>
+    <section class="card"><h2>잔고</h2><div id="acct-balance" class="placeholder">-</div></section>
+    <section class="card"><h2>주문</h2><div id="acct-orders" class="placeholder">-</div></section>
+    <section class="card"><h2>거래내역</h2><div id="acct-trades" class="placeholder">-</div></section>
+  </div>
+
+  <div class="panel" id="tab-office" hidden>
   <section id="office" aria-label="Claude 작업 현황">
     <header>
       <span class="of-live" id="of-live"></span>
@@ -103,6 +169,7 @@
     <div class="of-info" id="of-info" hidden></div>
     <section class="of-roster" id="of-roster"><h2>🪪 요원 소개</h2><div class="of-roster-list" id="of-roster-list"></div></section>
   </section>
+  </div>
 
   <footer>투자 판단의 책임은 본인에게 있습니다.</footer>
 
@@ -119,7 +186,21 @@
         document.getElementById("status").textContent = "서버 연결 실패";
       });
   </script>
+  <script>
+    (() => {
+      const tabs = [...document.querySelectorAll(".tabs button")];
+      const show = (name) => {
+        if (!document.getElementById(`tab-${name}`)) name = "today";
+        tabs.forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
+        document.querySelectorAll(".panel").forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
+      };
+      tabs.forEach((b) => b.addEventListener("click", () => { location.hash = b.dataset.tab; }));
+      window.addEventListener("hashchange", () => show(location.hash.slice(1)));
+      show(location.hash.slice(1));
+    })();
+  </script>
   <script src="/static/daily.js"></script>
+  <script src="/static/account.js"></script>
   <script src="/static/office.js"></script>
 </body>
 </html>

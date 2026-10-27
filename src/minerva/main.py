@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from minerva import __version__, notify
 from minerva.office import router as office_router
+from minerva.routes import router as data_router
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -35,6 +36,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Minerva", version=__version__, lifespan=lifespan)
 app.include_router(office_router)
+app.include_router(data_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

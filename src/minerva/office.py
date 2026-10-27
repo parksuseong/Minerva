@@ -51,18 +51,6 @@ def read_events(after: int, limit: int = 500) -> tuple[list[dict], int]:
     return events, total
 
 
-def daily_path() -> Path:
-    return Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
-
-
-@router.get("/api/daily")
-def daily_analysis() -> dict:
-    path = daily_path()
-    if not path.exists():
-        return {"status": "pending", "message": "아직 오늘 분석이 없어요 (09:10·16:30 자동 실행)"}
-    return json.loads(path.read_text())
-
-
 @router.get("/api/office/events")
 def office_events(after: int = Query(0, ge=0), token: str = "") -> dict:
     check_token(token)

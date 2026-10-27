@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
+  <title>Minerva</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #ffffff; --text: #14161a; --muted: #6b7280;
+      --line: #e5e7eb; --accent: #2563eb; --up: #dc2626; --down: #2563eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1115; --card: #181b21; --text: #e8eaed; --muted: #9aa0a6;
+        --line: #2a2e36; --accent: #60a5fa; --up: #f87171; --down: #60a5fa;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+    }
+    header { padding: 20px 0 12px; }
+    h1 { margin: 0; font-size: 24px; letter-spacing: -0.02em; }
+    .sub { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+      padding: 16px; margin: 12px 0;
+    }
+    .card h2 { margin: 0 0 8px; font-size: 15px; color: var(--muted); font-weight: 600; }
+    .row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; }
+    .row + .row { border-top: 1px solid var(--line); }
+    .name { font-weight: 600; }
+    .ticker { color: var(--muted); font-size: 13px; }
+    .placeholder { color: var(--muted); font-size: 14px; }
+    .status { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+    .dot.ok { background: #16a34a; }
+    .dot.err { background: var(--up); }
+    footer { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0 24px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Minerva</h1>
+    <p class="sub">주식 · 비트코인 분석</p>
+  </header>
+
+  <section class="card">
+    <h2>서버 상태</h2>
+    <div class="status"><span id="dot" class="dot"></span><span id="status">확인 중…</span></div>
+  </section>
+
+  <section class="card">
+    <h2>관심 종목</h2>
+    <div class="row"><div><div class="name">비트코인</div><div class="ticker">BTC</div></div><div class="placeholder">시세 연동 예정</div></div>
+    <div class="row"><div><div class="name">삼성전자</div><div class="ticker">005930</div></div><div class="placeholder">시세 연동 예정</div></div>
+    <div class="row"><div><div class="name">애플</div><div class="ticker">AAPL</div></div><div class="placeholder">시세 연동 예정</div></div>
+  </section>
+
+  <footer>투자 판단의 책임은 본인에게 있습니다.</footer>
+
+  <script>
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((d) => {
+        document.getElementById("dot").className = "dot ok";
+        const t = new Date(d.server_time).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+        document.getElementById("status").textContent = `정상 · v${d.version} · ${t}`;
+      })
+      .catch(() => {
+        document.getElementById("dot").className = "dot err";
+        document.getElementById("status").textContent = "서버 연결 실패";
+      });
+  </script>
+</body>
+</html>

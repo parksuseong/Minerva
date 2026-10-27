@@ -100,6 +100,7 @@ def test_office_panel_is_on_main_page():
     client = TestClient(app)
     page = client.get("/")
     assert 'id="office"' in page.text and "/static/office.js" in page.text
+    assert 'id="of-roster-list"' in page.text
     assert client.get("/static/office.js").status_code == 200
     assert client.get("/static/office.css").status_code == 200
     assert client.get("/office").status_code == 404

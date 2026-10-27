@@ -51,5 +51,11 @@ Minerva/
 - 지표 값은 `.venv/bin/python -m minerva.strategy.report <심볼...>`로 계산한다.
 - 규칙 검증은 `.venv/bin/python -m minerva.strategy.backtest <심볼...> --help` 참고.
 
+## 오피스 화면 (`/office`)
+- Claude와 서브에이전트가 일하는 모습을 보여준다. 훅 `scripts/office_hook.py`가 `~/.minerva/office/events.jsonl`에 이벤트를 쌓는다.
+- 기록하는 건 이벤트 종류, 도구 이름, 짧은 라벨(Bash 설명, 파일 이름)뿐이다. 프롬프트·명령 원문·파일 내용은 기록하지 않는다.
+- 훅 등록: `python3 scripts/install_office_hooks.py` (사용자 설정 `~/.claude/settings.json`에 추가)
+- 접근 토큰은 `~/.minerva/office/token`에 있다(커밋 금지). 접속 주소는 `https://<서버>/office?token=<토큰>`.
+
 ## 환경 메모
 - EC2에서 작업 중이며 매일 01:00~08:00(KST) 인스턴스가 꺼진다. 오래 걸리는 작업은 그 전에 끝나도록 한다.

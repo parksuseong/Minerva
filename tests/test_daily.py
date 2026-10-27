@@ -70,3 +70,18 @@ def test_inverse_uses_own_chart_and_lev_follows_base(monkeypatch):
     assert daily.product_status(lev, base, "R0")["tm"]["state"] == "진입 신호"
     blocked = daily.product_status(lev, base, "R2")["tm"]
     assert blocked["state"] == "대기" and blocked["missing"][0].startswith("레짐 R2")
+
+
+def test_wait_levels_give_prices_and_dates():
+    from minerva.strategy.daily import _month_end, _week_end, wait_levels
+
+    assert _week_end(date(2026, 10, 27)) == date(2026, 10, 30)
+    assert _week_end(date(2026, 10, 30)) == date(2026, 11, 6)
+    assert _month_end(date(2026, 12, 3)) == date(2026, 12, 31)
+    bars = [
+        Bar(date(2025, 1, 1) + timedelta(days=i), 100 + i, 101 + i, 99 + i, 100 + i)
+        for i in range(400)
+    ]
+    lv = wait_levels(bars, "long", 16.0)
+    assert "16.00" in lv["VIX 평온(R0·R1)"] and "확정" in lv["주봉 20주선 위"]
+    assert "아래로" in wait_levels(bars, "short")["50일선 아래"]

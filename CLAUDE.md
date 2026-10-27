@@ -15,12 +15,11 @@ Minerva/
 │   ├── rules/           # 주제별 세부 규칙 (자동 로드)
 │   ├── skills/          # 반복 작업 절차 (/스킬명 으로 호출)
 │   └── agents/          # 전문 서브에이전트
-├── src/minerva/         # 소스 코드 (예정)
-└── tests/               # 테스트 (예정)
+├── src/minerva/         # FastAPI 앱 (main.py, static/)
+└── tests/               # pytest 테스트
 ```
 
 ## 자주 쓰는 명령
-
 - 설치: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
 - 테스트: `.venv/bin/pytest`
 - 린트/포맷: `.venv/bin/ruff check . && .venv/bin/ruff format .`

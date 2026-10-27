@@ -37,6 +37,8 @@ def label_for(tool: str, args: dict) -> str:
         return "텔레그램 답장"
     if tool == "Artifact":
         return "페이지 게시"
+    if tool == "SubagentHandback":
+        return "보고서 제출"
     return ""
 
 

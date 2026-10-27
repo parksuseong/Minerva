@@ -82,6 +82,8 @@ function keyFor(ev) {
 
 function handle(ev, live) {
   const key = keyFor(ev);
+  // 화면에 없는 내부 에이전트의 종료 이벤트는 무시한다 (빈 책상이 잠깐 생기는 것 방지)
+  if (ev.event === "SubagentStop" && !desks.has(key)) return;
   const d = desk(key, key === "main" ? "main" : ev.agent_type);
   const who = cast(d.type)[1];
   switch (ev.event) {

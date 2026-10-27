@@ -21,6 +21,7 @@ from minerva.strategy.indicators import (
     resample,
     tm_states,
 )
+from minerva.strategy.regime import vix_regimes
 
 YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{sym}?{span}&interval=1d"
 
@@ -48,7 +49,7 @@ def fetch_yahoo(symbol: str, rng: str = "10y") -> list[Bar]:
 
 
 def summarize(bars: list[Bar], cci_n: int = 20) -> dict:
-    out = {}
+    out: dict = {}
     for frame in ("D", "W", "M"):
         fb = resample(bars, frame)
         if len(fb) < 20:
@@ -70,10 +71,18 @@ def summarize(bars: list[Bar], cci_n: int = 20) -> dict:
             "mdi": _r(mdi),
             "adx": _r(adx),
             "above_ma": [n for n, up in ma["above"].items() if up],
+            "ma_values": {n: round(v, 4) for n, v in ma["ma"].items()},
             "bull_aligned": ma["bull_aligned"],
             "bear_aligned": ma["bear_aligned"],
         }
     return out
+
+
+def with_vix_regime(name: str, bars: list[Bar], summary: dict) -> dict:
+    """VIX 계열이면 regime.py 기준 레짐 코드를 붙인다."""
+    if name.upper() in ("^VIX", "VIX") and bars:
+        summary["regime"] = vix_regimes(bars).get(bars[-1].day)
+    return summary
 
 
 def _in(value, line: float, below: bool) -> bool:
@@ -95,7 +104,8 @@ def main(argv: list[str] | None = None) -> None:
     targets = [(args.csv, load_csv(args.csv))] if args.csv else []
     targets += [(s, fetch_yahoo(s)) for s in args.symbols]
     for name, bars in targets:
-        print(json.dumps({name: summarize(bars, args.cci)}, ensure_ascii=False, indent=1))
+        summary = with_vix_regime(name, bars, summarize(bars, args.cci))
+        print(json.dumps({name: summary}, ensure_ascii=False, indent=1))
 
 
 if __name__ == "__main__":

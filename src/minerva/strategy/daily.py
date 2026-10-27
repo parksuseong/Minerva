@@ -34,6 +34,9 @@ class Asset:
     symbol: str
     name: str
     market: str  # US / KR / CRYPTO
+    kind: str = "base"  # base / lev(레버리지) / inv(인버스)
+    underlying: str = ""
+    mult: int = 1
 
 
 WATCHLIST = [
@@ -49,6 +52,20 @@ WATCHLIST = [
     Asset("NVDA", "엔비디아", "US"),
     Asset("TSLA", "테슬라", "US"),
 ]
+
+# 레버리지·인버스는 기초자산 신호로 판단한다 (KODEX 200 계열은 코스피 지수로 근사)
+PRODUCTS = [
+    Asset("122630.KS", "KODEX 레버리지", "KR", "lev", "^KS11", 2),
+    Asset("233740.KS", "KODEX 코스닥150레버리지", "KR", "lev", "^KQ11", 2),
+    Asset("TQQQ", "TQQQ (나스닥 3배)", "US", "lev", "QQQ", 3),
+    Asset("SOXL", "SOXL (반도체 3배)", "US", "lev", "SOXX", 3),
+    Asset("114800.KS", "KODEX 인버스", "KR", "inv", "^KS11", -1),
+    Asset("252670.KS", "KODEX 200선물인버스2X (곱버스)", "KR", "inv", "^KS11", -2),
+    Asset("SQQQ", "SQQQ (나스닥 −3배)", "US", "inv", "QQQ", -3),
+    Asset("SOXS", "SOXS (반도체 −3배)", "US", "inv", "SOXX", -3),
+]
+
+DECAY_NOTE = "감쇠: 3배 기준 중앙값 20일 −0.7%p, 60일 −2.2%p, 1년 −11.6%p (기초×배수 대비)"
 
 MARKET_CLOSE = {
     "KR": (ZoneInfo("Asia/Seoul"), 15, 40),
@@ -170,6 +187,60 @@ def analyze(asset: Asset, vix: list[Bar]) -> dict:
     }
 
 
+def product_status(p: Asset, base: dict, regime: str | None) -> dict:
+    """레버리지·인버스 상품: 기초자산 결과를 옮겨 쓰고 상품 고유 제약을 붙인다."""
+    daily = completed(fetch_yahoo(p.symbol, "1y"), p.market)
+    last = daily[-1]
+    out = {
+        "symbol": p.symbol,
+        "name": p.name,
+        "market": p.market,
+        "kind": p.kind,
+        "mult": p.mult,
+        "underlying": base.get("name", p.underlying),
+        "verified": False,
+        "date": last.day.isoformat(),
+        "close": _r(last.close),
+        "change": _r(last.close / daily[-2].close - 1, 4) if len(daily) > 1 else None,
+    }
+    btm = base.get("tm", {})
+    if p.kind == "lev":
+        allowed = regime in ("R0", "R1")
+        if btm.get("state") == "진입 신호" and allowed:
+            tm = {
+                "state": "진입 신호",
+                "entry": "다음 거래일 시가 (기초자산 신호)",
+                "stop": f"기초자산 {btm.get('stop')} 이탈 시 정리",
+                "max_days": TM_RULE.hold,
+                "exit_rule": "기초자산 Stoch 80 하향 이탈 / 기초 −10% / 20거래일",
+            }
+        elif btm.get("state") == "보유 중":
+            tm = {
+                "state": "보유 중",
+                "entry_day": btm.get("entry_day"),
+                "days_left": btm.get("days_left"),
+                "stop": f"기초자산 {btm.get('stop')}",
+                "exit_rule": btm.get("exit_rule"),
+                "pnl": None,
+            }
+        else:
+            missing = list(btm.get("missing", []))
+            if not allowed:
+                missing.insert(0, f"레짐 {regime}: 레버리지 금지")
+            tm = {"state": "대기", "missing": missing}
+        tm["note"] = DECAY_NOTE
+    else:
+        down = base.get("ma50") is not None and (base.get("close") or 0) < base["ma50"]
+        trend = "50일선 아래 (하락 추세)" if down else "50일선 위"
+        tm = {
+            "state": "규칙 없음",
+            "missing": ["검증된 숏·인버스 진입 규칙 없음 (검증에서 손실)"],
+            "note": f"참고: {out['underlying']} {trend} · 인버스는 감쇠가 더 크다",
+        }
+    out["tm"] = tm
+    return out
+
+
 def _regime_by_day(vix: list[Bar], daily: list[Bar]) -> dict[date, str]:
     """자산 거래일마다 그날까지 확정된 마지막 VIX 레짐 (한국장은 전날 미국 마감 기준)."""
     reg = vix_regimes(vix)
@@ -195,6 +266,18 @@ def build() -> dict:
             assets.append(futures[a.symbol].result())
         except Exception as exc:  # noqa: BLE001 — 한 종목 실패가 전체를 막지 않게
             assets.append({"symbol": a.symbol, "name": a.name, "error": type(exc).__name__})
+    by_symbol = {a["symbol"]: a for a in assets}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        pfut = {
+            p.symbol: pool.submit(product_status, p, by_symbol.get(p.underlying, {}), regime)
+            for p in PRODUCTS
+        }
+    products = []
+    for p in PRODUCTS:
+        try:
+            products.append(pfut[p.symbol].result())
+        except Exception as exc:  # noqa: BLE001
+            products.append({"symbol": p.symbol, "name": p.name, "error": type(exc).__name__})
     kst = datetime.now(timezone(timedelta(hours=9)))
     return {
         "generated_at": kst.isoformat(timespec="minutes"),
@@ -207,6 +290,7 @@ def build() -> dict:
         },
         "fear": fear_status(vix, vix3m),
         "assets": assets,
+        "products": products,
         "note": NOTE,
     }
 
@@ -221,7 +305,8 @@ def telegram_summary(data: dict) -> str:
         if f.get("premium") is not None
         else "😨 공포 초입: 데이터 없음",
     ]
-    for a in data["assets"]:
+    rows = data["assets"] + data.get("products", [])
+    for a in rows:
         if "error" in a:
             lines.append(f"• {a['name']}: 데이터 오류")
             continue
@@ -230,12 +315,17 @@ def telegram_summary(data: dict) -> str:
         if tm["state"] == "진입 신호":
             lines.append(f"🟢 {a['name']}{badge}: 진입 신호 · 손절 {tm['stop']} · 최대 20일")
         elif tm["state"] == "보유 중":
+            pnl = "" if tm.get("pnl") is None else f" {tm['pnl']:+.1%}"
             lines.append(
-                f"🔵 {a['name']}{badge}: 보유 중 {tm['pnl']:+.1%} · 손절 {tm['stop']} · "
+                f"🔵 {a['name']}{badge}: 보유 중{pnl} · 손절 {tm['stop']} · "
                 f"{tm['days_left']}일 남음"
             )
-    if not any(a.get("tm", {}).get("state") in ("진입 신호", "보유 중") for a in data["assets"]):
+    if not any(a.get("tm", {}).get("state") in ("진입 신호", "보유 중") for a in rows):
         lines.append("• 오늘은 진입 신호·보유 포지션 없음 (전 종목 대기)")
+    if data.get("products"):
+        lines.append(
+            f"• 레버리지: {data['vix']['leverage']} · 인버스·곱버스: 검증된 진입 규칙 없음"
+        )
     lines.append("투자 판단과 책임은 본인에게 있습니다.")
     return "\n".join(lines)
 

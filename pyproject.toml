@@ -28,6 +28,8 @@ minerva = ["static/*"]
 [tool.ruff]
 line-length = 100
 target-version = "py39"
+# 백테스트 원자료 스크립트는 실행 당시 그대로 보관한다
+extend-exclude = ["docs/backtests/raw"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

@@ -1,0 +1,12 @@
+# 09:10 = 미국장·비트코인 일봉 확정 후, 16:30 = 국내장 마감 확정 후 (KST)
+# Persistent=true: 서버가 꺼져 있어 놓친 실행은 기동 직후 한 번 돌린다.
+[Unit]
+Description=Run Minerva daily analysis at 09:10 and 16:30 KST
+
+[Timer]
+OnCalendar=*-*-* 09:10:00 Asia/Seoul
+OnCalendar=*-*-* 16:30:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

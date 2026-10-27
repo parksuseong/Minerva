@@ -54,3 +54,23 @@ def test_evaluate_reports_split_and_small_sample_warning():
     assert res["all"]["trades"] >= 1
     assert "in_sample" in res and "out_of_sample" in res
     assert "warning" in res
+
+
+def test_trend_exit_holds_longer_than_stoch_exit():
+    bars = make_bars(v_shape(rise=40))
+    stoch_t = run(bars, Rule(level=1, hold=60, stop=None))
+    trend_t = run(bars, Rule(level=1, hold=60, stop=None, exit="trend", trail_ma=5))
+    assert trend_t[0].bars >= stoch_t[0].bars
+
+
+def test_vix_and_align_filters_use_context():
+    from minerva.strategy.backtest import Context
+
+    bars = make_bars(v_shape())
+    rule = Rule(level=1)
+    day = bars[signals(bars, rule).index(True)].day
+    calm = Context(regime={day: "R0"})
+    panic = Context(regime={day: "R3"})
+    assert any(signals(bars, Rule(level=1, vix="calm"), calm))
+    assert not any(signals(bars, Rule(level=1, vix="calm"), panic))
+    assert not any(signals(bars, Rule(level=1, align=True), Context()))

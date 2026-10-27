@@ -23,7 +23,7 @@ def startup_message() -> str:
         f"🦉 미네르바 기동 완료\n"
         f"• 시각: {now} (KST)\n"
         f"• 버전: v{__version__} · 호스트 {socket.gethostname()}\n"
-        f"• 대시보드: https://3.210.65.41/"
+        f"• 대시보드: https://minerva-ai.duckdns.org/"
     )
 
 

@@ -54,10 +54,10 @@ def test_summary_mentions_unverified_and_no_signal():
         }
     ]
     text = telegram_summary(data)
-    assert "SOXL" in text and "인버스·곱버스: 검증된 진입 규칙 없음" in text
+    assert "SOXL" in text and "인버스·곱버스 신호는 미검증" in text
 
 
-def test_inverse_product_never_signals(monkeypatch):
+def test_inverse_uses_own_chart_and_lev_follows_base(monkeypatch):
     from minerva.strategy import daily
 
     bars = bars_until(date(2026, 10, 20), 5)
@@ -65,7 +65,8 @@ def test_inverse_product_never_signals(monkeypatch):
     inv = daily.Asset("SQQQ", "SQQQ", "US", "inv", "QQQ", -3)
     base = {"name": "QQQ", "close": 90, "ma50": 100, "tm": {"state": "진입 신호", "stop": 81}}
     out = daily.product_status(inv, base, "R0")
-    assert out["tm"]["state"] == "규칙 없음" and "하락 추세" in out["tm"]["note"]
+    assert out["tm"]["state"] == "대기" and "미검증" not in out["tm"].get("state", "")
+    assert "우위 없음" in out["tm"]["note"]
     lev = daily.Asset("TQQQ", "TQQQ", "US", "lev", "QQQ", 3)
     assert daily.product_status(lev, base, "R0")["tm"]["state"] == "진입 신호"
     blocked = daily.product_status(lev, base, "R2")["tm"]

@@ -53,19 +53,25 @@ WATCHLIST = [
     Asset("TSLA", "테슬라", "US"),
 ]
 
-# 레버리지·인버스는 기초자산 신호로 판단한다 (KODEX 200 계열은 코스피 지수로 근사)
+# 사용자 방침: 2배까지만 다룬다 (3배 상품 제외).
+# 레버리지는 기초자산 신호를 따르고(KODEX 200 계열은 코스피 지수로 근사),
+# 인버스는 상품 자체 차트에 같은 TM 규칙을 적용한다 (미검증: 2026-10-28 백테스트에서 우위 없음).
 PRODUCTS = [
     Asset("122630.KS", "KODEX 레버리지", "KR", "lev", "^KS11", 2),
     Asset("233740.KS", "KODEX 코스닥150레버리지", "KR", "lev", "^KQ11", 2),
-    Asset("TQQQ", "TQQQ (나스닥 3배)", "US", "lev", "QQQ", 3),
-    Asset("SOXL", "SOXL (반도체 3배)", "US", "lev", "SOXX", 3),
+    Asset("QLD", "QLD (나스닥 2배)", "US", "lev", "QQQ", 2),
+    Asset("USD", "USD (반도체 2배)", "US", "lev", "SOXX", 2),
     Asset("114800.KS", "KODEX 인버스", "KR", "inv", "^KS11", -1),
     Asset("252670.KS", "KODEX 200선물인버스2X (곱버스)", "KR", "inv", "^KS11", -2),
-    Asset("SQQQ", "SQQQ (나스닥 −3배)", "US", "inv", "QQQ", -3),
-    Asset("SOXS", "SOXS (반도체 −3배)", "US", "inv", "SOXX", -3),
+    Asset("QID", "QID (나스닥 −2배)", "US", "inv", "QQQ", -2),
+    Asset("SSG", "SSG (반도체 −2배)", "US", "inv", "SOXX", -2),
 ]
 
-DECAY_NOTE = "감쇠: 3배 기준 중앙값 20일 −0.7%p, 60일 −2.2%p, 1년 −11.6%p (기초×배수 대비)"
+DECAY_NOTE = "감쇠: 배수가 클수록, 오래 들수록 커진다 (3배 기준 1년 중앙값 −11.6%p)"
+INVERSE_NOTE = (
+    "인버스 차트에 같은 규칙 적용 — 백테스트(SH·PSQ·SDS·QID·SSG·KODEX 인버스·곱버스)에서 "
+    "우위 없음·표본 부족. 참고용"
+)
 
 MARKET_CLOSE = {
     "KR": (ZoneInfo("Asia/Seoul"), 15, 40),
@@ -187,9 +193,9 @@ def analyze(asset: Asset, vix: list[Bar]) -> dict:
     }
 
 
-def product_status(p: Asset, base: dict, regime: str | None) -> dict:
-    """레버리지·인버스 상품: 기초자산 결과를 옮겨 쓰고 상품 고유 제약을 붙인다."""
-    daily = completed(fetch_yahoo(p.symbol, "1y"), p.market)
+def product_status(p: Asset, base: dict, regime: str | None, vix: list[Bar] | None = None) -> dict:
+    """레버리지: 기초자산 결과 + 레짐 제약. 인버스: 자기 차트에 TM 규칙(미검증)."""
+    daily = completed(fetch_yahoo(p.symbol, "max" if p.kind == "inv" else "1y"), p.market)
     last = daily[-1]
     out = {
         "symbol": p.symbol,
@@ -230,13 +236,18 @@ def product_status(p: Asset, base: dict, regime: str | None) -> dict:
             tm = {"state": "대기", "missing": missing}
         tm["note"] = DECAY_NOTE
     else:
-        down = base.get("ma50") is not None and (base.get("close") or 0) < base["ma50"]
-        trend = "50일선 아래 (하락 추세)" if down else "50일선 위"
-        tm = {
-            "state": "규칙 없음",
-            "missing": ["검증된 숏·인버스 진입 규칙 없음 (검증에서 손실)"],
-            "note": f"참고: {out['underlying']} {trend} · 인버스는 감쇠가 더 크다",
-        }
+        ctx = Context(
+            regime=_regime_by_day(vix or [], daily),
+            weekly_up=htf_direction(daily, "W", 20),
+            monthly_up=htf_direction(daily, "M", 10),
+        )
+        tm = (
+            tm_status(daily, ctx)
+            if len(daily) > 60
+            else {"state": "대기", "missing": ["데이터 부족"]}
+        )
+        tm.pop("conditions", None)
+        tm["note"] = INVERSE_NOTE
     out["tm"] = tm
     return out
 
@@ -269,7 +280,7 @@ def build() -> dict:
     by_symbol = {a["symbol"]: a for a in assets}
     with ThreadPoolExecutor(max_workers=6) as pool:
         pfut = {
-            p.symbol: pool.submit(product_status, p, by_symbol.get(p.underlying, {}), regime)
+            p.symbol: pool.submit(product_status, p, by_symbol.get(p.underlying, {}), regime, vix)
             for p in PRODUCTS
         }
     products = []
@@ -311,8 +322,10 @@ def telegram_summary(data: dict) -> str:
             lines.append(f"• {a['name']}: 데이터 오류")
             continue
         tm = a["tm"]
-        badge = "" if a["verified"] else " (미검증)"
-        if tm["state"] == "진입 신호":
+        badge = "" if a.get("verified") else " (미검증)"
+        if tm["state"] == "진입 신호" and a.get("kind") == "inv":
+            lines.append(f"⚠️ {a['name']}: 참고 신호(미검증, 우위 없음) · 손절 {tm['stop']}")
+        elif tm["state"] == "진입 신호":
             lines.append(f"🟢 {a['name']}{badge}: 진입 신호 · 손절 {tm['stop']} · 최대 20일")
         elif tm["state"] == "보유 중":
             pnl = "" if tm.get("pnl") is None else f" {tm['pnl']:+.1%}"
@@ -324,7 +337,7 @@ def telegram_summary(data: dict) -> str:
         lines.append("• 오늘은 진입 신호·보유 포지션 없음 (전 종목 대기)")
     if data.get("products"):
         lines.append(
-            f"• 레버리지: {data['vix']['leverage']} · 인버스·곱버스: 검증된 진입 규칙 없음"
+            f"• 레버리지(2배까지): {data['vix']['leverage']} · 인버스·곱버스 신호는 미검증 참고용"
         )
     lines.append("투자 판단과 책임은 본인에게 있습니다.")
     return "\n".join(lines)

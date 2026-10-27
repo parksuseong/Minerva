@@ -5,10 +5,12 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
 from minerva import __version__
+from minerva.office import router as office_router
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="Minerva", version=__version__)
+app.include_router(office_router)
 
 
 @app.get("/", include_in_schema=False)

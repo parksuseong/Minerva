@@ -96,6 +96,7 @@ def test_parse_yahoo_skips_null_rows():
     assert len(bars) == n - 1
     daily = summarize(bars)["D"]
     assert daily["bull_aligned"] and "rsi" in daily["overbought"]
+    assert daily["ma_values"][50] < daily["close"]
 
 
 def test_dmi_uptrend_has_pdi_above_mdi_and_rising_adx():

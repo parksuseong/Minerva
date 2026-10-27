@@ -34,8 +34,13 @@ OUT = Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).
 
 TM_RULE = Rule(level=1, above_ma=50, hold=20, stop=0.10, vix="calm", align=True)
 FEAR_LO, FEAR_HI, FEAR_HOLD = 0.05, 0.15, 60
-VERIFIED = {"SPY", "QQQ", "SOXX"}
-NOTE = "검증 규칙은 SPY·QQQ·SOXX 기준. 그 밖의 종목은 미검증 적용. 투자 판단과 책임은 본인에게."
+# 종목별 검증 결과 (docs/backtests/2026-10-28-results.md "관심 종목별 적용")
+VERIFIED = {"SPY", "QQQ", "SOXX", "^KS11", "^KQ11", "005930.KS", "000660.KS"}
+UNSUITED = {"BTC-USD", "AAPL", "NVDA", "TSLA"}  # 롱 규칙이 표본 안팎에서 성립하지 않음
+NOTE = (
+    "롱 규칙 검증: SPY·QQQ·SOXX·코스피·코스닥·삼성전자·하이닉스. "
+    "비트코인·애플·엔비디아·테슬라는 '규칙 부적합'. 투자 판단과 책임은 본인에게."
+)
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,7 @@ PRODUCTS = [
 ]
 
 SHORT_RULE = ShortRule(hold=20, stop=0.07)
+SHORT_VERIFIED = {"QQQ", "SOXX", "^KS11", "^KQ11"}  # 숏 규칙이 표본 안팎 모두 + 인 기초자산
 
 
 def short_flags(bars: list[Bar]) -> tuple[list[bool], dict]:
@@ -287,6 +293,7 @@ def analyze(asset: Asset, vix: list[Bar], vix_ma50: float | None = None) -> dict
         "name": asset.name,
         "market": asset.market,
         "verified": asset.symbol in VERIFIED,
+        "unsuited": asset.symbol in UNSUITED,
         "date": last.day.isoformat(),
         "close": _r(last.close),
         "change": _r(last.close / daily[-2].close - 1, 4) if len(daily) > 1 else None,
@@ -356,7 +363,7 @@ def product_status(p: Asset, base: dict, regime: str | None, vix: list[Bar] | No
             tm = {"state": "대기", "missing": ["백워데이션 중 신규 숏 금지"]}
         tm["wait"] = [f"[{out['underlying']}] {w}" for w in tm.get("wait", [])]
         tm["note"] = INVERSE_NOTE
-        out["verified"] = True
+        out["verified"] = p.underlying in SHORT_VERIFIED
     out["tm"] = tm
     return out
 
@@ -513,6 +520,11 @@ def main(argv: list[str] | None = None) -> None:
     tmp = out.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
     tmp.replace(out)
+    # 신호 기록: 실제 성과 추적과 규칙 고도화용 (실행마다 한 파일)
+    hist = out.parent / "history"
+    hist.mkdir(exist_ok=True)
+    stamp = data["generated_at"][:16].replace(":", "").replace("T", "-")
+    (hist / f"{stamp}.json").write_text(json.dumps(data, ensure_ascii=False))
     print(f"wrote {out}")
     if args.notify:
         from minerva import notify

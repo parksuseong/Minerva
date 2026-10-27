@@ -9,7 +9,8 @@
   function assetHtml(a) {
     if (a.error) return `<div class="asset"><b>${esc(a.name)}</b> <span class="detail">데이터 오류</span></div>`;
     const tm = a.tm || {};
-    const badge = a.verified ? "" : '<span class="badge">미검증</span>';
+    const badge = a.unsuited ? '<span class="badge">규칙 부적합</span>'
+      : a.verified ? '<span class="badge" style="color:#16a34a">검증됨</span>' : '<span class="badge">미검증</span>';
     const waits = (tm.wait || []).map((w) => `<li>${esc(w)}</li>`).join("");
     let state = `<div class="state">⏳ 대기 · 빠진 조건 ${(tm.missing || []).length}개</div>` +
       (waits ? `<ul class="detail" style="margin:2px 0 0 16px;padding:0">${waits}</ul>` :

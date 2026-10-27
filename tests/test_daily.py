@@ -85,3 +85,38 @@ def test_wait_levels_give_prices_and_dates():
     lv = wait_levels(bars, "long", 16.0)
     assert "16.00" in lv["VIX 평온(R0·R1)"] and "확정" in lv["주봉 20주선 위"]
     assert "아래로" in wait_levels(bars, "short")["50일선 아래"]
+
+
+def test_base_asset_gets_short_side_and_fear_blocks_it(monkeypatch):
+    from minerva.strategy import daily
+
+    monkeypatch.setattr(daily, "short_status", lambda bars: {"state": "진입 신호", "stop": "x"})
+    monkeypatch.setattr(daily, "regime_is_fear", lambda vix: False)
+    assert daily.base_short([], None)["state"] == "진입 신호"
+    monkeypatch.setattr(daily, "regime_is_fear", lambda vix: True)
+    assert daily.base_short([], None)["missing"] == ["백워데이션 중 신규 숏 금지"]
+    assert "BTC-USD" in daily.SHORT_VERIFIED and "TSLA" not in daily.SHORT_VERIFIED
+
+
+def test_telegram_lists_base_short_signal():
+    data = {
+        "generated_at": "2026-10-28T09:10",
+        "vix": {"close": 18.4, "regime": "R2", "size_limit": "계획의 1/2", "leverage": "금지"},
+        "fear": {"state": "없음", "premium": -0.08},
+        "assets": [
+            {
+                "name": "비트코인",
+                "short_verified": True,
+                "tm": {"state": "대기"},
+                "short": {"state": "진입 신호", "stop": "기초자산 85,000 돌파 시 손절"},
+            }
+        ],
+    }
+    text = daily_telegram(data)
+    assert "🔻 비트코인: 숏 진입 신호" in text and "전 종목 대기" not in text
+
+
+def daily_telegram(data):
+    from minerva.strategy.daily import telegram_summary
+
+    return telegram_summary(data)

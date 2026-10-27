@@ -17,9 +17,17 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from minerva.strategy.backtest import Context, Rule, run
-from minerva.strategy.indicators import Bar, ma_snapshot, sma, stoch_fast_k, tm_states
+from minerva.strategy.indicators import (
+    Bar,
+    crossed_down,
+    ma_snapshot,
+    sma,
+    stoch_fast_k,
+    tm_states,
+)
 from minerva.strategy.regime import htf_direction, vix_regimes
 from minerva.strategy.report import fetch_yahoo
+from minerva.strategy.short import ShortRule, run_short
 
 OUT = Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
 
@@ -67,10 +75,63 @@ PRODUCTS = [
     Asset("SSG", "SSG (반도체 −2배)", "US", "inv", "SOXX", -2),
 ]
 
+SHORT_RULE = ShortRule(hold=20, stop=0.07)
+
+
+def short_flags(bars: list[Bar]) -> tuple[list[bool], dict]:
+    """TM 되돌림 숏(S1): Stoch 80 하향 이탈 + 50일선·20주선·10개월선 아래."""
+    closes = [b.close for b in bars]
+    ma50 = sma(closes, 50)
+    st = stoch_fast_k(bars)
+    wu, mu = htf_direction(bars, "W", 20), htf_direction(bars, "M", 10)
+    flags = []
+    for i, b in enumerate(bars):
+        flags.append(
+            crossed_down(st, i, 80.0)
+            and ma50[i] is not None
+            and b.close < ma50[i]
+            and wu.get(b.day) is False
+            and mu.get(b.day) is False
+        )
+    i, last = len(bars) - 1, bars[-1]
+    conds = {
+        "Stoch 80 하향 이탈": crossed_down(st, i, 80.0),
+        "50일선 아래": ma50[i] is not None and last.close < ma50[i],
+        "주봉 20주선 아래": wu.get(last.day) is False,
+        "월봉 10개월선 아래": mu.get(last.day) is False,
+    }
+    return flags, conds
+
+
+def short_status(under: list[Bar]) -> dict:
+    flags, conds = short_flags(under)
+    trades = run_short(under, flags, SHORT_RULE)
+    last = under[-1]
+    if trades and trades[-1].reason == "open":
+        t = trades[-1]
+        entry = t.exit  # run_short는 숏 수익 계산을 위해 가격을 뒤집어 저장한다
+        return {
+            "state": "보유 중",
+            "entry_day": t.entry_day.isoformat(),
+            "stop": f"기초자산 {_r(entry * (1 + SHORT_RULE.stop))} 돌파 시 손절",
+            "pnl": _r(entry / last.close - 1, 4),
+            "days_left": SHORT_RULE.hold - t.bars,
+            "exit_rule": "기초자산 Stoch 20 상향 돌파 익절 / +7% 손절 / 20거래일",
+        }
+    if all(conds.values()):
+        return {
+            "state": "진입 신호",
+            "entry": "다음 거래일 시가 (인버스 매수)",
+            "stop": f"기초자산 {_r(last.close * (1 + SHORT_RULE.stop))} 돌파 시 손절",
+            "max_days": SHORT_RULE.hold,
+            "exit_rule": "기초자산 Stoch 20 상향 돌파 익절 / +7% 손절 / 20거래일",
+        }
+    return {"state": "대기", "missing": [k for k, ok in conds.items() if not ok]}
+
+
 DECAY_NOTE = "감쇠: 배수가 클수록, 오래 들수록 커진다 (3배 기준 1년 중앙값 −11.6%p)"
 INVERSE_NOTE = (
-    "인버스 차트에 같은 규칙 적용 — 백테스트(SH·PSQ·SDS·QID·SSG·KODEX 인버스·곱버스)에서 "
-    "우위 없음·표본 부족. 참고용"
+    "기초자산 TM 되돌림 숏 규칙(검증: 개발 3/3, 독립 5/6, 우위 작음) · 비중은 롱의 1/2 이하"
 )
 
 MARKET_CLOSE = {
@@ -193,6 +254,14 @@ def analyze(asset: Asset, vix: list[Bar]) -> dict:
     }
 
 
+def regime_is_fear(vix: list[Bar] | None) -> bool:
+    """VIX/VIX3M ≥ 1이면 공포 극점: 숏 신규 진입을 막는다 (S5 기각)."""
+    if not vix:
+        return False
+    m3 = completed(fetch_yahoo("^VIX3M", "max"), "US")
+    return bool(m3) and m3[-1].day == vix[-1].day and vix[-1].close >= m3[-1].close
+
+
 def product_status(p: Asset, base: dict, regime: str | None, vix: list[Bar] | None = None) -> dict:
     """레버리지: 기초자산 결과 + 레짐 제약. 인버스: 자기 차트에 TM 규칙(미검증)."""
     daily = completed(fetch_yahoo(p.symbol, "max" if p.kind == "inv" else "1y"), p.market)
@@ -236,18 +305,12 @@ def product_status(p: Asset, base: dict, regime: str | None, vix: list[Bar] | No
             tm = {"state": "대기", "missing": missing}
         tm["note"] = DECAY_NOTE
     else:
-        ctx = Context(
-            regime=_regime_by_day(vix or [], daily),
-            weekly_up=htf_direction(daily, "W", 20),
-            monthly_up=htf_direction(daily, "M", 10),
-        )
-        tm = (
-            tm_status(daily, ctx)
-            if len(daily) > 60
-            else {"state": "대기", "missing": ["데이터 부족"]}
-        )
-        tm.pop("conditions", None)
+        under = completed(fetch_yahoo(p.underlying, "max"), p.market)
+        tm = short_status(under)
+        if tm["state"] == "진입 신호" and regime_is_fear(vix):
+            tm = {"state": "대기", "missing": ["백워데이션 중 신규 숏 금지"]}
         tm["note"] = INVERSE_NOTE
+        out["verified"] = True
     out["tm"] = tm
     return out
 
@@ -324,7 +387,7 @@ def telegram_summary(data: dict) -> str:
         tm = a["tm"]
         badge = "" if a.get("verified") else " (미검증)"
         if tm["state"] == "진입 신호" and a.get("kind") == "inv":
-            lines.append(f"⚠️ {a['name']}: 참고 신호(미검증, 우위 없음) · 손절 {tm['stop']}")
+            lines.append(f"🔻 {a['name']}: 숏 진입 신호(인버스 매수) · {tm['stop']} · 최대 20일")
         elif tm["state"] == "진입 신호":
             lines.append(f"🟢 {a['name']}{badge}: 진입 신호 · 손절 {tm['stop']} · 최대 20일")
         elif tm["state"] == "보유 중":
@@ -337,7 +400,7 @@ def telegram_summary(data: dict) -> str:
         lines.append("• 오늘은 진입 신호·보유 포지션 없음 (전 종목 대기)")
     if data.get("products"):
         lines.append(
-            f"• 레버리지(2배까지): {data['vix']['leverage']} · 인버스·곱버스 신호는 미검증 참고용"
+            f"• 레버리지(2배까지): {data['vix']['leverage']} · 인버스: TM 되돌림 숏 규칙 적용"
         )
     lines.append("투자 판단과 책임은 본인에게 있습니다.")
     return "\n".join(lines)

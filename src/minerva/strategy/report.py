@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 from minerva.strategy.indicators import (
     LEVELS,
@@ -39,13 +42,37 @@ def parse_yahoo(payload: dict) -> list[Bar]:
     return bars
 
 
-def fetch_yahoo(symbol: str, rng: str = "10y") -> list[Bar]:
+CACHE_DIR = Path(os.environ.get("MINERVA_DATA_CACHE", "~/.minerva/data")).expanduser()
+CACHE_TTL = float(
+    os.environ.get("MINERVA_DATA_TTL", 1800)
+)  # 초. 분석·백테스트가 같은 원자료를 재사용
+
+
+def _cache_file(symbol: str, rng: str) -> Path:
+    safe = "".join(c if c.isalnum() or c in "-." else "_" for c in symbol)
+    return CACHE_DIR / f"{safe}_{rng}.json"
+
+
+def fetch_yahoo(symbol: str, rng: str = "10y", ttl: float | None = None) -> list[Bar]:
+    """야후 일봉. 원자료 JSON을 캐시해서 백테스트·분석이 다시 받지 않게 한다."""
+    ttl = CACHE_TTL if ttl is None else ttl
+    path = _cache_file(symbol, rng)
+    if ttl > 0 and path.exists() and time.time() - path.stat().st_mtime < ttl:
+        return parse_yahoo(json.loads(path.read_text()))
     # range=max는 야후가 월봉으로 내려주므로 기간을 직접 지정한다
     span = "period1=0&period2=9999999999" if rng == "max" else f"range={rng}"
     url = YAHOO_URL.format(sym=urllib.parse.quote(symbol), span=span)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as resp:
-        return parse_yahoo(json.load(resp))
+        payload = json.load(resp)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload))
+        tmp.replace(path)
+    except OSError:
+        pass  # 캐시 실패는 조회 결과에 영향이 없다
+    return parse_yahoo(payload)
 
 
 def summarize(bars: list[Bar], cci_n: int = 20) -> dict:

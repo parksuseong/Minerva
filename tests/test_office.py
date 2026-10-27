@@ -104,3 +104,13 @@ def test_office_panel_is_on_main_page():
     assert client.get("/static/office.js").status_code == 200
     assert client.get("/static/office.css").status_code == 200
     assert client.get("/office").status_code == 404
+
+
+def test_daily_endpoint_pending_then_data(tmp_path, monkeypatch):
+    out = tmp_path / "latest.json"
+    monkeypatch.setenv("MINERVA_DAILY_OUT", str(out))
+    client = TestClient(app)
+    assert client.get("/api/daily").json()["status"] == "pending"
+    out.write_text(json.dumps({"vix": {"regime": "R1"}, "assets": []}))
+    assert client.get("/api/daily").json()["vix"]["regime"] == "R1"
+    assert 'id="daily-list"' in client.get("/").text

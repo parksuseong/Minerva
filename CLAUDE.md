@@ -52,6 +52,11 @@ Minerva/
 - 지표 값은 `.venv/bin/python -m minerva.strategy.report <심볼...>`로 계산한다.
 - 규칙 검증은 `.venv/bin/python -m minerva.strategy.backtest <심볼...> --help` 참고.
 
+## 일일 분석 (메인 화면 "오늘의 전략")
+- `python -m minerva.strategy.daily --notify`: 관심 종목(`WATCHLIST`)에 검증된 규칙을 적용해 `~/.minerva/daily/latest.json`을 쓰고, 텔레그램으로 요약을 보낸다.
+- systemd 타이머 `minerva-daily.timer`가 매일 09:10(미국장·코인 확정), 16:30(국내장 확정) KST에 실행한다. 놓친 실행은 기동 직후 돈다.
+- 진행 중인 봉은 버린다(`completed`). 검증 규칙은 SPY·QQQ·SOXX 기준이고, 나머지 종목은 화면에 "미검증"으로 표시한다.
+
 ## 오피스 패널 (메인 화면 하단)
 - Claude와 서브에이전트가 일하는 모습을 보여준다. 코드: `static/office.{js,css}`, API `src/minerva/office.py`. 훅 `scripts/office_hook.py`가 `~/.minerva/office/events.jsonl`에 이벤트를 쌓는다.
 - 기록하는 건 이벤트 종류, 도구 이름, 짧은 라벨(Bash 설명, 파일 이름)뿐이다. 프롬프트·명령 원문·파일 내용은 기록하지 않는다.

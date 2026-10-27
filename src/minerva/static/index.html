@@ -40,6 +40,20 @@
     .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
     .dot.ok { background: #16a34a; }
     .dot.err { background: var(--up); }
+    .regime { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+    .chip { font-size: 12px; padding: 3px 8px; border-radius: 999px; background: var(--line); }
+    .chip.warn { background: #fde68a; color: #713f12; }
+    .chip.good { background: #bbf7d0; color: #14532d; }
+    .asset { padding: 10px 0; border-top: 1px solid var(--line); }
+    .asset-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .asset .px { font-variant-numeric: tabular-nums; }
+    .badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; margin-left: 6px;
+      border: 1px solid var(--line); color: var(--muted); }
+    .state { font-size: 13px; margin-top: 4px; }
+    .state.go { color: #16a34a; font-weight: 700; }
+    .state.hold { color: var(--accent); font-weight: 700; }
+    .detail { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .up { color: var(--up); } .down { color: var(--down); }
     footer { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0 24px; }
   </style>
 </head>
@@ -54,11 +68,11 @@
     <div class="status"><span id="dot" class="dot"></span><span id="status">확인 중…</span></div>
   </section>
 
-  <section class="card">
-    <h2>관심 종목</h2>
-    <div class="row"><div><div class="name">비트코인</div><div class="ticker">BTC</div></div><div class="placeholder">시세 연동 예정</div></div>
-    <div class="row"><div><div class="name">삼성전자</div><div class="ticker">005930</div></div><div class="placeholder">시세 연동 예정</div></div>
-    <div class="row"><div><div class="name">애플</div><div class="ticker">AAPL</div></div><div class="placeholder">시세 연동 예정</div></div>
+  <section class="card" id="daily">
+    <h2>📊 오늘의 전략</h2>
+    <div id="daily-meta" class="placeholder">불러오는 중…</div>
+    <div id="daily-list"></div>
+    <p class="placeholder" id="daily-note"></p>
   </section>
 
   <section id="office" aria-label="Claude 작업 현황">
@@ -105,6 +119,7 @@
         document.getElementById("status").textContent = "서버 연결 실패";
       });
   </script>
+  <script src="/static/daily.js"></script>
   <script src="/static/office.js"></script>
 </body>
 </html>

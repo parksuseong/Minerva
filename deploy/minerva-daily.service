@@ -1,0 +1,12 @@
+# 매일 일일 분석을 돌리고 텔레그램으로 요약을 보낸다. minerva-daily.timer가 실행한다.
+# 설치: sudo cp deploy/minerva-daily.* /etc/systemd/system/ && sudo systemctl enable --now minerva-daily.timer
+[Unit]
+Description=Minerva daily strategy analysis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.strategy.daily --notify

@@ -20,10 +20,11 @@ Minerva/
 ```
 
 ## 자주 쓰는 명령
-> TODO: 실제 툴체인 확정 후 채우기
-- 설치: `pip install -e ".[dev]"`
-- 테스트: `pytest`
-- 린트/포맷: `ruff check . && ruff format .`
+
+- 설치: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`
+- 테스트: `.venv/bin/pytest`
+- 린트/포맷: `.venv/bin/ruff check . && .venv/bin/ruff format .`
+- 서버 실행: `.venv/bin/uvicorn minerva.main:app --host 0.0.0.0 --port 8000` (포트 8000)
 
 ## 작업 원칙
 - 변경 전에 관련 코드를 먼저 읽고, 기존 스타일을 따른다.

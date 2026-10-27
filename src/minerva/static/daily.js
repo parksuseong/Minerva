@@ -18,9 +18,12 @@
       state = `<div class="state hold">🔵 보유 중 ${pct(tm.pnl)} · ${tm.days_left}거래일 남음</div>
         <div class="detail">진입 ${esc(tm.entry_day)} @ ${num(tm.entry)} · 손절 ${num(tm.stop)} · ${esc(tm.exit_rule)}</div>`;
     }
-    if (a.kind === "inv" && tm.state === "진입 신호") {
-      state = `<div class="state">⚠️ 참고 신호 (미검증) · ${esc(tm.entry)}</div>
-        <div class="detail">손절 ${num(tm.stop)} (−10%) · 최대 ${tm.max_days}거래일 · 백테스트 우위 없음</div>`;
+    if (a.kind && tm.state === "진입 신호") {
+      state = `<div class="state go">${a.kind === "inv" ? "🔻 숏 진입 신호" : "🟢 진입 신호"} · ${esc(tm.entry)}</div>
+        <div class="detail">${esc(tm.stop)} · 익절·청산: ${esc(tm.exit_rule)}</div>`;
+    } else if (a.kind && tm.state === "보유 중") {
+      state = `<div class="state hold">🔵 보유 중${tm.pnl == null ? "" : " " + pct(tm.pnl)} · ${tm.days_left}거래일 남음</div>
+        <div class="detail">진입 ${esc(tm.entry_day)} · ${esc(tm.stop)} · ${esc(tm.exit_rule)}</div>`;
     }
     if (tm.state === "규칙 없음") {
       state = `<div class="state">🚫 ${esc((tm.missing || []).join(", "))}</div>`;

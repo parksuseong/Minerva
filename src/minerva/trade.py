@@ -43,6 +43,10 @@ INVERSE_TOTAL = 0.20  # 인버스는 합계 20%까지 (risk-rules §1), 한 번�
 INDEX_ETFS = {"069500"}
 INVERSES = {"114800", "252670"}
 MAX_POSITIONS = 10  # 사용자 결정 2026-10-28
+# 대기 자금 파킹: 신호가 없는 동안 현금을 CD금리 ETF에 넣어 이자를 받는다. 신호가 오면 그날 판다.
+PARK_CODE = "357870"
+PARK_NAME = "TIGER CD금리투자KIS"
+PARK_RESERVE = 0.02  # 평가액의 2%는 현금으로 남긴다 (수수료·소액 주문 여유)
 TRIM_AT = 1.5  # 한도의 1.5배를 넘으면 한도까지 던다
 ROTATE_MIN_DAYS = 5  # 산 지 5일(달력) 안 된 종목은 교체하지 않는다 (잦은 매매 방지)
 ROTATE_P_RATIO = 0.5  # 새 신호의 p값이 보유 종목의 절반 이하여야 교체한다
@@ -157,6 +161,7 @@ def plan(
     today: str | None = None,
     allow_buys: bool = True,
     allow_rotate: bool = True,
+    park_qty: int = 0,
 ) -> tuple[list[dict], list[str]]:
     """일일 분석 + 계좌 → (낼 주문, 건너뛴 이유). 매도를 먼저 둔다.
 
@@ -245,6 +250,11 @@ def plan(
     budget = account.get("cash_d2", 0) + sum(
         q * (held[c].get("price") or 0) for c, q in selling.items()
     )
+    # 파킹해 둔 CD금리 ETF도 현금으로 본다. 모자라면 필요한 만큼 팔아 쓴다 (아래 UNPARK)
+    park_px = (held.get(PARK_CODE) or {}).get("price") or 0
+    park_qty = min(park_qty, (held.get(PARK_CODE) or {}).get("qty", 0))
+    cash_only = budget
+    budget += park_qty * park_px
 
     def rank(a: dict) -> tuple:
         p = a.get("p_value")
@@ -322,6 +332,16 @@ def plan(
             budget, slots = cash - qty * price, free - 1
         else:
             skipped.append(f"{a['name']}: 예수금·자리 부족 (교체할 만큼 약한 보유 종목 없음)")
+    # 매수에 드는 돈이 현금(+매도 대금)보다 많으면 파킹 ETF를 그만큼 판다
+    need = sum(
+        o["qty"] * (o.get("ref_price") or 0) * GAP_BUFFER for o in orders if o["side"] == "buy"
+    )
+    short = need - cash_only
+    if short > 0 and park_qty and park_px:
+        qty = min(park_qty, math.ceil(short * 1.01 / park_px))
+        o = _order("sell", {"name": PARK_NAME, "action": "UNPARK", "date": today}, PARK_CODE, qty)
+        o["kind"] = "park"
+        orders.insert(0, o)
     return orders, skipped
 
 
@@ -462,6 +482,8 @@ REASON = {
     "ROTATE": "교체",
     "STOP": "손절",
     "SELFTEST": "시험",
+    "PARK": "대기 자금 파킹",
+    "UNPARK": "파킹 해제",
 }
 
 
@@ -505,8 +527,14 @@ def run_open(now: datetime | None = None) -> list[dict]:
     done = {e["key"] for e in _read_journal()}
     live = mode() == "live"
     # 09:02엔 교체하지 않는다: 그 자리에서 판 돈은 매수 가능 금액에 바로 안 잡힌다
+    park = _load(TRADE_DIR / "park.json", {}).get("qty", 0)
     orders, skipped = plan(
-        daily, account, owned, allow_buys=not check_drawdown(account), allow_rotate=pre_open
+        daily,
+        account,
+        owned,
+        allow_buys=not check_drawdown(account),
+        allow_rotate=pre_open,
+        park_qty=park,
     )
     # 매도가 있으면 매수는 매도가 체결된 뒤(09:02 실행)로 미뤄 매도 대금으로 산다
     if pre_open and any(o["side"] == "sell" for o in orders):
@@ -531,13 +559,20 @@ def run_open(now: datetime | None = None) -> list[dict]:
             _journal(r)
             results.append(r)
             if r["result"] == "sent":
-                _track(owned, r)
-                _save(TRADE_DIR / "positions.json", owned)  # 중간에 오류가 나도 낸 주문은 남긴다
+                if o["code"] == PARK_CODE:
+                    _park_add(-r["qty"])
+                else:
+                    _track(owned, r)
+                    _save(TRADE_DIR / "positions.json", owned)  # 중간에 오류가 나도 남긴다
+        if not pre_open and live:
+            r = park_idle_cash(cfg, now, done)
+            if r:
+                results.append(r)
     finally:
         _save(TRADE_DIR / "positions.json", owned)
     if not pre_open and not results:
         return results
-    head = ("🛒 오늘 주문" if pre_open else "🛒 매도 체결 뒤 매수 (09:02)") + (
+    head = ("🛒 오늘 주문" if pre_open else "🛒 09:02 주문 (매도 뒤 매수·대기 자금 파킹)") + (
         "" if live else " (모의 실행: 실제 주문 안 냄)"
     )
     lines = [_line(r) for r in results] or ["낼 주문 없음"]
@@ -545,6 +580,58 @@ def run_open(now: datetime | None = None) -> list[dict]:
         lines += ["", "건너뜀:"] + [f"· {s}" for s in skipped]
     notify.send("\n".join([head, f"레짐 {daily.get('vix', {}).get('regime')}", *lines]))
     return results
+
+
+def _park_add(qty: int) -> None:
+    park = _load(TRADE_DIR / "park.json", {})
+    park["qty"] = max(park.get("qty", 0) + qty, 0)
+    _save(TRADE_DIR / "park.json", park)
+
+
+def quote(cfg: dict, code: str) -> float:
+    """현재가 (조회 전용)."""
+    pages = kis._get(
+        cfg,
+        kis.access_token(cfg),
+        "/uapi/domestic-stock/v1/quotations/inquire-price",
+        "FHKST01010100",
+        {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
+        max_pages=1,
+    )
+    return kis._num((pages[0].get("output") or {}).get("stck_prpr"))
+
+
+def park_idle_cash(cfg: dict, now: datetime, done: set[str]) -> dict | None:
+    """09:02 매수가 끝난 뒤 남은 현금을 CD금리 ETF에 넣는다. 하루 한 번."""
+    if halted():
+        return None
+    o = {
+        "side": "buy",
+        "code": PARK_CODE,
+        "name": PARK_NAME,
+        "qty": 0,
+        "action": "PARK",
+        "signal_date": now.strftime("%Y-%m-%d") + "-park",
+        "kind": "park",
+    }
+    key = order_key(o)
+    if key in done:
+        return None
+    account = kis.snapshot(cfg, now)
+    price = quote(cfg, PARK_CODE)
+    if not price:
+        return None
+    idle = account.get("cash_d2", 0) - account.get("equity", 0) * PARK_RESERVE
+    want = math.floor(idle / (price * 1.002))
+    o["qty"] = min(want, buyable_qty(cfg, kis.access_token(cfg), PARK_CODE, price * 1.002))
+    if o["qty"] < 1:
+        return None
+    r = send_order(cfg, o, live=True)
+    r["key"], r["at"] = key, now.isoformat(timespec="seconds")
+    _journal(r)
+    if r["result"] == "sent":
+        _park_add(r["qty"])
+    return r
 
 
 def _track(owned: dict, r: dict) -> None:

@@ -32,7 +32,7 @@ def audit(journal: list[dict], owned: dict, account: dict, mode: str, day: str) 
     sent = [e for e in real if e.get("result") in ("sent", "dry")]
 
     for e in sent:
-        if e["side"] == "buy" and e.get("action") not in trade.ENTRY:
+        if e["side"] == "buy" and e.get("action") not in (*trade.ENTRY, "PARK"):
             add("error", f"{e['name']}: 진입 신호가 아닌 매수 ({e.get('action')})")
         if not str(e.get("code", "")).isdigit():
             add("error", f"{e['name']}: 국내 종목 코드가 아님 ({e.get('code')})")

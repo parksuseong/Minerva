@@ -199,7 +199,8 @@ def parse_orders(pages: list[dict]) -> tuple[list[dict], list[dict]]:
                 "code": r.get("pdno", ""),
                 "side": r.get("sll_buy_dvsn_cd_name", "").strip(),
                 "qty": qty,
-                "price": _num(r.get("ord_unpr")),
+                # 시장가 주문은 주문 단가가 0이라 체결 평균가를 보여준다
+                "price": _num(r.get("ord_unpr")) or _num(r.get("avg_prvs")),
                 "status": status,
             }
             orders.append(row)

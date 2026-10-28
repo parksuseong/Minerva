@@ -41,7 +41,7 @@ WEIGHT = 0.20  # 개별 종목당 계좌 평가액 대비 (risk-rules §1)
 INDEX_ETF_WEIGHT = 0.40  # 지수 ETF는 분산돼 있어 개별주보다 크게 둔다
 INVERSE_TOTAL = 0.20  # 인버스는 합계 20%까지 (risk-rules §1), 한 번에 한 상품만
 INDEX_ETFS = {"069500"}
-INVERSES = {"114800", "252670"}
+INVERSES = {"114800"}
 MAX_POSITIONS = 10  # 사용자 결정 2026-10-28
 # 대기 자금 파킹: 신호가 없는 동안 현금을 CD금리 ETF에 넣어 이자를 받는다. 신호가 오면 그날 판다.
 PARK_CODE = "357870"
@@ -56,7 +56,6 @@ REGIME_FACTOR = {"R0": 1.0, "R1": 1.0, "R2": 1 / 2, "R3": 1 / 3}
 GAP_BUFFER = 1.03  # 시가가 전일 종가보다 높게 열려도 예수금을 넘지 않게
 LONG_STOP = 0.10  # 롱: 매입가 −10%
 SHORT_STOP = 0.07  # 인버스: 기초자산 +7% ≈ 인버스 −7%×배수
-LEVERAGE = {"252670": 2}
 ENTRY = ("LONG_ENTRY", "BUY")
 EXIT = ("LONG_EXIT", "SELL")
 RETRIES = 3
@@ -669,7 +668,7 @@ def _read_journal() -> list[dict]:
 
 def stop_price(kind: str, code: str, avg: float) -> float:
     if kind == "inverse":
-        return avg * (1 - SHORT_STOP * LEVERAGE.get(code, 1))
+        return avg * (1 - SHORT_STOP)
     return avg * (1 - LONG_STOP)
 
 

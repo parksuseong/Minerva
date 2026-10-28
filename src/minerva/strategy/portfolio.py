@@ -98,7 +98,7 @@ def load_universe(daily: dict, vix: list[Bar], codes: set[str] | None = None) ->
         side = "short" if p.get("kind") == "inv" else "long"
         v = p.get("verify", {}).get(side, {})
         code = p["symbol"].split(".")[0]
-        if v.get("label") != "검증됨" or code == "252670":  # 인버스는 1배만 운용
+        if v.get("label") != "검증됨":
             continue
         prices = dm.completed(fetch_yahoo(p["symbol"], "max"), "KR")
         entry, take = _signals_for(idx, "long" if side == "long" else "inv", vix)

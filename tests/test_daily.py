@@ -100,9 +100,9 @@ def test_inverse_follows_underlying_short(monkeypatch):
     inv = daily.Asset("QID", "QID", "US", "inv", "QQQ", -2)
     out = daily.product_status(inv, bars, {"QQQ": "나스닥100"})
     assert out["tm"]["state"] == "진입 신호" and out["underlying"] == "나스닥100"
-    # 레버리지 롱은 다루지 않는다: 인버스는 2배까지, 지수 ETF는 1배만
+    # 레버리지·곱버스는 다루지 않는다: 인버스도 지수 ETF도 1배만
     assert all(
-        (p.kind == "inv" and abs(p.mult) <= 2) or (p.kind == "etf" and p.mult == 1)
+        (p.kind == "inv" and p.mult == -1) or (p.kind == "etf" and p.mult == 1)
         for p in daily.PRODUCTS
     )
 

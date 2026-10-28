@@ -40,7 +40,13 @@ def test_fear_signal_detected_on_entry_day():
 def _data(**kw):
     base = {
         "generated_at": "2026-10-28T09:10",
-        "vix": {"close": 18.4, "regime": "R2", "size_limit": "계획의 1/2", "ma50": 16.0},
+        "vix": {
+            "close": 18.4,
+            "regime": "R2",
+            "size_limit": "계획의 1/2",
+            "ma50": 16.0,
+            "gate": {"w5": 17.2, "w10": 16.1, "open": False},
+        },
         "fear": {"state": "없음", "premium": -0.08},
         "assets": [],
         "actions": [],
@@ -51,7 +57,7 @@ def _data(**kw):
 
 def test_telegram_without_actions_says_nothing_to_do():
     text = telegram_summary(_data())
-    assert "오늘 할 일: 없음" in text and "R2" in text
+    assert "오늘 할 일: 없음" in text and "17.2/16.1 닫힘" in text
 
 
 def test_actions_from_entries_and_exits():
@@ -153,8 +159,8 @@ def test_wait_levels_give_prices_and_dates():
         Bar(date(2025, 1, 1) + timedelta(days=i), 100 + i, 101 + i, 99 + i, 100 + i)
         for i in range(400)
     ]
-    lv = wait_levels(bars, "long", 16.0)
-    assert "16.00" in lv["VIX 평온(R0·R1)"] and "확정" in lv["주봉 20주선 위"]
+    lv = wait_levels(bars, "long", {"w5": 18.0, "w10": 16.0})
+    assert "16.00" in lv["VIX 주봉 5<10"] and "확정" in lv["주봉 20주선 위"]
     assert "아래로" in wait_levels(bars, "short")["50일선 아래"]
 
 
@@ -213,7 +219,22 @@ def test_regime_uses_only_vix_known_before_korean_close(monkeypatch):
 
     regs = {date(2026, 10, 26): "R0", date(2026, 10, 27): "R3"}
     monkeypatch.setattr(daily, "vix_regimes", lambda vix: regs)
+    monkeypatch.setattr(daily, "weekly_gate_at", lambda weekly, day: (None, None, False))
     kr = [Bar(date(2026, 10, 27), 1, 1, 1, 1), Bar(date(2026, 10, 28), 1, 1, 1, 1)]
     out = daily._regime_by_day([], kr)
-    # 10/27 미국 마감(R3)은 한국 10/27 장이 끝난 뒤에 나온다
-    assert out == {date(2026, 10, 27): "R0", date(2026, 10, 28): "R3"}
+    # 10/27 미국 마감(R3)은 한국 10/27 장이 끝난 뒤에 나온다 (관문 닫힘이라 R0은 R2로)
+    assert out == {date(2026, 10, 27): "R2", date(2026, 10, 28): "R3"}
+
+
+def test_weekly_gate_uses_last_completed_week_only():
+    from datetime import date
+
+    from minerva.strategy.regime import gated_regime, weekly_gate_at
+
+    weekly = [(date(2026, 10, 16), 18.0, 16.0), (date(2026, 10, 23), 15.0, 16.0)]
+    weekly.append((date(2026, 10, 28), 20.0, 16.0))  # 진행 중인 이번 주는 보지 않는다
+    assert weekly_gate_at(weekly, date(2026, 10, 28)) == (15.0, 16.0, True)
+    assert weekly_gate_at(weekly, date(2026, 10, 21)) == (18.0, 16.0, False)
+    # 관문이 열리면 매수 허용(R0·R1), 닫히면 일봉 레짐과 상관없이 막는다
+    assert gated_regime("R2", True) == "R1" and gated_regime("R0", True) == "R0"
+    assert gated_regime("R0", False) == "R2" and gated_regime("R3", False) == "R3"

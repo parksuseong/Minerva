@@ -6,12 +6,40 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, timedelta
 
 from minerva.strategy.indicators import Bar, resample, sma
 
 SPIKE_RATIO = 1.3  # 50일선 대비 이만큼 높으면 스파이크
 SPIKE_LOOKBACK = 20
+
+
+def vix_weekly(vix: Sequence[Bar]) -> list[tuple[date, float | None, float | None]]:
+    """VIX 주봉별 (그 주 마지막 거래일, 5주선, 10주선)."""
+    wk = resample(vix, "W")
+    closes = [b.close for b in wk]
+    return list(zip([b.day for b in wk], sma(closes, 5), sma(closes, 10)))
+
+
+def weekly_gate_at(weekly: list[tuple[date, float | None, float | None]], day: date) -> tuple:
+    """그 날짜에 알 수 있던 VIX 주봉 (5주선, 10주선, 매수 허용 여부).
+
+    지난주까지 마감된 주봉만 쓴다. 이번 주 봉은 진행 중이라 미래 정보다.
+    5주선이 10주선 아래(데드크로스 상태)면 매수를 허용한다.
+    """
+    monday = day - timedelta(days=day.weekday())
+    done = [w for w in weekly if w[0] < monday]
+    if not done or done[-1][1] is None or done[-1][2] is None:
+        return None, None, False
+    _, w5, w10 = done[-1]
+    return w5, w10, w5 < w10
+
+
+def gated_regime(raw: str | None, calm: bool) -> str:
+    """일봉 레짐에 주봉 5<10 관문을 씌운다: 관문이 열리면 R0·R1(매수 허용), 닫히면 R2·R3."""
+    if calm:
+        return raw if raw in ("R0", "R1") else "R1"
+    return raw if raw in ("R2", "R3") else "R2"
 
 
 def vix_regimes(vix: Sequence[Bar]) -> dict[date, str]:

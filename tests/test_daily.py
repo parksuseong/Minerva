@@ -82,10 +82,11 @@ def test_actions_from_entries_and_exits():
         "tm": {"state": "진입 신호", "stop_px": 107},
     }
     acts = make_actions([asset], [inv])
-    assert [a["action"] for a in acts] == ["BUY", "LONG_ENTRY", "SHORT_EXIT"]
-    assert acts[0]["stop"] == 107 and acts[1]["stop"] == 90 and not acts[2]["verified"]
+    # 종목 자체 숏(SHORT_*)은 실행할 수 없어 주문 목록에 넣지 않는다
+    assert [a["action"] for a in acts] == ["BUY", "LONG_ENTRY"]
+    assert acts[0]["stop"] == 107 and acts[1]["stop"] == 90
     text = telegram_summary(_data(actions=acts))
-    assert "🎯 오늘 할 일 3건" in text and "롱 진입 SPY [✅]" in text
+    assert "🎯 오늘 할 일 2건" in text and "롱 진입 SPY [✅]" in text
 
 
 def test_inverse_follows_underlying_short(monkeypatch):

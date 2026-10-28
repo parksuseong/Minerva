@@ -174,8 +174,7 @@ def test_watch_sets_stop_then_sells(tmp_path, monkeypatch):
     assert r[0]["side"] == "sell" and r[0]["qty"] == 3 and r[0]["result"] == "dry"
 
 
-def test_inverse_stop_scales_with_leverage():
-    assert trade.stop_price("inverse", "252670", 1000) == pytest.approx(860)
+def test_inverse_stop():
     assert trade.stop_price("inverse", "114800", 1000) == pytest.approx(930)
 
 
@@ -364,26 +363,23 @@ def test_priority_spends_cash_on_strongest_evidence_first():
     assert any("약함" in s for s in skipped)
 
 
-def test_index_etf_gets_larger_weight_and_inverse_only_one():
+def test_index_etf_gets_larger_weight():
     etf = _act("LONG_ENTRY", "069500.KS", "KODEX 200", ref=88905)
     inv1 = {**_act("BUY", "114800.KS", "KODEX 인버스", ref=1600), "p_value": 0.01}
-    inv2 = {**_act("BUY", "252670.KS", "곱버스", ref=600), "p_value": 0.01}
-    orders, skipped = trade.plan(_daily([inv2, etf, inv1]), ACCOUNT, {})
+    orders, _ = trade.plan(_daily([etf, inv1]), ACCOUNT, {})
     by = {o["code"]: o["qty"] for o in orders}
     assert by["069500"] == math.floor(400_000 / (88905 * trade.GAP_BUFFER))  # 40%
-    assert "114800" in by and "252670" not in by  # 같은 신호면 1배 하나만
     assert by["114800"] == math.floor(200_000 / (1600 * trade.GAP_BUFFER))
-    assert any("곱버스" in s and "한 상품만" in s for s in skipped)
 
 
-def test_inverse_held_blocks_another_inverse():
+def test_inverse_held_is_not_bought_again():
     account = {
         **ACCOUNT,
-        "positions": [{"code": "252670", "qty": 300, "price": 600, "value": 180_000}],
+        "positions": [{"code": "114800", "qty": 120, "price": 1600, "value": 192_000}],
     }
     inv1 = _act("BUY", "114800.KS", "KODEX 인버스", ref=1600)
     orders, skipped = trade.plan(_daily([inv1]), account, {})
-    assert orders == [] and any("한 상품만" in s for s in skipped)
+    assert orders == [] and any("이미 보유" in s for s in skipped)
 
 
 def test_rebalance_trims_overweight_bot_position_only():
@@ -509,9 +505,9 @@ def test_switch_only_when_inverse_buy_is_possible():
         "005930": {"name": "삼성", "kind": "long", "qty": 3},
         "114800": {"name": "인버스", "kind": "inverse", "qty": 120},
     }
-    daily = _daily([_act("BUY", "252670.KS", "곱버스", ref=600)])
+    daily = _daily([_act("BUY", "114800.KS", "KODEX 인버스", ref=1600)])
     orders, _ = trade.plan(daily, account, owned)
-    assert orders == []  # 인버스 한도가 이미 찼으니 롱을 팔지 않는다
+    assert orders == []  # 인버스를 이미 들고 있으니 롱을 팔지 않는다
 
 
 def test_drawdown_block_keeps_exits_but_drops_switch_and_buys():

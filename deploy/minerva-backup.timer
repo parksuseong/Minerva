@@ -1,0 +1,9 @@
+# 평일 16:10 (대사·점검 뒤) 하루 한 번.
+[Unit]
+Description=Back up Minerva state at 16:10 KST on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:10:00 Asia/Seoul
+
+[Install]
+WantedBy=timers.target

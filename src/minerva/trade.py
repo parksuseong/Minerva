@@ -6,6 +6,11 @@
 
 - `open`  (평일 08:50): 전날 일일 분석의 국내·검증됨 신호로 장전 동시호가 시장가 주문
 - `watch` (장중 30초): 이 봇이 산 종목만 손절가 감시, 닿으면 시장가 매도
+- `reconcile` (평일 15:45): 봇 보유 목록과 실제 잔고를 맞춘다 (미체결·직접 매도 정리)
+- `selftest --yes` (장중, 수동): 1주 사고 바로 팔아 주문 경로를 확인한다 (모드와 무관하게 실주문)
+
+계좌 평가액이 고점 대비 DRAWDOWN_LIMIT 넘게 빠지면 `NO_ENTRY` 파일을 만들어 신규 매수만 막는다.
+손절·청산 매도는 계속한다. 입출금도 평가액을 바꾸므로 출금 뒤엔 `peak.json`을 지운다.
 
 사용자가 직접 산 종목은 건드리지 않는다. 봇이 산 종목은 `positions.json`에 적어 둔다.
 """
@@ -43,6 +48,8 @@ EXIT = ("LONG_EXIT", "SELL")
 RETRIES = 3
 RETRY_GAP = 10
 MAX_SIGNAL_AGE = timedelta(days=4)  # 주말·연휴를 넘긴 낡은 신호로는 주문하지 않는다
+DRAWDOWN_LIMIT = 0.15
+SELFTEST_CODE = "114800"  # KODEX 인버스: 1주가 싸고 거래가 많다
 
 
 def _load(path: Path, default):
@@ -60,6 +67,46 @@ def mode() -> str:
 
 def halted() -> bool:
     return (TRADE_DIR / "HALT").exists()
+
+
+def entries_blocked() -> bool:
+    return (TRADE_DIR / "NO_ENTRY").exists()
+
+
+def check_drawdown(account: dict) -> bool:
+    """고점 평가액을 갱신하고, 한도를 넘게 빠졌으면 신규 매수를 막는다. 막혔으면 True."""
+    equity = account.get("equity") or 0
+    if equity <= 0:
+        return entries_blocked()
+    peak_file = TRADE_DIR / "peak.json"
+    peak = _load(peak_file, {}).get("equity", 0)
+    if equity > peak:
+        _save(peak_file, {"equity": equity, "at": account.get("updated_at")})
+    elif equity < peak * (1 - DRAWDOWN_LIMIT) and not entries_blocked():
+        kis._write_private(TRADE_DIR / "NO_ENTRY", f"{account.get('updated_at')} {equity}\n")
+        notify.send(
+            f"🚨 계좌 평가액 {equity:,.0f}원, 고점 {peak:,.0f}원 대비 "
+            f"{equity / peak - 1:.1%} → 신규 매수를 멈춰요 (손절·청산은 계속)\n"
+            "다시 열려면 ~/.minerva/trade/NO_ENTRY 삭제"
+        )
+    return entries_blocked()
+
+
+def is_open_day(cfg: dict, day: datetime) -> bool | None:
+    """한국투자 휴장일 조회. 모르면 None (그땐 주문을 막지 않고 증권사 거부에 맡긴다)."""
+    ymd = day.strftime("%Y%m%d")
+    pages = kis._get(
+        cfg,
+        kis.access_token(cfg),
+        "/uapi/domestic-stock/v1/quotations/chk-holiday",
+        "CTCA0903R",
+        {"BASS_DT": ymd, "CTX_AREA_NK": "", "CTX_AREA_FK": ""},
+        max_pages=1,
+    )
+    for r in pages[0].get("output") or []:
+        if r.get("bass_dt") == ymd:
+            return r.get("opnd_yn") == "Y"
+    return None
 
 
 def code_of(symbol: str) -> str:
@@ -237,11 +284,24 @@ def run_open(now: datetime | None = None) -> list[dict]:
         notify.send(f"⚠️ 일일 분석이 오래돼서({daily['generated_at']}) 주문을 내지 않았어요")
         return []
     cfg = kis.load_config()
+    try:
+        open_day = is_open_day(cfg, now)
+    except kis.KisError as e:
+        log.warning("holiday check failed: %s", e)
+        open_day = None
+    if open_day is False:
+        notify.send(f"📅 {now:%m/%d}은 휴장일이라 주문을 내지 않아요")
+        return []
     account = kis._snapshot(cfg, now)
     owned = _load(TRADE_DIR / "positions.json", {})
     done = {e["key"] for e in _read_journal() if e.get("result") in ("sent", "dry")}
     live = mode() == "live"
     orders, skipped = plan(daily, account, owned)
+    if check_drawdown(account):
+        skipped += [
+            f"{o['name']}: 계좌 손실 한도로 신규 매수 중지" for o in orders if o["side"] == "buy"
+        ]
+        orders = [o for o in orders if o["side"] == "sell"]
     results = []
     for o in orders:
         key = order_key(o)
@@ -297,6 +357,9 @@ def run_watch(account: dict | None = None) -> list[dict]:
     """봇이 산 종목만 손절가 감시. 계좌 스냅숏(30초마다 갱신)의 현재가를 쓴다."""
     if halted():
         return []
+    latest = kis.STATE_DIR / "latest.json"
+    if account is None and latest.exists():
+        check_drawdown(json.loads(latest.read_text()))  # 30초 스냅숏으로 API 호출 없이
     owned = _load(TRADE_DIR / "positions.json", {})
     if not owned:
         return []
@@ -339,6 +402,80 @@ def run_watch(account: dict | None = None) -> list[dict]:
     return results
 
 
+def run_reconcile(now: datetime | None = None) -> list[str]:
+    """장 마감 뒤 봇 보유 목록을 실제 잔고와 맞춘다. 맞춘 내용을 알린다."""
+    now = now or datetime.now(kis.KST)
+    cfg = kis.load_config()
+    account = kis._snapshot(cfg, now)
+    check_drawdown(account)
+    held = {p["code"]: p for p in account.get("positions", [])}
+    status = {o["code"]: o["status"] for o in reversed(account.get("orders", []))}
+    owned = _load(TRADE_DIR / "positions.json", {})
+    notes = []
+    for code, pos in list(owned.items()):
+        if code not in held:
+            owned.pop(code)
+            why = status.get(code, "오늘 주문 내역 없음 → 직접 매도한 것으로 봄")
+            notes.append(f"• {pos['name']}: 잔고에 없음 ({why}) → 봇 목록에서 뺌")
+    today = now.strftime("%Y-%m-%d")
+    for e in _read_journal():
+        sold_today = e.get("side") == "sell" and e.get("result") == "sent"
+        if sold_today and str(e.get("at", "")).startswith(today) and e["code"] in held:
+            if e["code"] not in owned:
+                owned[e["code"]] = {
+                    "name": e["name"],
+                    "kind": e.get("kind", "long"),
+                    "opened": "?",
+                    "stop": None,  # watch가 평균가로 다시 정한다
+                }
+            left = held[e["code"]]["qty"]
+            notes.append(f"• {e['name']}: 매도 접수했지만 {left}주 남음 → 다시 감시 (확인 필요)")
+    _save(TRADE_DIR / "positions.json", owned)
+    if notes:
+        notify.send("🧾 장 마감 대사\n" + "\n".join(notes))
+    return notes
+
+
+def run_selftest(code: str = SELFTEST_CODE, wait: float = 90) -> list[dict]:
+    """1주 시장가 매수 → 체결 확인 → 1주 시장가 매도. 주문 경로를 실제로 확인한다."""
+    now = datetime.now(kis.KST)
+    if not (9 * 60 + 5 <= now.hour * 60 + now.minute <= 15 * 60 + 15):
+        raise ValueError("시험 주문은 장중(09:05~15:15)에만 한다")
+    cfg = kis.load_config()
+    before = {p["code"]: p["qty"] for p in kis._snapshot(cfg)["positions"]}.get(code, 0)
+    results = []
+    for side, target in (("buy", before + 1), ("sell", before)):
+        o = {
+            "side": side,
+            "code": code,
+            "name": "시험주문",
+            "qty": 1,
+            "action": "SELFTEST",
+            "signal_date": now.strftime("%Y-%m-%d"),
+            "kind": "test",
+        }
+        r = send_order(cfg, o, live=True)
+        r["key"], r["at"] = f"selftest:{order_key(o)}", datetime.now(kis.KST).isoformat()
+        _journal(r)
+        results.append(r)
+        if r["result"] != "sent":
+            break
+        deadline = time.time() + wait
+        qty = None
+        while time.time() < deadline:
+            time.sleep(5)
+            qty = {p["code"]: p["qty"] for p in kis._snapshot(cfg)["positions"]}.get(code, 0)
+            if qty == target:
+                break
+        r["filled"] = qty == target
+        if not r["filled"]:
+            break
+    ok = len(results) == 2 and all(r.get("filled") for r in results)
+    lines = [_line(r) + (" · 체결 확인" if r.get("filled") else " · 체결 미확인") for r in results]
+    notify.send(("✅ 시험 주문 성공" if ok else "❌ 시험 주문 확인 필요") + "\n" + "\n".join(lines))
+    return results
+
+
 def run_preview() -> list[dict]:
     """16:30 분석 뒤: 내일 08:50에 낼 주문을 미리 알린다 (주문 안 냄)."""
     daily = _load(DAILY_FILE, {})
@@ -359,7 +496,13 @@ def run_preview() -> list[dict]:
     return orders
 
 
-COMMANDS = {"open": run_open, "watch": run_watch, "preview": run_preview}
+COMMANDS = {
+    "open": run_open,
+    "watch": run_watch,
+    "preview": run_preview,
+    "reconcile": run_reconcile,
+    "selftest": run_selftest,
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -367,8 +510,11 @@ def main(argv: list[str] | None = None) -> int:
         description="국내 주식 자동 주문 (mode 파일이 live일 때만 실주문)"
     )
     parser.add_argument("command", choices=sorted(COMMANDS))
+    parser.add_argument("--yes", action="store_true", help="selftest: 실주문을 낸다는 확인")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
+    if args.command == "selftest" and not args.yes:
+        parser.error("selftest는 실제 주문을 낸다. --yes 를 붙여야 실행한다")
     try:
         results = COMMANDS[args.command]()
     except (kis.KisError, OSError, KeyError, ValueError) as e:

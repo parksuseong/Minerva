@@ -104,10 +104,12 @@ def access_token(cfg: dict, now: datetime | None = None) -> str:
     return data["access_token"]
 
 
-def _get(cfg: dict, token: str, path: str, tr_id: str, params: dict) -> list[dict]:
+def _get(
+    cfg: dict, token: str, path: str, tr_id: str, params: dict, max_pages: int = MAX_PAGES
+) -> list[dict]:
     """연속 조회(tr_cont)를 따라가며 응답 페이지를 모두 돌려준다."""
     pages, cont = [], ""
-    for _ in range(MAX_PAGES):
+    for _ in range(max_pages):
         req = urllib.request.Request(
             BASE + path + "?" + urllib.parse.urlencode(params),
             headers={

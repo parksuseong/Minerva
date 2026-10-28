@@ -7,6 +7,7 @@ from minerva import kis, trade
 
 CFG = {"cano": "12345678", "prd": "01", "app_key": "k", "app_secret": "s"}
 NOW = datetime(2026, 10, 29, 8, 50, tzinfo=kis.KST)
+REAL_IS_OPEN_DAY = trade.is_open_day  # autouse 픽스처가 가리기 전 원본
 
 
 def _act(action, symbol, name, verified=True, market="KR", ref=10000):
@@ -34,6 +35,10 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(trade, "TRADE_DIR", tmp_path)
     monkeypatch.setattr(trade.time, "sleep", lambda s: None)
     monkeypatch.setattr(trade.notify, "send", lambda text: True)
+    monkeypatch.setattr(trade, "is_open_day", lambda cfg, day: True)
+    monkeypatch.setattr(kis, "STATE_DIR", tmp_path / "account")
+    # 테스트가 실제 증권사 API를 부르면 바로 실패시킨다
+    monkeypatch.setattr(kis, "_request", lambda req: pytest.fail("network call in test"))
 
 
 def test_plan_only_domestic_verified_entries():
@@ -187,3 +192,76 @@ def test_trade_api_reads_state(tmp_path, monkeypatch):
     d = client.get("/api/trade").json()
     assert d["mode"] == "live" and [o["key"] for o in d["orders"]] == ["b", "a"]
     assert "/static/trade.js" in client.get("/").text
+
+
+def test_run_open_skips_holiday(tmp_path, monkeypatch):
+    (tmp_path / "daily.json").write_text(json.dumps(_daily([_act("LONG_ENTRY", "005930.KS", "A")])))
+    monkeypatch.setattr(trade, "DAILY_FILE", tmp_path / "daily.json")
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(trade, "is_open_day", lambda cfg, day: False)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: pytest.fail("no orders"))
+    assert trade.run_open(NOW) == []
+
+
+def test_drawdown_blocks_only_new_buys(tmp_path, monkeypatch):
+    acc = {**ACCOUNT, "positions": [{"code": "035420", "qty": 2}]}
+    assert trade.check_drawdown(acc) is False  # 첫 고점 기록
+    low = {**acc, "equity": 800_000}
+    assert trade.check_drawdown(low) is True and (tmp_path / "NO_ENTRY").exists()
+    daily = _daily([_act("LONG_ENTRY", "005930.KS", "A"), _act("LONG_EXIT", "035420.KS", "N")])
+    (tmp_path / "daily.json").write_text(json.dumps(daily))
+    (tmp_path / "positions.json").write_text(json.dumps({"035420": {"name": "N", "kind": "long"}}))
+    monkeypatch.setattr(trade, "DAILY_FILE", tmp_path / "daily.json")
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: low)
+    assert [(r["code"], r["side"]) for r in trade.run_open(NOW)] == [("035420", "sell")]
+
+
+def test_drawdown_raises_peak():
+    trade.check_drawdown({"equity": 100})
+    trade.check_drawdown({"equity": 200})
+    assert trade.check_drawdown({"equity": 175}) is False  # −12.5%
+
+
+def test_reconcile_drops_unfilled_and_rewatches_unsold(tmp_path, monkeypatch):
+    (tmp_path / "positions.json").write_text(
+        json.dumps({"005930": {"name": "A", "kind": "long", "stop": None}})
+    )
+    (tmp_path / "journal.jsonl").write_text(
+        json.dumps(
+            {
+                "side": "sell",
+                "result": "sent",
+                "code": "035420",
+                "name": "N",
+                "at": "2026-10-29T08:50:00",
+            }
+        )
+        + "\n"
+    )
+    acc = {
+        **ACCOUNT,
+        "positions": [{"code": "035420", "qty": 2}],
+        "orders": [{"code": "005930", "status": "미체결"}],
+    }
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: acc)
+    notes = trade.run_reconcile(NOW)
+    owned = json.loads((tmp_path / "positions.json").read_text())
+    assert list(owned) == ["035420"] and owned["035420"]["stop"] is None
+    assert any("미체결" in n for n in notes) and any("2주 남음" in n for n in notes)
+
+
+def test_selftest_requires_yes_flag(capsys):
+    with pytest.raises(SystemExit):
+        trade.main(["selftest"])
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_is_open_day_parses_holiday_api(monkeypatch):
+    monkeypatch.setattr(kis, "access_token", lambda cfg, now=None: "t")
+    out = [{"bass_dt": "20261029", "opnd_yn": "Y"}, {"bass_dt": "20261031", "opnd_yn": "N"}]
+    monkeypatch.setattr(kis, "_request", lambda req: ({"rt_cd": "0", "output": out}, {}))
+    monkeypatch.setattr(kis.time, "sleep", lambda s: None)
+    assert REAL_IS_OPEN_DAY(CFG, NOW) is True
+    assert REAL_IS_OPEN_DAY(CFG, datetime(2026, 10, 31, tzinfo=kis.KST)) is False

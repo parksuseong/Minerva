@@ -103,6 +103,38 @@ def bot_pnl(trade_dir: Path, owned: dict, account: dict) -> float:
     return realized + unrealized
 
 
+def account_returns(account: dict, history: dict, capital: dict, bot: float) -> dict:
+    """계좌 수익률. 입금은 `capital.json`의 deposits로 빼서 손익에 섞이지 않게 한다.
+
+    capital: {"since": "YYYY-MM-DD", "base": 시작 평가액, "deposits": [{"date", "amount"}]}
+    history: {날짜: 그날 마지막 평가액} (`kis.record_equity`)
+    """
+    equity = account["equity"]
+    today = account["updated_at"][:10]
+    deposits = capital.get("deposits", [])
+    invested = capital["base"] + sum(d["amount"] for d in deposits)
+    out = {
+        "since": capital["since"],
+        "invested": invested,
+        "total": equity - invested,
+        "total_pct": (equity - invested) / invested * 100,
+        "bot": bot,
+        "bot_pct": bot / invested * 100,
+    }
+    prev_days = [d for d in history if capital["since"] <= d < today]
+    # 시작일 당일은 전날 마감 대신 시작 평가액과 비교한다
+    prev = (
+        history[max(prev_days)]
+        if prev_days
+        else (capital["base"] if today == capital["since"] else None)
+    )
+    if prev:
+        added = sum(d["amount"] for d in deposits if d["date"] == today)
+        out["today"] = equity - prev - added
+        out["today_pct"] = out["today"] / (prev + added) * 100
+    return out
+
+
 def _summary(rows: list[dict]) -> str:
     if not rows:
         return "청산 0건"

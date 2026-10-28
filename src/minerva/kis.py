@@ -295,7 +295,17 @@ def run(out: Path) -> dict:
         _write_private(out, json.dumps(data, ensure_ascii=False))
         raise
     _write_private(out, json.dumps(data, ensure_ascii=False))
+    record_equity(out.parent / "equity.json", data)
     return data
+
+
+def record_equity(path: Path, data: dict) -> None:
+    """날짜별 마지막 평가액. 계좌 탭의 오늘 수익률이 전날 값을 읽는다."""
+    if data.get("status") != "ok" or not data.get("updated_at"):
+        return
+    history = json.loads(path.read_text()) if path.exists() else {}
+    history[data["updated_at"][:10]] = data["equity"]
+    _write_private(path, json.dumps(history, sort_keys=True))
 
 
 def main(argv: list[str] | None = None) -> int:

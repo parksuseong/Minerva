@@ -81,6 +81,7 @@ Minerva/
 - 주문 경로 확인: 장중에 `python -m minerva.trade selftest --yes` (KODEX 인버스 1주 매수→매도, 실주문).
 - 텔레그램으로 "매매중지"가 오면 `touch ~/.minerva/trade/HALT`, "매매재개"가 오면 그 파일을 지운다.
 - 재주문: 통신 오류·응답 유실만 10초 간격으로 최대 3회 다시 낸다. 다시 내기 전에 주문 내역을 조회해 중복을 막는다. 증권사 거부(rt_cd≠0)는 다시 내지 않는다.
+- 계좌 탭 수익률: 누적(원금 대비)·오늘(전일 마감 대비)·봇 손익. 원금은 `~/.minerva/account/capital.json`(시작 2026-10-29, 10,002,669원), 날짜별 평가액은 `equity.json`(`kis.record_equity`). 사용자가 입금·출금을 알리면 `deposits`에 `{"date", "amount"}`(출금은 음수)를 추가한다. 안 적으면 입금이 수익으로 잡힌다.
 - 💼 계좌 탭과 `/api/account`는 공개다(사용자 요청 2026-10-28). 잠그려면 `~/.minerva/account/view.token`에 토큰을 넣는다(헤더 `X-Minerva-Token`).
 - 화면 탭: 🎯 오늘 할 일 / 📈 종목 분석 / 💼 계좌 / 🏢 오피스 (`#today` 같은 해시로 이동).
 

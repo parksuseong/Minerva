@@ -5,6 +5,7 @@
 - 계좌: `python -m minerva.kis` (`minerva-account.timer`) → `~/.minerva/account/latest.json`
   증권사 키는 그 프로세스만 읽는다. 웹 서버에는 키가 없다.
   기본은 공개(사용자 요청). 열람 토큰을 설정하면 `X-Minerva-Token`이 있어야 보여준다.
+  수익률: 같은 폴더의 `capital.json`(시작 원금·입금)과 `equity.json`(날짜별 평가액)으로 계산.
 - 자동매매: `python -m minerva.trade` (`minerva-trade-*.timer`) → `~/.minerva/trade/`
 """
 
@@ -16,6 +17,8 @@ import os
 from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException
+
+from minerva import perf
 
 router = APIRouter()
 
@@ -78,6 +81,12 @@ def account(x_minerva_token: str = Header("")) -> dict:
             "status": "not_connected",
             "message": "증권사 계좌가 아직 연결되지 않았어요 (한국투자증권 스냅숏 대기 중)",
         }
+    capital = _read(account_path().parent / "capital.json")
+    if capital and data.get("status") == "ok":
+        history = _read(account_path().parent / "equity.json") or {}
+        owned = _read(trade_dir() / "positions.json") or {}
+        bot = perf.bot_pnl(trade_dir(), owned, data)
+        data["returns"] = perf.account_returns(data, history, capital, bot)
     return data
 
 

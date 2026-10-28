@@ -73,7 +73,7 @@ def test_plan_caps_positions_and_budget():
     # R2(종목당 10%)면 10종목까지 찬다. R1(20%)이면 예수금이 5종목에서 먼저 바닥난다.
     orders, skipped = trade.plan(_daily(acts, regime="R2"), rich, {})
     assert len(orders) == trade.MAX_POSITIONS == 10
-    assert any("한도" in s for s in skipped)
+    assert any("자리 부족" in s for s in skipped)
     # 예수금이 모자라면 한도 전에 예산에서 멈춘다
     orders, _ = trade.plan(_daily(acts), {**ACCOUNT, "cash_d2": 500_000}, {})
     assert sum(o["qty"] * 1000 * trade.GAP_BUFFER for o in orders) <= 500_000
@@ -379,7 +379,7 @@ def test_index_etf_gets_larger_weight_and_inverse_only_one():
     assert by["069500"] == math.floor(400_000 / (88905 * trade.GAP_BUFFER))  # 40%
     assert "114800" in by and "252670" not in by  # 같은 신호면 1배 하나만
     assert by["114800"] == math.floor(200_000 / (1600 * trade.GAP_BUFFER))
-    assert any("곱버스" in s and "인버스 합계" in s for s in skipped)
+    assert any("곱버스" in s and "한 상품만" in s for s in skipped)
 
 
 def test_inverse_cap_counts_held_inverse():
@@ -390,3 +390,75 @@ def test_inverse_cap_counts_held_inverse():
     inv1 = _act("BUY", "114800.KS", "KODEX 인버스", ref=1600)
     orders, _ = trade.plan(_daily([inv1]), account, {})
     assert orders[0]["qty"] == math.floor(20_000 / (1600 * trade.GAP_BUFFER))
+
+
+def test_rebalance_trims_overweight_bot_position_only():
+    account = {
+        **ACCOUNT,
+        "positions": [
+            {"code": "086790", "qty": 10, "price": 35000, "value": 350_000, "avg": 20000},
+            {"code": "035420", "qty": 10, "price": 50000, "value": 500_000, "avg": 20000},
+        ],
+    }
+    owned = {"086790": {"name": "강함", "kind": "long", "opened": "2026-10-01"}}
+    orders, _ = trade.plan(_daily([]), account, owned, today="2026-10-29")
+    # 35% > 20%×1.5 → 20%(200,000)까지: ceil(150,000/35,000)=5주. 사용자 종목(035420)은 그대로
+    assert [(o["code"], o["qty"], o["action"]) for o in orders] == [("086790", 5, "TRIM")]
+    assert orders[0]["signal_date"] == "2026-10-29-trim"
+
+
+def test_trim_keeps_position_tracked():
+    owned = {"086790": {"name": "A", "kind": "long"}}
+    trade._track(owned, {"side": "sell", "code": "086790", "action": "TRIM"})
+    assert "086790" in owned
+    trade._track(owned, {"side": "sell", "code": "086790", "action": "LONG_EXIT"})
+    assert owned == {}
+
+
+def _rotation_setup(new_p, opened="2026-10-01"):
+    daily = _daily(
+        [{**_act("LONG_ENTRY", "086790.KS", "강함", ref=50000), "p_value": new_p, "net_edge": 0.02}]
+    )
+    daily["assets"] = [
+        {"symbol": "000270.KS", "verify": {"long": {"p_value": 0.2, "net_edge": 0.001}}}
+    ]
+    account = {
+        **ACCOUNT,
+        "cash_d2": 0,
+        "positions": [
+            {"code": "000270", "qty": 2, "price": 100000, "value": 200_000, "avg": 95000}
+        ],
+    }
+    owned = {"000270": {"name": "약함", "kind": "long", "opened": opened}}
+    return daily, account, owned
+
+
+def test_rotation_sells_weaker_holding_for_stronger_signal():
+    daily, account, owned = _rotation_setup(0.006)
+    orders, _ = trade.plan(daily, account, owned, today="2026-10-29")
+    assert [(o["side"], o["code"], o["action"]) for o in orders] == [
+        ("sell", "000270", "ROTATE"),
+        ("buy", "086790", "LONG_ENTRY"),
+    ]
+
+
+def test_rotation_needs_clearly_better_evidence_and_min_hold():
+    daily, account, owned = _rotation_setup(0.15)  # 0.15 > 0.2 × 0.5
+    orders, skipped = trade.plan(daily, account, owned, today="2026-10-29")
+    assert orders == [] and any("교체할 만큼" in s for s in skipped)
+    daily, account, owned = _rotation_setup(0.006, opened="2026-10-27")  # 2일 보유
+    orders, _ = trade.plan(daily, account, owned, today="2026-10-29")
+    assert orders == []
+
+
+def test_rotation_skips_when_selling_still_cannot_fund():
+    daily, account, owned = _rotation_setup(0.006)
+    daily["actions"][0]["ref_price"] = 400_000  # 배정 200,000 < 1주 → 교체 대상도 아님
+    account["positions"][0].update(value=10_000, qty=1, price=10_000)
+    orders, skipped = trade.plan(daily, account, owned, today="2026-10-29")
+    assert orders == []
+
+
+def test_order_line_shows_reason():
+    r = {"side": "sell", "result": "sent", "name": "A", "code": "1", "qty": 2, "action": "TRIM"}
+    assert "[리밸런싱]" in trade._line(r)

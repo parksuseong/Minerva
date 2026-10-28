@@ -43,6 +43,9 @@ INVERSE_TOTAL = 0.20  # 인버스는 합계 20%까지 (risk-rules §1), 한 번�
 INDEX_ETFS = {"069500"}
 INVERSES = {"114800", "252670"}
 MAX_POSITIONS = 10  # 사용자 결정 2026-10-28
+TRIM_AT = 1.5  # 한도의 1.5배를 넘으면 한도까지 던다
+ROTATE_MIN_DAYS = 5  # 산 지 5일(달력) 안 된 종목은 교체하지 않는다 (잦은 매매 방지)
+ROTATE_P_RATIO = 0.5  # 새 신호의 p값이 보유 종목의 절반 이하여야 교체한다
 REGIME_FACTOR = {"R0": 1.0, "R1": 1.0, "R2": 1 / 2, "R3": 1 / 3}
 GAP_BUFFER = 1.03  # 시가가 전일 종가보다 높게 열려도 예수금을 넘지 않게
 LONG_STOP = 0.10  # 롱: 매입가 −10%
@@ -122,80 +125,165 @@ def code_of(symbol: str) -> str:
     return symbol.split(".")[0]
 
 
-def plan(daily: dict, account: dict, owned: dict) -> tuple[list[dict], list[str]]:
-    """일일 분석 + 계좌 → (낼 주문, 건너뛴 이유). 매도를 먼저 둔다."""
+def _cap(code: str) -> float:
+    if code in INDEX_ETFS:
+        return INDEX_ETF_WEIGHT
+    if code in INVERSES:
+        return INVERSE_TOTAL
+    return WEIGHT
+
+
+def _evidence(daily: dict) -> dict[str, tuple[float, float]]:
+    """종목 코드 → (무작위 대비 p값, 비용 후 우위). 교체 매매에서 보유 종목과 비교한다."""
+    out = {}
+    for a in daily.get("assets", []) + daily.get("products", []):
+        if "error" in a:
+            continue
+        side = "short" if a.get("kind") == "inv" else "long"
+        v = a.get("verify", {}).get(side, {})
+        p = v.get("p_value")
+        out[code_of(a["symbol"])] = (1.0 if p is None else p, v.get("net_edge") or 0.0)
+    return out
+
+
+def _value(p: dict) -> float:
+    return p.get("value") or p.get("qty", 0) * (p.get("price") or 0)
+
+
+def plan(
+    daily: dict, account: dict, owned: dict, today: str | None = None
+) -> tuple[list[dict], list[str]]:
+    """일일 분석 + 계좌 → (낼 주문, 건너뛴 이유). 매도를 먼저 둔다.
+
+    순서: 청산 신호 → 인버스 전환(롱 정리) → 리밸런싱(비중 초과분 덜기) → 신규 매수(근거 강한 순)
+    → 교체 매매(돈·자리가 없어 못 산 강한 신호가 있으면 약한 보유 종목을 판다).
+    """
+    today = today or datetime.now(kis.KST).strftime("%Y-%m-%d")
     regime = daily.get("vix", {}).get("regime", "R3")
+    factor = REGIME_FACTOR.get(regime, 1 / 3)
+    equity = account.get("equity", 0)
     held = {p["code"]: p for p in account.get("positions", [])}
+    bot = {c: owned[c] for c in owned if c in held}  # 사용자가 직접 산 종목은 건드리지 않는다
     actions = [a for a in daily.get("actions", []) if a.get("market") == "KR" and a.get("verified")]
+    evidence = _evidence(daily)
     orders, skipped = [], []
+
+    def sell(code: str, why: str, qty: int | None = None, name: str | None = None) -> None:
+        o = _order(
+            "sell",
+            {"name": name or bot[code]["name"], "action": why, "date": today},
+            code,
+            qty or held[code]["qty"],
+        )
+        o["kind"] = bot[code].get("kind", "long")
+        o["entry_avg"] = held[code].get("avg")
+        o["opened"] = bot[code].get("opened")
+        if why in ("TRIM",):
+            o["signal_date"] = f"{today}-trim"  # 같은 날 청산 신호와 key가 겹치지 않게
+        orders.append(o)
+
     for a in actions:
         code = code_of(a["symbol"])
-        if a["action"] in EXIT and code in owned and code in held:
-            orders.append(_order("sell", a, code, held[code]["qty"]))
+        if a["action"] in EXIT and code in bot:
+            sell(code, a["action"], name=a["name"])
+            orders[-1]["signal_date"] = a["date"]
     # 인버스 매수 신호가 뜨면 봇의 롱을 먼저 모두 정리한다 (사용자 결정 2026-10-28: 자금 확보)
-    inverse_in = [a for a in actions if a["action"] == "BUY" and code_of(a["symbol"]) not in held]
-    if inverse_in:
-        selling = {o["code"] for o in orders}
-        for code, pos in owned.items():
-            if pos.get("kind") == "long" and code in held and code not in selling:
-                switch = {"name": pos["name"], "action": "SWITCH", "date": inverse_in[0]["date"]}
-                orders.append(_order("sell", switch, code, held[code]["qty"]))
-                orders[-1]["kind"] = "long"
-    for o in orders:  # 청산 기록(perf)용: 매도 시점의 매입 평균가
-        o["entry_avg"] = held[o["code"]].get("avg")
-        o["opened"] = owned.get(o["code"], {}).get("opened")
-    open_after = len(held) - len(orders)
-    equity = account.get("equity", 0)
-    factor = REGIME_FACTOR.get(regime, 1 / 3)
-    inverse_held = sum(
-        (held[c].get("value") or held[c].get("qty", 0) * held[c].get("price", 0))
-        for c in held
-        if c in INVERSES
-    )
+    if any(a["action"] == "BUY" and code_of(a["symbol"]) not in held for a in actions):
+        for code, pos in bot.items():
+            if pos.get("kind") == "long" and code not in {o["code"] for o in orders}:
+                sell(code, "SWITCH")
+    # 리밸런싱: 오른 종목이 한도의 TRIM_AT배를 넘으면 한도까지 던다.
+    # 위험 관리용이라 덜 오른 종목을 더 사서 채우지는 않는다 (검증 안 된 추가 매수).
+    for code in bot:
+        if code in {o["code"] for o in orders} or not equity:
+            continue
+        p, cap = held[code], equity * _cap(code)
+        if _value(p) > cap * TRIM_AT and p.get("price"):
+            qty = math.ceil((_value(p) - cap) / p["price"])
+            if 0 < qty < p["qty"]:
+                sell(code, "TRIM", qty)
+    selling = {o["code"]: o["qty"] for o in orders}
+    slots = MAX_POSITIONS - sum(1 for c in bot if selling.get(c) != held[c]["qty"])
+    inverse_held = sum(_value(held[c]) for c in held if c in INVERSES and c not in selling)
     # 매도 대금도 쓸 수 있다고 보고 계획한다. 실제 매수는 매도 체결 뒤(09:02)에 낸다.
     budget = account.get("cash_d2", 0) + sum(
-        o["qty"] * (held[o["code"]].get("price") or 0) for o in orders
+        q * (held[c].get("price") or 0) for c, q in selling.items()
     )
-    # 돈이 모자라면 근거가 강한 신호부터: 무작위 대비 p값 낮은 순 → 비용 후 우위 큰 순.
-    # 같은 근거(같은 기초자산)인 인버스는 1배를 먼저 둔다 (감쇠가 작다).
-    entries = sorted(
-        (a for a in actions if a["action"] in ENTRY),
-        key=lambda a: (
-            a.get("p_value") if a.get("p_value") is not None else 1.0,
+
+    def rank(a: dict) -> tuple:
+        p = a.get("p_value")
+        # 같은 근거(같은 기초자산)인 인버스는 1배를 먼저 둔다 (감쇠가 작다)
+        return (
+            1.0 if p is None else p,
             -(a.get("net_edge") or 0),
             code_of(a["symbol"]) != "114800",
-        ),
-    )
-    for a in entries:
+        )
+
+    unfunded = []
+    for a in sorted((a for a in actions if a["action"] in ENTRY), key=rank):
         code = code_of(a["symbol"])
         if code in held:
             skipped.append(f"{a['name']}: 이미 보유")
             continue
-        if code in INVERSES:
-            room = equity * INVERSE_TOTAL * factor - inverse_held
-            if any(o["code"] in INVERSES for o in orders if o["side"] == "buy") or room <= 0:
-                skipped.append(f"{a['name']}: 인버스 합계 한도 {INVERSE_TOTAL:.0%}")
-                continue
-            alloc = room
-        elif code in INDEX_ETFS:
-            alloc = equity * INDEX_ETF_WEIGHT * factor
-        else:
-            alloc = equity * WEIGHT * factor
-        if open_after >= MAX_POSITIONS:
-            skipped.append(f"{a['name']}: 동시 보유 {MAX_POSITIONS}종목 한도")
-            continue
         if not a.get("ref_price"):
             skipped.append(f"{a['name']}: 기준가 없음")
             continue
+        if code in INVERSES:
+            if any(o["code"] in INVERSES for o in orders if o["side"] == "buy"):
+                skipped.append(f"{a['name']}: 인버스는 한 상품만")
+                continue
+            alloc = equity * INVERSE_TOTAL * factor - inverse_held
+        else:
+            alloc = equity * _cap(code) * factor
         price = a["ref_price"] * GAP_BUFFER
-        qty = math.floor(min(alloc, budget) / price)
-        if qty < 1:
-            skipped.append(f"{a['name']}: 1주 {price / GAP_BUFFER:,.0f}원 > 배정 {alloc:,.0f}원")
+        if slots <= 0 or math.floor(min(alloc, budget) / price) < 1:
+            if alloc >= price:  # 배정은 되는데 돈·자리가 없다 → 교체 후보
+                unfunded.append((a, alloc, price))
+            else:
+                skipped.append(
+                    f"{a['name']}: 1주 {price / GAP_BUFFER:,.0f}원 > 배정 {alloc:,.0f}원"
+                )
             continue
+        qty = math.floor(min(alloc, budget) / price)
         orders.append(_order("buy", a, code, qty))
         budget -= qty * price
-        open_after += 1
+        slots -= 1
+    # 교체 매매: 못 산 신호가 보유 종목보다 확실히 강하면 약한 것부터 판다 (09:02에 산다)
+    for a, alloc, price in unfunded:
+        new_p, new_edge = rank(a)[0], a.get("net_edge") or 0
+        candidates = sorted(
+            (c for c in bot if c not in selling and _held_days(bot[c], today) >= ROTATE_MIN_DAYS),
+            key=lambda c: evidence.get(c, (1.0, 0.0)),
+            reverse=True,  # 가장 약한(p값 큰) 보유 종목부터
+        )
+        # 약한 것부터 모아 보고, 실제로 살 수 있게 될 때만 판다 (팔기만 하고 못 사는 일 방지)
+        picks, cash, free = [], budget, slots
+        for c in candidates:
+            old_p, old_edge = evidence.get(c, (1.0, 0.0))
+            if new_p > old_p * ROTATE_P_RATIO or new_edge - old_edge <= perf.cost_rate(c):
+                break  # 가장 약한 것도 못 이기면 나머지도 못 이긴다
+            picks.append(c)
+            cash += _value(held[c])
+            free += 1
+            if free > 0 and math.floor(min(alloc, cash) / price) >= 1:
+                break
+        qty = math.floor(min(alloc, cash) / price)
+        if picks and free > 0 and qty >= 1:
+            for c in picks:
+                sell(c, "ROTATE")
+                selling[c] = held[c]["qty"]
+            orders.append(_order("buy", a, code_of(a["symbol"]), qty))
+            budget, slots = cash - qty * price, free - 1
+        else:
+            skipped.append(f"{a['name']}: 예수금·자리 부족 (교체할 만큼 약한 보유 종목 없음)")
     return orders, skipped
+
+
+def _held_days(pos: dict, today: str) -> int:
+    try:
+        return (datetime.fromisoformat(today) - datetime.fromisoformat(pos.get("opened", ""))).days
+    except ValueError:
+        return 0
 
 
 def _order(side: str, a: dict, code: str, qty: int) -> dict:
@@ -311,11 +399,25 @@ def _journal(entry: dict) -> None:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+REASON = {
+    "LONG_ENTRY": "진입 신호",
+    "BUY": "인버스 진입",
+    "LONG_EXIT": "청산 신호",
+    "SELL": "인버스 청산",
+    "SWITCH": "인버스 전환",
+    "TRIM": "리밸런싱",
+    "ROTATE": "교체",
+    "STOP": "손절",
+    "SELFTEST": "시험",
+}
+
+
 def _line(r: dict) -> str:
     side = "매수" if r["side"] == "buy" else "매도"
     icon = {"dry": "🧪", "sent": "✅", "rejected": "⛔", "failed": "❌"}[r["result"]]
+    why = REASON.get(r.get("action"), r.get("action") or "")
     tail = f" — {r['msg']}" if r.get("msg") else ""
-    return f"{icon} {r['name']}({r['code']}) {side} {r['qty']}주 시장가{tail}"
+    return f"{icon} {r['name']}({r['code']}) {side} {r['qty']}주 시장가 [{why}]{tail}"
 
 
 def run_open(now: datetime | None = None) -> list[dict]:
@@ -398,7 +500,7 @@ def _track(owned: dict, r: dict) -> None:
             "opened": r["at"][:10],
             "stop": None,  # 체결 평균가가 나오면 watch가 정한다
         }
-    else:
+    elif r.get("action") != "TRIM":  # 리밸런싱은 일부만 판다
         owned.pop(r["code"], None)
 
 

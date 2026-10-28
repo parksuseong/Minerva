@@ -111,6 +111,11 @@ def run(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list[Tra
     sig = signals(bars, rule, ctx)
     stoch = stoch_fast_k(bars)
     trail = sma([b.close for b in bars], rule.trail_ma)
+    return simulate(bars, rule, sig, stoch, trail)
+
+
+def simulate(bars: Sequence[Bar], rule: Rule, sig: Sequence[bool], stoch, trail) -> list[Trade]:
+    """신호 목록을 받아 같은 진입·청산 규칙으로 거래를 만든다 (무작위 신호 대조에도 쓴다)."""
     trades: list[Trade] = []
     i = 0
     while i < len(bars) - 1:
@@ -149,6 +154,49 @@ def _take(rule: Rule, stoch, trail, bars: Sequence[Bar], j: int) -> bool:
     if rule.exit == "trend":
         return trail[j] is not None and bars[j].close < trail[j]
     return crossed_down(stoch, j, 80.0)
+
+
+def random_timing_pvalue(
+    bars: Sequence[Bar],
+    rule: Rule,
+    ctx: Context | None = None,
+    n_perm: int = 300,
+    seed: int = 7,
+) -> float | None:
+    """규칙의 진입 타이밍이 무작위 타이밍보다 나은지: 같은 횟수의 무작위 신호로 같은 청산 규칙을
+    돌려 평균 수익이 규칙 이상인 비율. 작을수록 우연이 아닐 가능성이 크다 (다중 검정 보정용).
+    """
+    import random
+
+    sig = signals(bars, rule, ctx)
+    stoch = stoch_fast_k(bars)
+    trail = sma([b.close for b in bars], rule.trail_ma)
+    actual = [t.ret for t in simulate(bars, rule, sig, stoch, trail) if t.reason != "open"]
+    k = sum(sig)
+    if len(actual) < 2 or k < 2:
+        return None
+    target = statistics.mean(actual)
+    rng = random.Random(seed)
+    slots = range(len(bars) - 1)
+    hits = 0
+    for _ in range(n_perm):
+        pick = set(rng.sample(slots, k))
+        fake = [i in pick for i in range(len(bars))]
+        rets = [t.ret for t in simulate(bars, rule, fake, stoch, trail) if t.reason != "open"]
+        if rets and statistics.mean(rets) >= target:
+            hits += 1
+    return (hits + 1) / (n_perm + 1)
+
+
+def benjamini_hochberg(pvalues: dict[str, float], q: float = 0.10) -> set[str]:
+    """거짓 발견 비율 q로 통과한 키들."""
+    ranked = sorted((p, k) for k, p in pvalues.items() if p is not None)
+    m = len(ranked)
+    cut = 0
+    for i, (p, _) in enumerate(ranked, 1):
+        if p <= q * i / m:
+            cut = i
+    return {k for _, k in ranked[:cut]}
 
 
 def baseline(bars: Sequence[Bar], hold: int) -> float | None:

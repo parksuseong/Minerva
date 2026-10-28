@@ -74,3 +74,29 @@ def test_vix_and_align_filters_use_context():
     assert any(signals(bars, Rule(level=1, vix="calm"), calm))
     assert not any(signals(bars, Rule(level=1, vix="calm"), panic))
     assert not any(signals(bars, Rule(level=1, align=True), Context()))
+
+
+def test_benjamini_hochberg():
+    from minerva.strategy.backtest import benjamini_hochberg
+
+    p = {"a": 0.001, "b": 0.02, "c": 0.04, "d": 0.5, "e": None}
+    assert benjamini_hochberg(p, 0.10) == {"a", "b", "c"}  # 0.04 <= 0.1*3/4
+    assert benjamini_hochberg(p, 0.01) == {"a"}
+    assert benjamini_hochberg({}, 0.1) == set()
+
+
+def test_random_timing_pvalue_is_deterministic_and_bounded():
+    import math
+    from datetime import date, timedelta
+
+    from minerva.strategy.backtest import Rule, random_timing_pvalue
+    from minerva.strategy.indicators import Bar
+
+    bars = []
+    for i in range(400):
+        px = 100 + 10 * math.sin(i / 9) + i * 0.05
+        bars.append(Bar(date(2020, 1, 1) + timedelta(days=i), px, px + 1, px - 1, px, 0))
+    rule = Rule(level=1, hold=10, stop=0.1)
+    p1 = random_timing_pvalue(bars, rule, n_perm=50, seed=1)
+    assert p1 == random_timing_pvalue(bars, rule, n_perm=50, seed=1)
+    assert p1 is None or 1 / 51 <= p1 <= 1

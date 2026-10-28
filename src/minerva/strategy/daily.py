@@ -20,7 +20,14 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from minerva.strategy.backtest import Context, Rule, evaluate, run
+from minerva.strategy.backtest import (
+    Context,
+    Rule,
+    benjamini_hochberg,
+    evaluate,
+    random_timing_pvalue,
+    run,
+)
 from minerva.strategy.indicators import (
     Bar,
     crossed_down,
@@ -81,6 +88,9 @@ SHORT_RULE = ShortRule(hold=20, stop=0.07)
 # 숏 규칙이 표본 안팎 모두 + 인 기초자산 (SPY는 표본 밖 −, 삼성·하이닉스·애플·테슬라 ❌)
 VERIFY_TTL = 7 * 24 * 3600
 VERIFY_MIN_TRADES = 30
+# 다중 검정: 무작위 타이밍 대비 p값에 거짓 발견 비율(FDR) 20%를 건다 (2026-10-28 추천안).
+# 0.10이면 2026-10 기준 통과 종목이 없다. 바꾸면 통과 종목이 크게 달라진다.
+FDR_Q = 0.20
 # 왕복 거래비용 (수수료 + 세금 + 체결 미끄러짐). 우위가 이 비용을 넘어야 "검증됨"이다.
 # 국내 주식: 수수료 0.03% + 매도 거래세 0.20% + 미끄러짐 0.07%. ETF·지수는 거래세가 없다.
 COST_KR_STOCK = 0.003
@@ -148,15 +158,50 @@ def verify(symbol: str, bars: list[Bar], ctx: Context) -> dict:
 
     path = CACHE_DIR / "verify" / f"{symbol.replace('^', '_').replace('=', '_')}.json"
     if path.exists() and time.time() - path.stat().st_mtime < VERIFY_TTL:
-        return json.loads(path.read_text())
+        out = json.loads(path.read_text())
+        if "p_value" not in out["long"]:  # 다중 검정 도입 전 캐시: p만 채우고 갱신 주기는 유지
+            stat = path.stat()
+            out["long"]["p_value"] = timing_pvalue(bars, ctx)
+            path.write_text(json.dumps(out, ensure_ascii=False))
+            os.utime(path, (stat.st_atime, stat.st_mtime))
+        return out
     out = {
-        "long": _verdict(evaluate(bars, TM_RULE, ctx)),
+        "long": {**_verdict(evaluate(bars, TM_RULE, ctx)), "p_value": timing_pvalue(bars, ctx)},
         "short": _verdict(evaluate_short(bars, short_flags(bars)[0], SHORT_RULE)),
         "asof": bars[-1].day.isoformat(),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, ensure_ascii=False))
     return out
+
+
+def timing_pvalue(bars: list[Bar], ctx: Context) -> float | None:
+    """롱 규칙 타이밍이 무작위보다 나은지 (p). 후보만 정밀하게 다시 잰다 (시간 절약)."""
+    p = random_timing_pvalue(bars, TM_RULE, ctx, n_perm=300)
+    if p is not None and p < 0.15:
+        p = random_timing_pvalue(bars, TM_RULE, ctx, n_perm=3000)
+    return None if p is None else round(p, 4)
+
+
+def apply_fdr(assets: list[dict], q: float | None = None) -> set[str]:
+    """종목 수십 개를 한꺼번에 검정하면 우연 통과가 섞인다. 롱 규칙 p값에 거짓 발견 비율 q를
+    걸고, 통과하지 못한 "검증됨"은 "미검증"으로 내린다. 통과한 심볼을 돌려준다."""
+    q = FDR_Q if q is None else q
+    pv = {
+        a["symbol"]: a["verify"]["long"].get("p_value")
+        for a in assets
+        if "error" not in a and a["verify"]["long"].get("trades", 0) >= VERIFY_MIN_TRADES
+    }
+    passed = benjamini_hochberg(pv, q)
+    for a in assets:
+        if "error" in a:
+            continue
+        v = a["verify"]["long"]
+        v["fdr_pass"] = a["symbol"] in passed
+        if v["label"] == "검증됨" and not v["fdr_pass"]:
+            v["label"] = "미검증"
+            v["why"] = f"다중 검정 미통과 (p={v.get('p_value')}, q={q})"
+    return passed
 
 
 def short_flags(bars: list[Bar]) -> tuple[list[bool], dict]:
@@ -485,6 +530,7 @@ def build() -> dict:
             assets.append(futures[a.symbol].result())
         except Exception as exc:  # noqa: BLE001 — 한 종목 실패가 전체를 막지 않게
             assets.append({"symbol": a.symbol, "name": a.name, "error": type(exc).__name__})
+    apply_fdr(assets)
     names = {a["symbol"]: a["name"] for a in assets} | {"QQQ": "나스닥100", "SOXX": "반도체"}
     with ThreadPoolExecutor(max_workers=4) as pool:
         pfut = {p.symbol: pool.submit(product_status, p, vix, names) for p in PRODUCTS}

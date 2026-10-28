@@ -539,18 +539,30 @@ def _regime_by_day(vix: list[Bar], daily: list[Bar]) -> dict[date, str]:
 
     같은 날짜의 미국 마감은 한국 마감 뒤(KST 새벽)에 나오므로 전날까지만 쓴다.
     매수 허용은 VIX 주봉 5주선 < 10주선이 정한다 (사용자 결정 2026-10-28, 블로그 방식).
-    일봉 50일선 레짐은 비중(R2 1/2, R3 1/3)에만 남는다.
+    비중 계수도 이 값을 따른다 (`gated_regime` 참고).
     """
-    reg = vix_regimes(vix)
-    days = sorted(reg)
-    weekly = vix_weekly(vix)
+    reg, days, weekly, keys = _vix_tables(vix)
     out, k = {}, -1
     for b in daily:
         while k + 1 < len(days) and days[k + 1] < b.day:
             k += 1
         if k >= 0:
-            out[b.day] = gated_regime(reg[days[k]], weekly_gate_at(weekly, b.day)[2])
+            out[b.day] = gated_regime(reg[days[k]], weekly_gate_at(weekly, b.day, keys)[2])
     return out
+
+
+_VIX_CACHE: dict = {}
+
+
+def _vix_tables(vix: list[Bar]) -> tuple:
+    """종목 200여 개가 같은 VIX로 레짐을 구하므로 한 번만 계산한다."""
+    key = (len(vix), vix[-1].day if vix else None, vix[-1].close if vix else None)
+    if not vix or key not in _VIX_CACHE:  # 빈 VIX(테스트)는 캐시하지 않는다
+        reg = vix_regimes(vix)
+        weekly = vix_weekly(vix)
+        _VIX_CACHE.clear()
+        _VIX_CACHE[key] = (reg, sorted(reg), weekly, [w[0] for w in weekly])
+    return _VIX_CACHE[key]
 
 
 def build() -> dict:

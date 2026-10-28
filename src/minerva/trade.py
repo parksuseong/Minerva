@@ -275,7 +275,7 @@ def plan(
         return orders, skipped
     for a in sorted((a for a in actions if a["action"] in ENTRY), key=rank):
         code = code_of(a["symbol"])
-        if code in held:
+        if code in held or any(o["code"] == code and o["side"] == "buy" for o in orders):
             skipped.append(f"{a['name']}: 이미 보유")
             continue
         if not a.get("ref_price"):
@@ -290,15 +290,18 @@ def plan(
             alloc = equity * INVERSE_TOTAL * factor - inverse_held
         else:
             alloc = equity * _cap(code) * factor
-        if code in adv:
-            alloc = min(alloc, adv[code] * LIQUIDITY_CAP)
+        thin = code in adv and adv[code] * LIQUIDITY_CAP < alloc
+        if thin:
+            alloc = adv[code] * LIQUIDITY_CAP
         price = a["ref_price"] * GAP_BUFFER
         if slots <= 0 or math.floor(min(alloc, budget) / price) < 1:
-            if alloc >= price:  # 배정은 되는데 돈·자리가 없다 → 교체 후보
+            # 거래량 한도로 줄어든 매수를 위해 보유 종목을 통째로 팔지는 않는다
+            if alloc >= price and not thin:  # 배정은 되는데 돈·자리가 없다 → 교체 후보
                 unfunded.append((a, alloc, price))
             else:
+                why = "거래대금 1% 한도" if thin else "배정"
                 skipped.append(
-                    f"{a['name']}: 1주 {price / GAP_BUFFER:,.0f}원 > 배정 {alloc:,.0f}원"
+                    f"{a['name']}: 1주 {price / GAP_BUFFER:,.0f}원 > {why} {alloc:,.0f}원"
                 )
             continue
         qty = math.floor(min(alloc, budget) / price)

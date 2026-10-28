@@ -579,3 +579,23 @@ def test_thin_stock_order_capped_by_trading_value():
     orders, _ = trade.plan(daily, rich, {})
     # 20% 배정(2,000,000)이 아니라 거래대금 1%(50,000)까지만: 50,000 / 1,030
     assert orders[0]["qty"] == 48
+
+
+def test_duplicate_signal_is_bought_once():
+    a = _act("LONG_ENTRY", "005930.KS", "삼성")
+    orders, skipped = trade.plan(_daily([a, dict(a)]), ACCOUNT, {})
+    assert [o["code"] for o in orders] == ["005930"]
+    assert any("이미 보유" in s for s in skipped)
+
+
+def test_thin_stock_does_not_trigger_rotation():
+    daily = _daily([{**_act("LONG_ENTRY", "006040.KS", "동원", ref=1000), "p_value": 0.001}])
+    daily["assets"] = [{"symbol": "006040.KS", "name": "동원", "adv": 5_000_000}]
+    account = {
+        **ACCOUNT,
+        "cash_d2": 0,
+        "positions": [{"code": "035420", "qty": 10, "price": 20000, "value": 200_000}],
+    }
+    owned = {"035420": {"name": "N", "kind": "long", "qty": 10, "opened": "2026-10-01"}}
+    orders, skipped = trade.plan(daily, account, owned, today="2026-10-29")
+    assert orders == [] and any("거래대금 1% 한도" in s for s in skipped)

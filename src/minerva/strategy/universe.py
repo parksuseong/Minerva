@@ -65,12 +65,15 @@ def _cached(name: str, fetch, fallback: list[tuple[str, str]]) -> list[tuple[str
 
 
 def pick_kospi(stocks: list[dict], n: int) -> list[tuple[str, str]]:
-    """보통주만 (ETF·우선주 제외)."""
-    out = []
+    """보통주만 (ETF·우선주 제외). 쪽을 나눠 받는 사이 순위가 바뀌면 같은 종목이 또 올 수 있다."""
+    out, seen = [], set()
     for s in stocks:
         name = s["stockName"]
         if s.get("stockEndType") != "stock" or name.endswith(("우", "우B", "우C")):
             continue
+        if s["itemCode"] in seen:
+            continue
+        seen.add(s["itemCode"])
         out.append((f"{s['itemCode']}.KS", name))
         if len(out) == n:
             break

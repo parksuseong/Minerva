@@ -34,6 +34,10 @@ ACCOUNT = {"equity": 1_000_000, "cash_d2": 1_000_000, "positions": [], "orders":
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(trade, "TRADE_DIR", tmp_path)
+    # 계산 검증용 비중은 고정한다 (운용 비중을 바꿔도 테스트 숫자가 그대로이게)
+    monkeypatch.setattr(trade, "WEIGHT", 0.20)
+    monkeypatch.setattr(trade, "INDEX_ETF_WEIGHT", 0.40)
+    monkeypatch.setattr(trade, "INVERSE_TOTAL", 0.20)
     monkeypatch.setattr(trade.time, "sleep", lambda s: None)
     monkeypatch.setattr(trade.notify, "send", lambda text: True)
     monkeypatch.setattr(trade, "is_open_day", lambda cfg, day: True)

@@ -39,9 +39,9 @@ log = logging.getLogger(__name__)
 TRADE_DIR = Path(os.environ.get("MINERVA_TRADE_DIR", "~/.minerva/trade")).expanduser()
 DAILY_FILE = Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
 
-WEIGHT = 0.20  # 개별 종목당 계좌 평가액 대비 (risk-rules §1)
-INDEX_ETF_WEIGHT = 0.40  # 지수 ETF는 분산돼 있어 개별주보다 크게 둔다
-INVERSE_TOTAL = 0.20  # 인버스는 합계 20%까지 (risk-rules §1), 한 번에 한 상품만
+WEIGHT = 0.30  # 개별 종목당 계좌 평가액 대비 (risk-rules §1, 사용자 위임 2026-10-29)
+INDEX_ETF_WEIGHT = 0.60  # 지수 ETF는 분산돼 있어 개별주보다 크게 둔다
+INVERSE_TOTAL = 0.30  # 인버스는 합계 30%까지 (risk-rules §1), 한 번에 한 상품만
 INDEX_ETFS = {"069500"}
 INVERSES = {"114800"}
 MAX_POSITIONS = 10  # 사용자 결정 2026-10-28

@@ -41,6 +41,20 @@
     };
   }
 
+  const pct = (v) => `${v > 0 ? "+" : ""}${num(v)}%`;
+  const gain = (v, p) => signed(v, `${v > 0 ? "+" : ""}${won(v)} (${pct(p)})`);
+
+  function returns(r) {
+    if (!r) return "";
+    const today = r.today == null ? "-" : gain(r.today, r.today_pct);
+    return `
+      <div class="row"><span>누적 수익률 (${esc(r.since)}~, 원금 ${won(r.invested)})</span>
+        <b class="px">${gain(r.total, r.total_pct)}</b></div>
+      <div class="row"><span>오늘 수익률 (전일 마감 대비)</span><span class="px">${today}</span></div>
+      <div class="row"><span>봇 손익 (자동매매 실현+평가)</span>
+        <span class="px">${gain(r.bot, r.bot_pct)}</span></div>`;
+  }
+
   function render(d) {
     if (d.status === "not_connected") {
       $("acct-status").textContent = d.message;
@@ -53,7 +67,7 @@
       <div class="row"><span>총평가</span><b class="px">${won(d.equity)}</b></div>
       <div class="row"><span>예수금 (D+2)</span><span class="px">${won(d.cash)} (${won(d.cash_d2)})</span></div>
       <div class="row"><span>주식 평가 · 평가손익</span>
-        <span class="px">${won(d.stock_value)} · ${signed(d.pnl, won(d.pnl))}</span></div>${err}`;
+        <span class="px">${won(d.stock_value)} · ${signed(d.pnl, won(d.pnl))}</span></div>${returns(d.returns)}${err}`;
     $("acct-balance").innerHTML = table([["name", "종목"], ["qty", "수량"], ["avg", "평균가"],
       ["price", "현재가"], ["pnl", "평가손익", (v, r) => signed(v, `${num(v)} (${num(r.pnl_pct)}%)`)]],
       d.positions);

@@ -239,6 +239,16 @@ def plan(
         for code in longs:
             if code not in {o["code"] for o in orders}:
                 sell(code, "SWITCH")
+    # 반대로 KODEX 200 롱 신호면 봇의 인버스를 먼저 판다 (사용자 결정 2026-10-29: 같이 안 든다)
+    elif allow_buys and any(
+        a["action"] == "LONG_ENTRY"
+        and code_of(a["symbol"]) in INDEX_ETFS
+        and code_of(a["symbol"]) not in held
+        for a in actions
+    ):
+        for code in bot:
+            if code in INVERSES and code not in {o["code"] for o in orders}:
+                sell(code, "UNSWITCH")
     # 리밸런싱: 오른 종목이 한도의 TRIM_AT배를 넘으면 한도까지 던다.
     # 위험 관리용이라 덜 오른 종목을 더 사서 채우지는 않는다 (검증 안 된 추가 매수).
     for code in bot:
@@ -509,6 +519,7 @@ REASON = {
     "LONG_EXIT": "청산 신호",
     "SELL": "인버스 청산",
     "SWITCH": "인버스 전환",
+    "UNSWITCH": "롱 전환 (인버스 정리)",
     "TRIM": "리밸런싱",
     "ROTATE": "교체",
     "STOP": "손절",

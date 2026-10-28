@@ -26,6 +26,7 @@ FEE = 0.00015
 SELL_TAX = 0.002
 SLIP = 0.0005
 ETFS = {"069500", "114800"}
+INDEX_ETFS = {"069500"}  # minerva.trade와 같다
 REGIME_FACTOR = {"R0": 1.0, "R1": 1.0, "R2": 1 / 2, "R3": 1 / 3}  # minerva.trade와 같다
 
 
@@ -49,6 +50,7 @@ class Config:
     trim: bool = True
     rotate: bool = True
     switch: bool = True
+    unswitch: bool = True  # KODEX 200 롱 신호가 오면 인버스를 판다 (switch의 반대 방향)
     priority: bool = True
     hold: int = 20
     long_stop: float = 0.10
@@ -223,6 +225,10 @@ def simulate(
         if cfg.switch and any(u.kind == "inv" for u in entries):
             for code in pos:
                 if by[code].kind == "long":
+                    pending_sell[code] = (pos[code].qty, "switch")
+        if cfg.unswitch and any(u.code in INDEX_ETFS for u in entries):
+            for code in pos:
+                if by[code].kind == "inv":
                     pending_sell[code] = (pos[code].qty, "switch")
         if cfg.trim:
             for code, p in pos.items():

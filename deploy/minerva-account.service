@@ -1,0 +1,13 @@
+# 한국투자증권 계좌 스냅숏(조회 전용). minerva-account.timer가 실행한다.
+# 키: ~/.minerva/kis.env (저장소 밖, chmod 600). 결과: ~/.minerva/account/latest.json
+# 설치: sudo cp deploy/minerva-account.* /etc/systemd/system/ && sudo systemctl enable --now minerva-account.timer
+[Unit]
+Description=Minerva KIS account snapshot (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.kis

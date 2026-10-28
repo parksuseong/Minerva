@@ -99,7 +99,8 @@ def _live(monkeypatch, posts, sent_check=False):
     seq = iter(posts)
 
     def fake_post(cfg, token, path, tr_id, body):
-        assert body["ORD_DVSN"] == "01" and body["ORD_UNPR"] == "0"
+        # 매수는 전일 종가(10,000) +3% 지정가
+        assert body["ORD_DVSN"] == "00" and body["ORD_UNPR"] == "10300"
         item = next(seq)
         if isinstance(item, Exception):
             raise item
@@ -599,3 +600,47 @@ def test_thin_stock_does_not_trigger_rotation():
     owned = {"035420": {"name": "N", "kind": "long", "qty": 10, "opened": "2026-10-01"}}
     orders, skipped = trade.plan(daily, account, owned, today="2026-10-29")
     assert orders == [] and any("거래대금 1% 한도" in s for s in skipped)
+
+
+def test_limit_price_follows_tick_size():
+    assert trade.limit_price(10000 * 1.03) == 10300
+    assert trade.limit_price(245000 * 1.03) == 252000  # 252,350 → 500원 단위 내림
+    assert trade.limit_price(1122 * 1.03) == 1155  # 5원 미만 단위도 5원 (ETF 호가)
+    assert (
+        trade.limit_price(58285 * trade.PARK_SLIP, up=True) == 58500
+    )  # 지정가지만 매도 호가에 바로 체결
+    assert trade.limit_price(600000) == 600000
+
+
+def test_buys_are_limit_and_sells_are_market(monkeypatch):
+    buy = trade._order("buy", _act("LONG_ENTRY", "005930.KS", "A"), "005930", 1)
+    sell = trade._order("sell", _act("LONG_EXIT", "005930.KS", "A"), "005930", 1)
+    assert buy["limit"] == 10300 and "limit" not in sell
+    assert "지정가 10,300원" in trade._line({**buy, "result": "sent"})
+    assert "시장가" in trade._line({**sell, "result": "sent"})
+    posts = []
+    monkeypatch.setattr(kis, "access_token", lambda cfg, now=None: "t")
+    monkeypatch.setattr(
+        trade, "_post", lambda c, t, p, tr, body: posts.append(body) or {"rt_cd": "0"}
+    )
+    trade.send_order(CFG, sell, live=True)
+    assert posts[0]["ORD_DVSN"] == "01" and posts[0]["ORD_UNPR"] == "0"
+
+
+def test_partial_limit_fill_is_followed_then_reported(tmp_path, monkeypatch):
+    owned = {"005930": {"name": "A", "kind": "long", "stop": None, "qty": 10, "ordered": 10}}
+    (tmp_path / "positions.json").write_text(json.dumps(owned))
+    acc = {**ACCOUNT, "positions": [{"code": "005930", "qty": 4, "avg": 10000, "price": 10000}]}
+    trade.run_watch(acc)
+    pos = json.loads((tmp_path / "positions.json").read_text())["005930"]
+    assert pos["qty"] == 4 and pos["stop"] == 9000
+    acc["positions"][0]["qty"] = 6  # 장중에 더 체결
+    trade.run_watch(acc)
+    assert json.loads((tmp_path / "positions.json").read_text())["005930"]["qty"] == 6
+    acc["positions"][0]["qty"] = 7  # 마감 동시호가 체결
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: acc)
+    notes = trade.run_reconcile(NOW)
+    pos = json.loads((tmp_path / "positions.json").read_text())["005930"]
+    assert pos["qty"] == 7 and "ordered" not in pos
+    assert any("10주 중 7주 체결" in n for n in notes)

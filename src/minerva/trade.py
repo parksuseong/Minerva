@@ -1,11 +1,13 @@
-"""국내 주식 자동 주문 (한국투자증권, 시장가).
+"""국내 주식 자동 주문 (한국투자증권). 매수는 지정가(전일 종가 +3%), 매도는 시장가.
 
 기본은 모의 실행(dry)이다. 주문을 내지 않고 "이렇게 냈을 것"만 기록하고 알린다.
 `~/.minerva/trade/mode` 파일 내용이 `live`일 때만 실제 주문을 낸다.
 `~/.minerva/trade/HALT` 파일이 있으면 아무것도 하지 않는다 (매매 중지 스위치).
 
 - `preflight` (평일 08:40): 모드·토큰·계좌·분석 최신 여부·휴장일·타이머를 점검해 알린다
-- `open`  (평일 08:50): 전날 일일 분석의 국내·검증됨 신호로 장전 동시호가 시장가 주문
+- `open`  (평일 08:50): 전날 일일 분석의 국내·검증됨 신호로 장전 동시호가 주문.
+  매수는 전일 종가 +3% 지정가라 시가가 그보다 높게 뜨면 사지 않는다 (상한가 추격 방지).
+  안 된 매수는 장 마감에 저절로 사라지고 15:45 대사에서 알린다
 - `watch` (장중 30초): 이 봇이 산 종목만 손절가 감시, 닿으면 시장가 매도
 - `reconcile` (평일 15:45): 봇 보유 목록과 실제 잔고를 맞춘다 (미체결·직접 매도 정리)
 - `selftest --yes` (장중, 수동): 1주 사고 바로 팔아 주문 경로를 확인한다 (모드와 무관하게 실주문)
@@ -53,7 +55,9 @@ ROTATE_P_RATIO = 0.5  # 새 신호의 p값이 보유 종목의 절반 이하여�
 # 거래가 적은 종목에 시장가로 크게 넣으면 가격이 밀린다: 한 번 주문은 20일 평균 거래대금의 1%까지
 LIQUIDITY_CAP = 0.01
 REGIME_FACTOR = {"R0": 1.0, "R1": 1.0, "R2": 1 / 2, "R3": 1 / 3}
-GAP_BUFFER = 1.03  # 시가가 전일 종가보다 높게 열려도 예수금을 넘지 않게
+GAP_BUFFER = 1.03  # 매수 지정가 = 전일 종가 × 1.03. 더 높게 뜨면 사지 않는다
+# 시장가 매수는 증권사가 상한가(+30%) 기준으로 증거금을 잡아 수량 계산과 어긋난다 → 매수는 지정가
+PARK_SLIP = 1.002  # 파킹 ETF는 현재가 바로 위 지정가로 산다 (바로 체결)
 LONG_STOP = 0.10  # 롱: 매입가 −10%
 SHORT_STOP = 0.07  # 인버스: 기초자산 +7% ≈ 인버스 −7%×배수
 ENTRY = ("LONG_ENTRY", "BUY")
@@ -369,7 +373,26 @@ def _order(side: str, a: dict, code: str, qty: int) -> dict:
         "signal_date": a["date"],
         "kind": "inverse" if a["action"] in ("BUY", "SELL") else "long",
         "ref_price": a.get("ref_price"),
+        **(
+            {"limit": limit_price(a["ref_price"] * GAP_BUFFER)}
+            if side == "buy" and a.get("ref_price")
+            else {}
+        ),
     }
+
+
+def tick(price: float) -> int:
+    """호가 단위 (KRX 2023~). ETF는 5원 단위라 1원 단위 구간도 5원으로 맞춘다 (주식에도 유효)."""
+    for bound, t in ((5000, 5), (20000, 10), (50000, 50), (200000, 100), (500000, 500)):
+        if price < bound:
+            return t
+    return 1000
+
+
+def limit_price(price: float, up: bool = False) -> int:
+    """호가 단위에 맞춘 지정가. 기본은 내림(그 값을 넘지 않게), up=True면 올림."""
+    t = tick(price)
+    return int((math.ceil if up else math.floor)(price / t) * t)
 
 
 def order_key(o: dict) -> str:
@@ -427,7 +450,8 @@ def _already_sent(cfg: dict, token: str, o: dict, since: str) -> bool:
 
 
 def send_order(cfg: dict, o: dict, live: bool) -> dict:
-    """시장가 주문. 응답이 불확실하면 내역을 확인하고 안 들어갔을 때만 다시 낸다.
+    """주문. `limit`이 있으면 지정가, 없으면 시장가.
+    응답이 불확실하면 내역을 확인하고 안 들어갔을 때만 다시 낸다.
 
     증권사가 거부한 주문(잔고 부족·거래정지 등, rt_cd != 0)은 다시 내도 같으니 재시도하지 않는다.
     """
@@ -439,9 +463,9 @@ def send_order(cfg: dict, o: dict, live: bool) -> dict:
         "CANO": cfg["cano"],
         "ACNT_PRDT_CD": cfg["prd"],
         "PDNO": o["code"],
-        "ORD_DVSN": "01",  # 시장가
+        "ORD_DVSN": "00" if o.get("limit") else "01",  # 00 지정가 · 01 시장가
         "ORD_QTY": str(o["qty"]),
-        "ORD_UNPR": "0",
+        "ORD_UNPR": str(o.get("limit") or 0),
     }
     tr_id = "TTTC0012U" if o["side"] == "buy" else "TTTC0011U"
     last = ""
@@ -499,7 +523,8 @@ def _line(r: dict) -> str:
     icon = {"dry": "🧪", "sent": "✅", "rejected": "⛔", "failed": "❌"}[r["result"]]
     why = REASON.get(r.get("action"), r.get("action") or "")
     tail = f" — {r['msg']}" if r.get("msg") else ""
-    return f"{icon} {r['name']}({r['code']}) {side} {r['qty']}주 시장가 [{why}]{tail}"
+    how = f"지정가 {r['limit']:,}원" if r.get("limit") else "시장가"
+    return f"{icon} {r['name']}({r['code']}) {side} {r['qty']}주 {how} [{why}]{tail}"
 
 
 def run_open(now: datetime | None = None) -> list[dict]:
@@ -556,7 +581,7 @@ def run_open(now: datetime | None = None) -> list[dict]:
                 continue
             if o["side"] == "buy" and live:
                 # 증권사 기준 매수 가능 수량을 넘지 않게 줄인다
-                price = (o.get("ref_price") or 0) * GAP_BUFFER
+                price = o.get("limit") or (o.get("ref_price") or 0) * GAP_BUFFER
                 o["qty"] = min(o["qty"], buyable_qty(cfg, kis.access_token(cfg), o["code"], price))
                 if o["qty"] < 1:
                     skipped.append(f"{o['name']}: 매수 가능 수량 0")
@@ -628,9 +653,10 @@ def park_idle_cash(cfg: dict, now: datetime, done: set[str]) -> dict | None:
     price = quote(cfg, PARK_CODE)
     if not price:
         return None
+    o["limit"] = limit_price(price * PARK_SLIP, up=True)
     idle = account.get("cash_d2", 0) - account.get("equity", 0) * PARK_RESERVE
-    want = math.floor(idle / (price * 1.002))
-    o["qty"] = min(want, buyable_qty(cfg, kis.access_token(cfg), PARK_CODE, price * 1.002))
+    want = math.floor(idle / o["limit"])
+    o["qty"] = min(want, buyable_qty(cfg, kis.access_token(cfg), PARK_CODE, o["limit"]))
     if o["qty"] < 1:
         return None
     r = send_order(cfg, o, live=True)
@@ -649,6 +675,7 @@ def _track(owned: dict, r: dict) -> None:
             "kind": r["kind"],
             "opened": r["at"][:10],
             "qty": r["qty"],  # 봇이 산 수량. 체결 확인 때 실제 체결 수량으로 고친다
+            "ordered": r["qty"],  # 지정가는 나눠 체결될 수 있다: 이만큼까지 따라 늘린다
             "stop": None,  # 체결 평균가가 나오면 watch가 정한다
         }
     elif r["code"] in owned:
@@ -711,6 +738,8 @@ def run_watch(account: dict | None = None) -> list[dict]:
             notify.send(
                 f"🎯 {pos['name']} 체결 확인 · 평균 {p['avg']:,.0f}원 · 손절 {pos['stop']:,}원"
             )
+        elif pos.get("ordered") and (pos.get("qty") or 0) < min(pos["ordered"], p["qty"]):
+            pos["qty"] = min(pos["ordered"], p["qty"])  # 지정가가 장중에 더 체결됐다
         if pos.get("stop") and p["price"] and p["price"] <= pos["stop"]:
             o = {
                 "side": "sell",
@@ -767,6 +796,13 @@ def run_reconcile(now: datetime | None = None) -> list[str]:
             pos["qty"] = left
             # 체결 안 된 매도는 접어 두고 손절 감시를 다시 한다. 청산 신호면 다음 날 다시 낸다
             notes.append(f"• {pos['name']}: 매도 접수했지만 {left}주 남음 → 다시 감시 (확인 필요)")
+        if code in held and pos.get("ordered"):
+            # 장 마감 체결분까지 반영하고, 못 산 나머지는 당일 주문이라 저절로 사라진다
+            got = max(pos.get("qty") or 0, min(pos["ordered"], held[code]["qty"]))
+            if got < pos["ordered"]:
+                notes.append(f"• {pos['name']}: 지정가 매수 {pos['ordered']}주 중 {got}주 체결")
+            pos["qty"] = got
+            pos.pop("ordered")
     _save(TRADE_DIR / "positions.json", owned)
     for c in closed:
         notes.append(

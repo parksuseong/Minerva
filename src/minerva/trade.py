@@ -37,8 +37,12 @@ log = logging.getLogger(__name__)
 TRADE_DIR = Path(os.environ.get("MINERVA_TRADE_DIR", "~/.minerva/trade")).expanduser()
 DAILY_FILE = Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
 
-WEIGHT = 0.20  # 종목당 계좌 평가액 대비
-MAX_POSITIONS = 5
+WEIGHT = 0.20  # 개별 종목당 계좌 평가액 대비 (risk-rules §1)
+INDEX_ETF_WEIGHT = 0.40  # 지수 ETF는 분산돼 있어 개별주보다 크게 둔다
+INVERSE_TOTAL = 0.20  # 인버스는 합계 20%까지 (risk-rules §1), 한 번에 한 상품만
+INDEX_ETFS = {"069500"}
+INVERSES = {"114800", "252670"}
+MAX_POSITIONS = 10  # 사용자 결정 2026-10-28
 REGIME_FACTOR = {"R0": 1.0, "R1": 1.0, "R2": 1 / 2, "R3": 1 / 3}
 GAP_BUFFER = 1.03  # 시가가 전일 종가보다 높게 열려도 예수금을 넘지 않게
 LONG_STOP = 0.10  # 롱: 매입가 −10%
@@ -141,18 +145,42 @@ def plan(daily: dict, account: dict, owned: dict) -> tuple[list[dict], list[str]
         o["entry_avg"] = held[o["code"]].get("avg")
         o["opened"] = owned.get(o["code"], {}).get("opened")
     open_after = len(held) - len(orders)
-    alloc = account.get("equity", 0) * WEIGHT * REGIME_FACTOR.get(regime, 1 / 3)
+    equity = account.get("equity", 0)
+    factor = REGIME_FACTOR.get(regime, 1 / 3)
+    inverse_held = sum(
+        (held[c].get("value") or held[c].get("qty", 0) * held[c].get("price", 0))
+        for c in held
+        if c in INVERSES
+    )
     # 매도 대금도 쓸 수 있다고 보고 계획한다. 실제 매수는 매도 체결 뒤(09:02)에 낸다.
     budget = account.get("cash_d2", 0) + sum(
         o["qty"] * (held[o["code"]].get("price") or 0) for o in orders
     )
-    for a in actions:
-        if a["action"] not in ENTRY:
-            continue
+    # 돈이 모자라면 근거가 강한 신호부터: 무작위 대비 p값 낮은 순 → 비용 후 우위 큰 순.
+    # 같은 근거(같은 기초자산)인 인버스는 1배를 먼저 둔다 (감쇠가 작다).
+    entries = sorted(
+        (a for a in actions if a["action"] in ENTRY),
+        key=lambda a: (
+            a.get("p_value") if a.get("p_value") is not None else 1.0,
+            -(a.get("net_edge") or 0),
+            code_of(a["symbol"]) != "114800",
+        ),
+    )
+    for a in entries:
         code = code_of(a["symbol"])
         if code in held:
             skipped.append(f"{a['name']}: 이미 보유")
             continue
+        if code in INVERSES:
+            room = equity * INVERSE_TOTAL * factor - inverse_held
+            if any(o["code"] in INVERSES for o in orders if o["side"] == "buy") or room <= 0:
+                skipped.append(f"{a['name']}: 인버스 합계 한도 {INVERSE_TOTAL:.0%}")
+                continue
+            alloc = room
+        elif code in INDEX_ETFS:
+            alloc = equity * INDEX_ETF_WEIGHT * factor
+        else:
+            alloc = equity * WEIGHT * factor
         if open_after >= MAX_POSITIONS:
             skipped.append(f"{a['name']}: 동시 보유 {MAX_POSITIONS}종목 한도")
             continue

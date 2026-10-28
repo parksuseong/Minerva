@@ -17,7 +17,7 @@
     return `<span class="badge" title="${esc(tip)}"${color ? ` style="color:${color}"` : ""}>${SIDE[side]} ${esc(l)}</span>`;
   };
   // 종목 자체 숏은 실행할 수 없어 숨긴다. 숏은 국내 인버스 ETF로만 (daily.py ASSET_SIDES)
-  const sides = (a) => (a.kind ? [["short", a.tm]] : [["long", a.tm]]);
+  const sides = (a) => (a.kind === "inv" ? [["short", a.tm]] : [["long", a.tm]]);
 
   function sideDetail(side, st) {
     if (!st) return "";
@@ -46,7 +46,9 @@
     if (a.error) return `<div class="asset"><b>${esc(a.name)}</b> <span class="detail">데이터 오류</span></div>`;
     const ch = a.change == null ? "" : `<span class="${a.change >= 0 ? "up" : "down"}">${pct(a.change)}</span>`;
     const brief = sides(a).map(([side, st]) => `${SIDE[side]} ${ICON[st?.state] || ""}${esc(st?.state)}`).join(" · ");
-    const info = a.kind
+    const info = a.kind === "etf"
+      ? `지수 ETF · ${esc(a.underlying)} 신호로 매매 · 비중 최대 40%`
+      : a.kind
       ? `인버스 ${Math.abs(a.mult)}배 · 기초자산 ${esc(a.underlying)} · ${esc(a.tm?.note)}`
       : `${esc(a.date)} 종가 · Stoch ${a.stoch} · CCI ${a.cci} · RSI ${a.rsi} · 50일선 ${num(a.ma50)}`;
     return `<details class="asset">

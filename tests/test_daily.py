@@ -100,7 +100,31 @@ def test_inverse_follows_underlying_short(monkeypatch):
     inv = daily.Asset("QID", "QID", "US", "inv", "QQQ", -2)
     out = daily.product_status(inv, bars, {"QQQ": "나스닥100"})
     assert out["tm"]["state"] == "진입 신호" and out["underlying"] == "나스닥100"
-    assert all(abs(p.mult) <= 2 and p.kind == "inv" for p in daily.PRODUCTS)
+    # 레버리지 롱은 다루지 않는다: 인버스는 2배까지, 지수 ETF는 1배만
+    assert all(
+        (p.kind == "inv" and abs(p.mult) <= 2) or (p.kind == "etf" and p.mult == 1)
+        for p in daily.PRODUCTS
+    )
+
+
+def test_product_uses_own_price_for_orders(monkeypatch):
+    from minerva.strategy import daily
+
+    bars = bars_until(date(2026, 10, 20), 5)
+    monkeypatch.setattr(daily, "fetch_yahoo", lambda s, r: bars)
+    entry = {"state": "진입 신호", "ref_price": 5638.0, "stop": 5000}
+    monkeypatch.setattr(daily, "short_status", lambda b: dict(entry))
+    monkeypatch.setattr(daily, "tm_status", lambda b, c: dict(entry))
+    monkeypatch.setattr(daily, "regime_is_fear", lambda vix: False)
+    raw = {"label": "검증됨", "trades": 90, "edge": 0.01, "edge_in": 0.01, "edge_out": 0.01}
+    monkeypatch.setattr(daily, "verify", lambda s, b, c: {"short": raw, "long": raw})
+    inv = daily.product_status(daily.Asset("114800.KS", "I", "KR", "inv", "^KS11", -1), bars, {})
+    etf = daily.product_status(daily.Asset("069500.KS", "E", "KR", "etf", "^KS11", 1), bars, {})
+    close = bars[-1].close
+    assert inv["tm"]["ref_price"] == round(close, 2) and etf["tm"]["ref_price"] == round(close, 2)
+    assert etf["tm"]["stop"] == round(close * 0.9, 2) and "long" in etf["verify"]
+    acts = daily.make_actions([], [inv, etf])
+    assert sorted(a["action"] for a in acts) == ["BUY", "LONG_ENTRY"]
 
 
 def test_verdict_labels():

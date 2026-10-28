@@ -82,6 +82,8 @@ def watchlist() -> list[Asset]:
 PRODUCTS = [
     Asset("114800.KS", "KODEX 인버스", "KR", "inv", "^KS11", -1),
     Asset("252670.KS", "KODEX 200선물인버스2X (곱버스)", "KR", "inv", "^KS11", -2),
+    # 지수 롱: 코스피 TM 눌림 규칙(거래 96회, 무작위 대비 p≈0.015)을 KODEX 200으로 실행한다
+    Asset("069500.KS", "KODEX 200", "KR", "etf", "^KS11", 1),
 ]
 
 SHORT_RULE = ShortRule(hold=20, stop=0.07)
@@ -91,6 +93,7 @@ VERIFY_MIN_TRADES = 30
 # 다중 검정: 무작위 타이밍 대비 p값에 거짓 발견 비율(FDR) 20%를 건다 (2026-10-28 추천안).
 # 0.10이면 2026-10 기준 통과 종목이 없다. 바꾸면 통과 종목이 크게 달라진다.
 FDR_Q = 0.20
+CORE_ALPHA = 0.05
 # 왕복 거래비용 (수수료 + 세금 + 체결 미끄러짐). 우위가 이 비용을 넘어야 "검증됨"이다.
 # 국내 주식: 수수료 0.03% + 매도 거래세 0.20% + 미끄러짐 0.07%. ETF·지수는 거래세가 없다.
 COST_KR_STOCK = 0.003
@@ -187,17 +190,24 @@ def apply_fdr(assets: list[dict], q: float | None = None) -> set[str]:
     """종목 수십 개를 한꺼번에 검정하면 우연 통과가 섞인다. 롱 규칙 p값에 거짓 발견 비율 q를
     걸고, 통과하지 못한 "검증됨"은 "미검증"으로 내린다. 통과한 심볼을 돌려준다."""
     q = FDR_Q if q is None else q
+    core = {c.symbol for c in CORE}
     pv = {
         a["symbol"]: a["verify"]["long"].get("p_value")
         for a in assets
-        if "error" not in a and a["verify"]["long"].get("trades", 0) >= VERIFY_MIN_TRADES
+        if "error" not in a
+        and a["symbol"] not in core
+        and a["verify"]["long"].get("trades", 0) >= VERIFY_MIN_TRADES
     }
     passed = benjamini_hochberg(pv, q)
     for a in assets:
         if "error" in a:
             continue
         v = a["verify"]["long"]
-        v["fdr_pass"] = a["symbol"] in passed
+        if a["symbol"] in core:
+            # 지수는 규칙을 처음 만든 대상이라 탐색 묶음에 넣지 않고 단독 검정(p<0.05)만 본다
+            v["fdr_pass"] = (v.get("p_value") or 1) < CORE_ALPHA
+        else:
+            v["fdr_pass"] = a["symbol"] in passed
         if v["label"] == "검증됨" and not v["fdr_pass"]:
             v["label"] = "미검증"
             v["why"] = f"다중 검정 미통과 (p={v.get('p_value')}, q={q})"
@@ -473,13 +483,25 @@ def _ctx(vix: list[Bar], daily: list[Bar]) -> Context:
 
 
 def product_status(p: Asset, vix: list[Bar], names: dict[str, str]) -> dict:
-    """인버스: 기초자산 TM 되돌림 숏 신호를 그대로 따른다 (진입 = 인버스 매수)."""
+    """기초자산 신호를 그대로 따른다. 인버스는 숏 규칙(진입 = 인버스 매수), 지수 ETF는 롱 규칙."""
     daily = completed(fetch_yahoo(p.symbol, "1y"), p.market)
     last = daily[-1]
     under = completed(fetch_yahoo(p.underlying, "max"), p.market)
-    tm = base_short(under, vix)
+    ctx = _ctx(vix, under)
+    raw = verify(p.underlying, under, ctx)
+    if p.kind == "etf":
+        tm = tm_status(under, ctx)
+        side = "long"
+        if tm.get("state") == "진입 신호":
+            tm["stop"] = _r(last.close * (1 - TM_RULE.stop))  # 손절은 ETF 매입가 기준
+    else:
+        tm = base_short(under, vix)
+        side = "short"
+        tm["note"] = INVERSE_NOTE
+    # 주문 수량은 상품 가격으로 계산해야 한다 (기초자산 가격이 아니다)
+    if "ref_price" in tm:
+        tm["ref_price"] = _r(last.close)
     tm["wait"] = [f"[{names.get(p.underlying, p.underlying)}] {w}" for w in tm.get("wait", [])]
-    tm["note"] = INVERSE_NOTE
     return {
         "symbol": p.symbol,
         "name": p.name,
@@ -487,9 +509,7 @@ def product_status(p: Asset, vix: list[Bar], names: dict[str, str]) -> dict:
         "kind": p.kind,
         "mult": p.mult,
         "underlying": names.get(p.underlying, p.underlying),
-        "verify": {
-            "short": with_cost(verify(p.underlying, under, _ctx(vix, under))["short"], COST_ETF)
-        },
+        "verify": {side: with_cost(raw[side], COST_ETF)},
         "date": last.day.isoformat(),
         "close": _r(last.close),
         "change": _r(last.close / daily[-2].close - 1, 4) if len(daily) > 1 else None,
@@ -578,6 +598,9 @@ def _action(a: dict, side: str, st: dict, code: str) -> dict:
         "market": a["market"],
         "verified": v.get("label") == "검증됨",
         "verify": v.get("label", "미검증"),
+        # 자금이 모자랄 때 우선순위 (minerva.trade): p값 낮은 순 → 비용 후 우위 큰 순
+        "p_value": v.get("p_value"),
+        "net_edge": v.get("net_edge"),
         "date": a["date"],
     }
     if code.endswith("ENTRY") or code == "BUY":
@@ -619,10 +642,18 @@ def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
     for p in products:
         if "error" in p:
             continue
+        side, codes = (
+            ("long", ("LONG_ENTRY", "LONG_EXIT"))
+            if p.get("kind") == "etf"
+            else (
+                "short",
+                ("BUY", "SELL"),
+            )
+        )
         if p["tm"]["state"] == "진입 신호":
-            out.append(_action(p, "short", p["tm"], "BUY"))
+            out.append(_action(p, side, p["tm"], codes[0]))
         elif p["tm"]["state"] == "청산 신호":
-            out.append(_action(p, "short", p["tm"], "SELL"))
+            out.append(_action(p, side, p["tm"], codes[1]))
     return sorted(out, key=lambda x: (not x["verified"], x["action"]))
 
 

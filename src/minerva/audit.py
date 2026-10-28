@@ -51,7 +51,10 @@ def audit(journal: list[dict], owned: dict, account: dict, mode: str, day: str) 
     for code, p in bot.items():
         pos = owned[code]
         cost = p["qty"] * p["avg"]
-        if equity and cost > equity * trade.WEIGHT * WEIGHT_TOLERANCE:
+        cap = trade.INDEX_ETF_WEIGHT if code in trade.INDEX_ETFS else trade.WEIGHT
+        if code in trade.INVERSES:
+            cap = trade.INVERSE_TOTAL
+        if equity and cost > equity * cap * WEIGHT_TOLERANCE:
             add("error", f"{pos['name']}: 매입금액 {cost:,.0f}원이 계좌의 {cost / equity:.0%}")
         want = trade.stop_price(pos.get("kind", "long"), code, p["avg"])
         if pos.get("stop") is None:

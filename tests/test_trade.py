@@ -644,3 +644,18 @@ def test_partial_limit_fill_is_followed_then_reported(tmp_path, monkeypatch):
     pos = json.loads((tmp_path / "positions.json").read_text())["005930"]
     assert pos["qty"] == 7 and "ordered" not in pos
     assert any("10주 중 7주 체결" in n for n in notes)
+
+
+def test_index_long_signal_sells_bot_inverse_first():
+    daily = _daily([_act("LONG_ENTRY", "069500.KS", "KODEX 200")])
+    account = {
+        **ACCOUNT,
+        "positions": [{"code": "114800", "qty": 10, "price": 1000, "avg": 1000}],
+    }
+    owned = {"114800": {"name": "KODEX 인버스", "kind": "inverse", "qty": 10}}
+    orders, _ = trade.plan(daily, account, owned)
+    assert orders[0]["code"] == "114800" and orders[0]["action"] == "UNSWITCH"
+    assert any(o["code"] == "069500" and o["side"] == "buy" for o in orders)
+    # 사용자가 직접 산 인버스는 건드리지 않는다
+    orders, _ = trade.plan(daily, account, {})
+    assert not any(o["side"] == "sell" for o in orders)

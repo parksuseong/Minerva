@@ -219,7 +219,7 @@ def test_regime_uses_only_vix_known_before_korean_close(monkeypatch):
 
     regs = {date(2026, 10, 26): "R0", date(2026, 10, 27): "R3"}
     monkeypatch.setattr(daily, "vix_regimes", lambda vix: regs)
-    monkeypatch.setattr(daily, "weekly_gate_at", lambda weekly, day: (None, None, False))
+    monkeypatch.setattr(daily, "weekly_gate_at", lambda weekly, day, keys=None: (None, None, False))
     kr = [Bar(date(2026, 10, 27), 1, 1, 1, 1), Bar(date(2026, 10, 28), 1, 1, 1, 1)]
     out = daily._regime_by_day([], kr)
     # 10/27 미국 마감(R3)은 한국 10/27 장이 끝난 뒤에 나온다 (관문 닫힘이라 R0은 R2로)

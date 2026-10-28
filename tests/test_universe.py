@@ -53,3 +53,9 @@ def test_kospi_top_reads_several_pages(tmp_path, monkeypatch):
     monkeypatch.setattr(universe, "_get_json", fake)
     assert universe.kospi_top(2) == [("000001.KS", "A"), ("000002.KS", "B")]
     assert seen == [1, 2]  # 2종목이 차면 더 받지 않는다
+
+
+def test_kospi_dedupes_stock_seen_on_two_pages():
+    s = {"itemCode": "000001", "stockName": "A", "stockEndType": "stock"}
+    b = {"itemCode": "000002", "stockName": "B", "stockEndType": "stock"}
+    assert universe.pick_kospi([s, s, b], 5) == [("000001.KS", "A"), ("000002.KS", "B")]

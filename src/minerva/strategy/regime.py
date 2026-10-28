@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Sequence
 from datetime import date, timedelta
 
@@ -21,22 +22,32 @@ def vix_weekly(vix: Sequence[Bar]) -> list[tuple[date, float | None, float | Non
     return list(zip([b.day for b in wk], sma(closes, 5), sma(closes, 10)))
 
 
-def weekly_gate_at(weekly: list[tuple[date, float | None, float | None]], day: date) -> tuple:
+def weekly_gate_at(
+    weekly: list[tuple[date, float | None, float | None]],
+    day: date,
+    keys: list[date] | None = None,
+) -> tuple:
     """그 날짜에 알 수 있던 VIX 주봉 (5주선, 10주선, 매수 허용 여부).
 
     지난주까지 마감된 주봉만 쓴다. 이번 주 봉은 진행 중이라 미래 정보다.
     5주선이 10주선 아래(데드크로스 상태)면 매수를 허용한다.
     """
     monday = day - timedelta(days=day.weekday())
-    done = [w for w in weekly if w[0] < monday]
-    if not done or done[-1][1] is None or done[-1][2] is None:
+    keys = keys if keys is not None else [w[0] for w in weekly]
+    i = bisect.bisect_left(keys, monday) - 1
+    if i < 0 or weekly[i][1] is None or weekly[i][2] is None:
         return None, None, False
-    _, w5, w10 = done[-1]
+    _, w5, w10 = weekly[i]
     return w5, w10, w5 < w10
 
 
 def gated_regime(raw: str | None, calm: bool) -> str:
-    """일봉 레짐에 주봉 5<10 관문을 씌운다: 관문이 열리면 R0·R1(매수 허용), 닫히면 R2·R3."""
+    """일봉 레짐에 주봉 5<10 관문을 씌운다: 관문이 열리면 R0·R1(매수 허용), 닫히면 R2·R3.
+
+    관문이 열리면 일봉이 R2·R3여도 R1(비중 100%)로 본다. 백테스트(2010~)에서 일봉 레짐으로
+    비중을 줄이는 것보다 수익이 높았다(1,000만 원 연 +4.8% vs +4.4%, 낙폭 −10.1% vs −9.3%).
+    관문이 닫히면 인버스 비중도 1/2 이하가 된다.
+    """
     if calm:
         return raw if raw in ("R0", "R1") else "R1"
     return raw if raw in ("R2", "R3") else "R2"

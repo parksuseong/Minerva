@@ -70,7 +70,8 @@ def test_plan_scales_by_regime_and_skips_expensive():
 def test_plan_caps_positions_and_budget():
     acts = [_act("LONG_ENTRY", f"{i:06d}.KS", f"S{i}", ref=1000) for i in range(12)]
     rich = {**ACCOUNT, "equity": 10_000_000, "cash_d2": 10_000_000}
-    orders, skipped = trade.plan(_daily(acts), rich, {})
+    # R2(종목당 10%)면 10종목까지 찬다. R1(20%)이면 예수금이 5종목에서 먼저 바닥난다.
+    orders, skipped = trade.plan(_daily(acts, regime="R2"), rich, {})
     assert len(orders) == trade.MAX_POSITIONS == 10
     assert any("한도" in s for s in skipped)
     # 예수금이 모자라면 한도 전에 예산에서 멈춘다

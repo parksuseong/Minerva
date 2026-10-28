@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 
+from minerva import trade
 from minerva.strategy import daily as dm
 from minerva.strategy.backtest import signals
 from minerva.strategy.indicators import Bar, crossed_down, crossed_up, stoch_fast_k
@@ -26,8 +27,8 @@ FEE = 0.00015
 SELL_TAX = 0.002
 SLIP = 0.0005
 ETFS = {"069500", "114800"}
-INDEX_ETFS = {"069500"}  # minerva.trade와 같다
-REGIME_FACTOR = {"R0": 1.0, "R1": 1.0, "R2": 1 / 2, "R3": 1 / 3}  # minerva.trade와 같다
+INDEX_ETFS = trade.INDEX_ETFS
+REGIME_FACTOR = trade.REGIME_FACTOR
 
 
 @dataclass
@@ -109,7 +110,7 @@ def load_universe(daily: dict, vix: list[Bar], codes: set[str] | None = None) ->
                 code,
                 p["name"],
                 "long" if side == "long" else "inv",
-                0.40 if side == "long" else 0.20,
+                trade.INDEX_ETF_WEIGHT if side == "long" else trade.INVERSE_TOTAL,
                 {b.day: b for b in prices},
                 entry,
                 take,
@@ -134,7 +135,7 @@ def load_universe(daily: dict, vix: list[Bar], codes: set[str] | None = None) ->
                 code,
                 a["name"],
                 "long",
-                0.20,
+                trade.WEIGHT,
                 {b.day: b for b in bars},
                 entry,
                 take,

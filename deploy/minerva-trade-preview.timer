@@ -1,0 +1,9 @@
+# 평일 16:45 (16:30 일일 분석이 끝난 뒤) 다음 날 08:50 주문을 텔레그램으로 미리 알린다.
+[Unit]
+Description=Preview next-day Minerva orders at 16:45 KST
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:45:00 Asia/Seoul
+
+[Install]
+WantedBy=timers.target

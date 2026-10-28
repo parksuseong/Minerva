@@ -57,13 +57,18 @@ Minerva/
 |---|---|---|
 | `minerva` (웹) | 화면·읽기 전용 API만. 계산·주문·증권사 키 없음 | `src/minerva/main.py`, `routes.py` |
 | `minerva-daily.timer` (배치) | 09:10·16:30 KST 종목 분석 → `~/.minerva/daily/latest.json` + 텔레그램 | `strategy/daily.py` |
-| `minerva-account.timer` (조회) | 평일 08~19시 10분마다 한국투자증권 잔고·주문·체결 → `~/.minerva/account/latest.json` | `kis.py`. 키 `~/.minerva/kis.env`는 이 프로세스만 읽는다. 주문 API 없음 |
+| `minerva-account.timer` (조회) | 평일 08~19시 30초마다 한국투자증권 잔고·주문·체결 → `~/.minerva/account/latest.json` | `kis.py`. 키 `~/.minerva/kis.env`는 이 프로세스만 읽는다. 조회만 |
+| `minerva-trade-{open,watch,preview}.timer` (주문) | 08:50 장전 시장가 주문 · 장중 30초 손절 감시 · 16:45 다음 날 주문 미리보기 → `~/.minerva/trade/` | `trade.py`. `mode` 파일이 `live`일 때만 실주문, `HALT` 파일이 있으면 정지 |
 
 - 대상: 코스피 지수·시총 상위 50(보통주), SPY·나스닥100 E-mini 선물(NQ=F)·나스닥 시총 상위 10, 비트코인, 인버스 4종(2배까지). 레버리지 상품은 다루지 않는다. 순위는 `strategy/universe.py`가 네이버 증권에서 하루 1번 받는다.
 - 종목별 "검증됨/부적합/미검증"은 `verify()`가 그 종목 차트로 롱·숏 규칙을 백테스트해 정한다(거래 30회 이상 + 표본 안·밖 우위 > 0, 주 1회 재계산, `~/.minerva/data/verify/`). 종목이 많아 우연 통과가 섞일 수 있다.
 - `actions`(API `/api/signals`): 오늘 낼 주문 — LONG_ENTRY·LONG_EXIT·SHORT_ENTRY·SHORT_EXIT·BUY/SELL(인버스). 자동매매가 읽는 목록이다. 진입은 다음 거래일 시가, 손절은 장중 스톱 주문 가정.
 - 진행 중인 봉은 버린다(`completed`).
 - 실제 투자는 국내만 한다(사용자 결정). 미국·코인 신호는 참고용이다.
+- 주문 대상은 국내·검증됨·롱 진입/청산·국내 인버스뿐이다. 비중은 종목당 20%×레짐 계수, 최대 5종목. 사용자가 직접 산 종목은 건드리지 않는다(`positions.json`에 있는 봇 보유분만).
+- 실전 전환은 사용자가 직접 한다: `echo live > ~/.minerva/trade/mode` (Claude가 대신 켜지 않는다). 기본은 모의 실행.
+- 텔레그램으로 "매매중지"가 오면 `touch ~/.minerva/trade/HALT`, "매매재개"가 오면 그 파일을 지운다.
+- 재주문: 통신 오류·응답 유실만 10초 간격으로 최대 3회 다시 낸다. 다시 내기 전에 주문 내역을 조회해 중복을 막는다. 증권사 거부(rt_cd≠0)는 다시 내지 않는다.
 - 💼 계좌 탭과 `/api/account`는 공개다(사용자 요청 2026-10-28). 잠그려면 `~/.minerva/account/view.token`에 토큰을 넣는다(헤더 `X-Minerva-Token`).
 - 화면 탭: 🎯 오늘 할 일 / 📈 종목 분석 / 💼 계좌 / 🏢 오피스 (`#today` 같은 해시로 이동).
 

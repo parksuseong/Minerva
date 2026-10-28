@@ -35,4 +35,5 @@ description: 매매 패턴이나 승률 주장을 검증할 때의 규칙. "이 
 - 기본은 `backtester` 에이전트에 맡긴다.
 - 직접 돌릴 때: `.venv/bin/python -m minerva.strategy.backtest SOXX --frame D --level 3 --hold 20 --stop 0.10`
   - 출력: 전체/표본 내/표본 밖 성과, `edge`(무조건 기대수익 대비 우위), 청산 사유 분포
+  - 실전 판정은 `edge`에서 왕복 비용(국내 주식 0.30%, ETF 0.10%)을 뺀 값으로 한다. 비용 전 우위만으로 "검증됨"이라 하지 않는다.
 - 새 지표는 `src/minerva/strategy/indicators.py`의 `tm_states`, `resample`, `ma_snapshot`, `dmi`를 쓴다. 새 백테스트 코드는 `src/minerva/strategy/`에 두고, 고정된 합성 데이터로 테스트를 같이 쓴다(`tests/`, 네트워크 금지).

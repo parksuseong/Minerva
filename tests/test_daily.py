@@ -142,3 +142,23 @@ def test_base_asset_gets_short_side_and_fear_blocks_it(monkeypatch):
     assert daily.base_short([], None)["state"] == "진입 신호"
     monkeypatch.setattr(daily, "regime_is_fear", lambda vix: True)
     assert daily.base_short([], None)["missing"] == ["백워데이션 중 신규 숏 금지"]
+
+
+def test_costs_by_market():
+    from minerva.strategy.daily import COST_ETF, COST_KR_STOCK, round_trip_cost
+
+    assert round_trip_cost("005930.KS", "KR") == COST_KR_STOCK
+    assert round_trip_cost("^KS11", "KR") == COST_ETF
+    assert round_trip_cost("SPY", "US") == COST_ETF
+
+
+def test_with_cost_demotes_thin_edges():
+    from minerva.strategy.daily import with_cost
+
+    v = {"label": "검증됨", "trades": 40, "edge": 0.004, "edge_in": 0.006, "edge_out": 0.002}
+    out = with_cost(v, 0.003)
+    assert out["label"] == "미검증" and out["gross_label"] == "검증됨"
+    assert out["net_edge_out"] == -0.001
+    assert with_cost(v, 0.001)["label"] == "검증됨"
+    weak = {**v, "edge": 0.001, "edge_in": 0.002, "edge_out": 0.001}
+    assert with_cost(weak, 0.003)["label"] == "부적합"

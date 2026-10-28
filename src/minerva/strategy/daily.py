@@ -81,6 +81,45 @@ SHORT_RULE = ShortRule(hold=20, stop=0.07)
 # 숏 규칙이 표본 안팎 모두 + 인 기초자산 (SPY는 표본 밖 −, 삼성·하이닉스·애플·테슬라 ❌)
 VERIFY_TTL = 7 * 24 * 3600
 VERIFY_MIN_TRADES = 30
+# 왕복 거래비용 (수수료 + 세금 + 체결 미끄러짐). 우위가 이 비용을 넘어야 "검증됨"이다.
+# 국내 주식: 수수료 0.03% + 매도 거래세 0.20% + 미끄러짐 0.07%. ETF·지수는 거래세가 없다.
+COST_KR_STOCK = 0.003
+COST_ETF = 0.001
+COST_CRYPTO = 0.002
+
+
+def round_trip_cost(symbol: str, market: str) -> float:
+    if market == "CRYPTO":
+        return COST_CRYPTO
+    if market == "KR" and not symbol.startswith("^"):
+        return COST_KR_STOCK
+    return COST_ETF  # 지수·선물·미국 ETF·국내 인버스 ETF
+
+
+def with_cost(v: dict, cost: float) -> dict:
+    """캐시된 판정(비용 전 우위)에 비용을 빼고 다시 판정한다."""
+    net = {
+        k: None if v.get(k) is None else round(v[k] - cost, 4)
+        for k in ("edge", "edge_in", "edge_out")
+    }
+    n = v.get("trades", 0)
+    if n >= VERIFY_MIN_TRADES and all(
+        e is not None and e > 0 for e in (net["edge_in"], net["edge_out"])
+    ):
+        label = "검증됨"
+    elif n >= VERIFY_MIN_TRADES and all(e is not None and e <= 0 for e in net.values()):
+        label = "부적합"
+    else:
+        label = "미검증"
+    return {
+        **v,
+        "label": label,
+        "cost": cost,
+        "net_edge": net["edge"],
+        "net_edge_in": net["edge_in"],
+        "net_edge_out": net["edge_out"],
+        "gross_label": v.get("label"),
+    }
 
 
 def _verdict(res: dict) -> dict:
@@ -343,7 +382,9 @@ def analyze(asset: Asset, vix: list[Bar], vix_ma50: float | None = None) -> dict
     last = daily[-1]
     snap = ma_snapshot([b.close for b in daily])
     st = tm_states(daily)[-1]
-    ver = verify(asset.symbol, daily, ctx)
+    raw = verify(asset.symbol, daily, ctx)
+    cost = round_trip_cost(asset.symbol, asset.market)
+    ver = {"long": with_cost(raw["long"], cost), "short": with_cost(raw["short"], cost)}
     return {
         "symbol": asset.symbol,
         "name": asset.name,
@@ -401,7 +442,9 @@ def product_status(p: Asset, vix: list[Bar], names: dict[str, str]) -> dict:
         "kind": p.kind,
         "mult": p.mult,
         "underlying": names.get(p.underlying, p.underlying),
-        "verify": {"short": verify(p.underlying, under, _ctx(vix, under))["short"]},
+        "verify": {
+            "short": with_cost(verify(p.underlying, under, _ctx(vix, under))["short"], COST_ETF)
+        },
         "date": last.day.isoformat(),
         "close": _r(last.close),
         "change": _r(last.close / daily[-2].close - 1, 4) if len(daily) > 1 else None,

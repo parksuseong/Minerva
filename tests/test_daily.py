@@ -203,3 +203,17 @@ def test_apply_fdr_demotes_lucky_passes():
         and "다중 검정" in assets[1]["verify"]["long"]["why"]
     )
     assert assets[2]["verify"]["long"]["label"] == "미검증"  # 비용 등으로 이미 미검증이면 그대로
+
+
+def test_regime_uses_only_vix_known_before_korean_close(monkeypatch):
+    from datetime import date
+
+    from minerva.strategy import daily
+    from minerva.strategy.indicators import Bar
+
+    regs = {date(2026, 10, 26): "R0", date(2026, 10, 27): "R3"}
+    monkeypatch.setattr(daily, "vix_regimes", lambda vix: regs)
+    kr = [Bar(date(2026, 10, 27), 1, 1, 1, 1), Bar(date(2026, 10, 28), 1, 1, 1, 1)]
+    out = daily._regime_by_day([], kr)
+    # 10/27 미국 마감(R3)은 한국 10/27 장이 끝난 뒤에 나온다
+    assert out == {date(2026, 10, 27): "R0", date(2026, 10, 28): "R3"}

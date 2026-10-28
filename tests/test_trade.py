@@ -68,11 +68,14 @@ def test_plan_scales_by_regime_and_skips_expensive():
 
 
 def test_plan_caps_positions_and_budget():
-    acts = [_act("LONG_ENTRY", f"00000{i}.KS", f"S{i}") for i in range(7)]
-    orders, skipped = trade.plan(_daily(acts), ACCOUNT, {})
-    assert len(orders) == trade.MAX_POSITIONS
-    assert sum(o["qty"] * 10000 * trade.GAP_BUFFER for o in orders) <= 1_000_000
+    acts = [_act("LONG_ENTRY", f"{i:06d}.KS", f"S{i}", ref=1000) for i in range(12)]
+    rich = {**ACCOUNT, "equity": 10_000_000, "cash_d2": 10_000_000}
+    orders, skipped = trade.plan(_daily(acts), rich, {})
+    assert len(orders) == trade.MAX_POSITIONS == 10
     assert any("한도" in s for s in skipped)
+    # 예수금이 모자라면 한도 전에 예산에서 멈춘다
+    orders, _ = trade.plan(_daily(acts), {**ACCOUNT, "cash_d2": 500_000}, {})
+    assert sum(o["qty"] * 1000 * trade.GAP_BUFFER for o in orders) <= 500_000
 
 
 def test_plan_sells_only_bot_owned_positions():
@@ -355,3 +358,34 @@ def test_preflight_monday_accepts_friday_analysis(tmp_path, monkeypatch):
     checks = dict((m, ok) for ok, m in trade.preflight_checks(monday, friday, lambda: CFG))
     assert checks["일일 분석: 2026-10-30T16:31"] is True
     assert checks["타이머 꺼짐: minerva-trade-open.timer"] is False
+
+
+def test_priority_spends_cash_on_strongest_evidence_first():
+    weak = {**_act("LONG_ENTRY", "000270.KS", "약함"), "p_value": 0.2, "net_edge": 0.02}
+    strong = {**_act("LONG_ENTRY", "086790.KS", "강함"), "p_value": 0.006, "net_edge": 0.005}
+    account = {**ACCOUNT, "cash_d2": 150_000}
+    orders, skipped = trade.plan(_daily([weak, strong]), account, {})
+    assert [o["name"] for o in orders] == ["강함"]
+    assert any("약함" in s for s in skipped)
+
+
+def test_index_etf_gets_larger_weight_and_inverse_only_one():
+    etf = _act("LONG_ENTRY", "069500.KS", "KODEX 200", ref=88905)
+    inv1 = {**_act("BUY", "114800.KS", "KODEX 인버스", ref=1600), "p_value": 0.01}
+    inv2 = {**_act("BUY", "252670.KS", "곱버스", ref=600), "p_value": 0.01}
+    orders, skipped = trade.plan(_daily([inv2, etf, inv1]), ACCOUNT, {})
+    by = {o["code"]: o["qty"] for o in orders}
+    assert by["069500"] == math.floor(400_000 / (88905 * trade.GAP_BUFFER))  # 40%
+    assert "114800" in by and "252670" not in by  # 같은 신호면 1배 하나만
+    assert by["114800"] == math.floor(200_000 / (1600 * trade.GAP_BUFFER))
+    assert any("곱버스" in s and "인버스 합계" in s for s in skipped)
+
+
+def test_inverse_cap_counts_held_inverse():
+    account = {
+        **ACCOUNT,
+        "positions": [{"code": "252670", "qty": 300, "price": 600, "value": 180_000}],
+    }
+    inv1 = _act("BUY", "114800.KS", "KODEX 인버스", ref=1600)
+    orders, _ = trade.plan(_daily([inv1]), account, {})
+    assert orders[0]["qty"] == math.floor(20_000 / (1600 * trade.GAP_BUFFER))

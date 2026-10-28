@@ -69,7 +69,8 @@ Minerva/
 - 매도 먼저: 국내 인버스 매수 신호가 뜨면 봇의 롱을 모두 판다(사용자 결정). 매도가 있는 날은 08:50에 매도만 내고, 매수는 09:02에 매도 대금으로 낸다.
 - 자금은 유동적(증액 가능, 사용자 2026-10-28). 비중은 매번 그날 평가액 기준이다.
 - 실전 전환은 사용자가 직접 한다: `echo live > ~/.minerva/trade/mode` (Claude가 대신 켜지 않는다). 기본은 모의 실행.
-- 계좌 평가액이 고점 대비 −15%면 `NO_ENTRY` 파일이 생겨 신규 매수만 멈춘다(손절·청산은 계속). 출금 뒤엔 `peak.json`을 지운다.
+- 봇 손익(청산 `closed.jsonl` + 보유 평가손익)이 고점보다 평가액의 15% 넘게 줄면 `NO_ENTRY` 파일이 생겨 신규 매수만 멈춘다(손절·청산은 계속). 입출금에는 반응하지 않는다.
+- 성과: 15:45 대사가 체결된 봇 매도를 `closed.jsonl`에 적고(비용 차감), 금 17:00 `python -m minerva.perf weekly`가 주간 리포트를 보낸다.
 - 백업: 평일 16:10 `python -m minerva.backup`이 `~/.minerva/{trade,account/latest.json,daily}`를 tar.gz로 묶어 텔레그램으로 보낸다(키·토큰 파일 제외, 서버엔 7개 보관). 코드는 GitHub.
 - 운용 점검: 평일 16:00 `python -m minerva.audit --notify` (`minerva-trade-audit.timer`). ❌·⚠️가 나오면 `trade-auditor` 에이전트로 원인을 찾는다.
 - 주문 경로 확인: 장중에 `python -m minerva.trade selftest --yes` (KODEX 인버스 1주 매수→매도, 실주문).

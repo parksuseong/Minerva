@@ -10,8 +10,8 @@
 - `reconcile` (평일 15:45): 봇 보유 목록과 실제 잔고를 맞춘다 (미체결·직접 매도 정리)
 - `selftest --yes` (장중, 수동): 1주 사고 바로 팔아 주문 경로를 확인한다 (모드와 무관하게 실주문)
 
-계좌 평가액이 고점 대비 DRAWDOWN_LIMIT 넘게 빠지면 `NO_ENTRY` 파일을 만들어 신규 매수만 막는다.
-손절·청산 매도는 계속한다. 입출금도 평가액을 바꾸므로 출금 뒤엔 `peak.json`을 지운다.
+봇 손익이 고점보다 평가액의 DRAWDOWN_LIMIT 넘게 줄면 `NO_ENTRY` 파일을 만들어 신규 매수만 막는다.
+손절·청산 매도는 계속한다. 봇 손익 기준이라 입출금에는 반응하지 않는다.
 
 사용자가 직접 산 종목은 건드리지 않는다. 봇이 산 종목은 `positions.json`에 적어 둔다.
 """
@@ -30,7 +30,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from minerva import kis, notify
+from minerva import kis, notify, perf
 
 log = logging.getLogger(__name__)
 
@@ -75,19 +75,23 @@ def entries_blocked() -> bool:
 
 
 def check_drawdown(account: dict) -> bool:
-    """고점 평가액을 갱신하고, 한도를 넘게 빠졌으면 신규 매수를 막는다. 막혔으면 True."""
+    """봇 손익이 고점보다 평가액의 DRAWDOWN_LIMIT 넘게 줄면 신규 매수를 막는다. 막혔으면 True.
+
+    평가액 대신 봇 손익(청산 + 보유 평가)으로 재서 입출금에 흔들리지 않는다 (자금은 유동적).
+    """
     equity = account.get("equity") or 0
     if equity <= 0:
         return entries_blocked()
+    pnl = perf.bot_pnl(TRADE_DIR, _load(TRADE_DIR / "positions.json", {}), account)
     peak_file = TRADE_DIR / "peak.json"
-    peak = _load(peak_file, {}).get("equity", 0)
-    if equity > peak:
-        _save(peak_file, {"equity": equity, "at": account.get("updated_at")})
-    elif equity < peak * (1 - DRAWDOWN_LIMIT) and not entries_blocked():
-        kis._write_private(TRADE_DIR / "NO_ENTRY", f"{account.get('updated_at')} {equity}\n")
+    peak = _load(peak_file, {}).get("pnl", 0)
+    if pnl > peak or not peak_file.exists():
+        _save(peak_file, {"pnl": pnl, "at": account.get("updated_at")})
+    elif peak - pnl > equity * DRAWDOWN_LIMIT and not entries_blocked():
+        kis._write_private(TRADE_DIR / "NO_ENTRY", f"{account.get('updated_at')} {pnl}\n")
         notify.send(
-            f"🚨 계좌 평가액 {equity:,.0f}원, 고점 {peak:,.0f}원 대비 "
-            f"{equity / peak - 1:.1%} → 신규 매수를 멈춰요 (손절·청산은 계속)\n"
+            f"🚨 봇 손익 {pnl:+,.0f}원, 고점 {peak:+,.0f}원보다 {peak - pnl:,.0f}원 줄었어요 "
+            f"(평가액의 {(peak - pnl) / equity:.0%}) → 신규 매수를 멈춰요 (손절·청산은 계속)\n"
             "다시 열려면 ~/.minerva/trade/NO_ENTRY 삭제"
         )
     return entries_blocked()
@@ -133,6 +137,9 @@ def plan(daily: dict, account: dict, owned: dict) -> tuple[list[dict], list[str]
                 switch = {"name": pos["name"], "action": "SWITCH", "date": inverse_in[0]["date"]}
                 orders.append(_order("sell", switch, code, held[code]["qty"]))
                 orders[-1]["kind"] = "long"
+    for o in orders:  # 청산 기록(perf)용: 매도 시점의 매입 평균가
+        o["entry_avg"] = held[o["code"]].get("avg")
+        o["opened"] = owned.get(o["code"], {}).get("opened")
     open_after = len(held) - len(orders)
     alloc = account.get("equity", 0) * WEIGHT * REGIME_FACTOR.get(regime, 1 / 3)
     # 매도 대금도 쓸 수 있다고 보고 계획한다. 실제 매수는 매도 체결 뒤(09:02)에 낸다.
@@ -413,6 +420,8 @@ def run_watch(account: dict | None = None) -> list[dict]:
                 "action": "STOP",
                 "signal_date": datetime.now(kis.KST).strftime("%Y-%m-%d"),
                 "kind": pos["kind"],
+                "entry_avg": p["avg"],
+                "opened": pos.get("opened"),
             }
             r = send_order(cfg, o, live)
             r["key"] = order_key(o)
@@ -434,6 +443,7 @@ def run_reconcile(now: datetime | None = None) -> list[str]:
     now = now or datetime.now(kis.KST)
     cfg = kis.load_config()
     account = kis._snapshot(cfg, now)
+    closed = perf.record_closed(TRADE_DIR, _read_journal(), account, now.strftime("%Y-%m-%d"))
     check_drawdown(account)
     held = {p["code"]: p for p in account.get("positions", [])}
     status = {o["code"]: o["status"] for o in reversed(account.get("orders", []))}
@@ -458,6 +468,11 @@ def run_reconcile(now: datetime | None = None) -> list[str]:
             left = held[e["code"]]["qty"]
             notes.append(f"• {e['name']}: 매도 접수했지만 {left}주 남음 → 다시 감시 (확인 필요)")
     _save(TRADE_DIR / "positions.json", owned)
+    for c in closed:
+        notes.append(
+            f"• 청산 {c['name']} {c['entry']:,.0f}→{c['exit']:,.0f}원 · 비용 후 "
+            f"{c['net_ret']:+.2%} ({c['pnl']:+,}원)"
+        )
     if notes:
         notify.send("🧾 장 마감 대사\n" + "\n".join(notes))
     return notes

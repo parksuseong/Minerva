@@ -1,0 +1,9 @@
+# 매주 금요일 17:00 (16:30 분석 뒤) 이번 주·누적 성과를 백테스트 기대치와 비교해 보낸다.
+[Unit]
+Description=Weekly Minerva performance report on Fridays 17:00 KST
+
+[Timer]
+OnCalendar=Fri *-*-* 17:00:00 Asia/Seoul
+
+[Install]
+WantedBy=timers.target

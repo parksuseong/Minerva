@@ -1,0 +1,12 @@
+# 주간 실전 성과 리포트(조회 전용). minerva-perf-weekly.timer가 실행한다.
+# 설치: sudo cp deploy/minerva-perf-weekly.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-perf-weekly.timer
+[Unit]
+Description=Minerva weekly live performance report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.perf weekly

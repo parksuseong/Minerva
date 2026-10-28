@@ -205,23 +205,30 @@ def test_run_open_skips_holiday(tmp_path, monkeypatch):
 
 
 def test_drawdown_blocks_only_new_buys(tmp_path, monkeypatch):
-    acc = {**ACCOUNT, "positions": [{"code": "035420", "qty": 2}]}
-    assert trade.check_drawdown(acc) is False  # 첫 고점 기록
-    low = {**acc, "equity": 800_000}
+    owned = {"035420": {"name": "N", "kind": "long"}}
+    (tmp_path / "positions.json").write_text(json.dumps(owned))
+    acc = {**ACCOUNT, "positions": [{"code": "035420", "qty": 2, "pnl": 0}]}
+    assert trade.check_drawdown(acc) is False  # 첫 고점(봇 손익 0) 기록
+    low = {**acc, "positions": [{"code": "035420", "qty": 2, "pnl": -160_000}]}
     assert trade.check_drawdown(low) is True and (tmp_path / "NO_ENTRY").exists()
     daily = _daily([_act("LONG_ENTRY", "005930.KS", "A"), _act("LONG_EXIT", "035420.KS", "N")])
     (tmp_path / "daily.json").write_text(json.dumps(daily))
-    (tmp_path / "positions.json").write_text(json.dumps({"035420": {"name": "N", "kind": "long"}}))
     monkeypatch.setattr(trade, "DAILY_FILE", tmp_path / "daily.json")
     monkeypatch.setattr(kis, "load_config", lambda: CFG)
     monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: low)
     assert [(r["code"], r["side"]) for r in trade.run_open(NOW)] == [("035420", "sell")]
 
 
-def test_drawdown_raises_peak():
-    trade.check_drawdown({"equity": 100})
-    trade.check_drawdown({"equity": 200})
-    assert trade.check_drawdown({"equity": 175}) is False  # −12.5%
+def test_drawdown_ignores_deposits_and_withdrawals():
+    trade.check_drawdown({"equity": 1_000_000, "positions": []})
+    # 출금으로 평가액이 반토막 나도 봇 손익은 그대로라 막지 않는다
+    assert trade.check_drawdown({"equity": 500_000, "positions": []}) is False
+
+
+def test_drawdown_counts_realized_losses(tmp_path):
+    trade.check_drawdown({"equity": 1_000_000, "positions": []})
+    (tmp_path / "closed.jsonl").write_text(json.dumps({"key": "k", "pnl": -200_000}) + "\n")
+    assert trade.check_drawdown({"equity": 800_000, "positions": []}) is True
 
 
 def test_reconcile_drops_unfilled_and_rewatches_unsold(tmp_path, monkeypatch):
@@ -231,6 +238,7 @@ def test_reconcile_drops_unfilled_and_rewatches_unsold(tmp_path, monkeypatch):
     (tmp_path / "journal.jsonl").write_text(
         json.dumps(
             {
+                "key": "2026-10-28:035420:sell",
                 "side": "sell",
                 "result": "sent",
                 "code": "035420",

@@ -1,0 +1,12 @@
+# 운용 상태(주문 기록·봇 보유·계좌·분석)를 묶어 텔레그램으로 백업한다. 키·토큰은 넣지 않는다.
+# 설치: sudo cp deploy/minerva-backup.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-backup.timer
+[Unit]
+Description=Minerva state backup to Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.backup

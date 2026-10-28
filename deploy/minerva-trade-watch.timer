@@ -1,0 +1,11 @@
+# 평일 09:00~15:29(KST) 30초마다 봇 보유 종목 손절 감시.
+[Unit]
+Description=Watch Minerva bot positions for stops every 30 seconds
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09..14:*:00/30 Asia/Seoul
+OnCalendar=Mon..Fri *-*-* 15:00..29:00/30 Asia/Seoul
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

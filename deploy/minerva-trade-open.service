@@ -1,0 +1,12 @@
+# 자동매매 (open). minerva-trade-open.timer가 실행한다. 실주문은 ~/.minerva/trade/mode 가 live일 때만.
+# 설치: sudo cp deploy/minerva-trade-* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-trade-{open,watch,preview}.timer
+[Unit]
+Description=Minerva auto trading (open)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.trade open

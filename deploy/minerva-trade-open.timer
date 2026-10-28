@@ -1,0 +1,11 @@
+# 평일 08:50 장전 동시호가에 시장가 주문 → 09:00 시가 체결 (백테스트의 "다음 날 시가"와 같다).
+# Persistent 없음: 서버가 늦게 켜져도 장중에 뒤늦게 시장가 주문을 내지 않는다.
+[Unit]
+Description=Place Minerva pre-open market orders at 08:50 KST
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:50:00 Asia/Seoul
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -57,6 +57,15 @@
     </details>`;
   }
 
+  // minerva.trade와 같은 기준: 국내·검증됨·롱/인버스만 실제 주문한다
+  const AUTO = ["LONG_ENTRY", "LONG_EXIT", "BUY", "SELL"];
+  function autoTag(x) {
+    if (x.market !== "KR") return "📎 참고 (해외·코인은 주문 안 함)";
+    if (!AUTO.includes(x.action)) return "📎 참고 (개별주 공매도 불가)";
+    if (!x.verified) return "📎 참고 (미검증)";
+    return "🤖 자동주문 대상";
+  }
+
   function actionHtml(x) {
     const tag = x.verified ? "✅ 검증됨" : `⚠️ ${esc(x.verify)}`;
     const body = x.stop != null
@@ -64,7 +73,8 @@
       : `${esc(x.reason)} ${pct(x.pnl)} · ${esc(x.when)}`;
     return `<div class="act"><span class="tag ${esc(x.action)}">${esc(x.label)}</span>
       <div><b>${esc(x.name)}</b> <span class="mini">${esc(x.symbol)} · ${tag}</span></div>
-      <span></span><div class="detail">${body}</div></div>`;
+      <span></span><div class="detail">${body}</div>
+      <span></span><div class="mini">${autoTag(x)}</div></div>`;
   }
 
   const rows = (d) => d.assets.concat(d.products || []).filter((a) => !a.error);

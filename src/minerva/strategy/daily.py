@@ -37,7 +37,13 @@ from minerva.strategy.indicators import (
     stoch_fast_k,
     tm_states,
 )
-from minerva.strategy.regime import htf_direction, vix_regimes
+from minerva.strategy.regime import (
+    gated_regime,
+    htf_direction,
+    vix_regimes,
+    vix_weekly,
+    weekly_gate_at,
+)
 from minerva.strategy.report import CACHE_DIR, fetch_yahoo
 from minerva.strategy.short import ShortRule, evaluate_short, run_short
 from minerva.strategy.universe import kospi_top, nasdaq_top
@@ -320,7 +326,7 @@ def _month_end(d: date) -> date:
     return nxt - timedelta(days=1)
 
 
-def wait_levels(bars: list[Bar], side: str, vix_ma50: float | None = None) -> dict[str, str]:
+def wait_levels(bars: list[Bar], side: str, gate: dict | None = None) -> dict[str, str]:
     """빠질 수 있는 조건별로 '어느 가격까지·언제까지'를 문장으로 만든다.
 
     Stoch 가격은 최근 5봉 고저가 그대로라는 가정의 근사치다.
@@ -341,7 +347,10 @@ def wait_levels(bars: list[Bar], side: str, vix_ma50: float | None = None) -> di
         return {
             "L1 신호": f"{f(ll + 0.2 * (hh - ll))} 이하로 눌렸다가 반등하는 날 (Stoch 20 재돌파)",
             "50일선 위": f"종가 {f(ma50)} 위로 회복",
-            "VIX 평온(R0·R1)": f"VIX 종가가 50일선 {f(vix_ma50)} 아래로 복귀",
+            "VIX 주봉 5<10": (
+                f"VIX 주봉 5주선 {f((gate or {}).get('w5'))}이 10주선 "
+                f"{f((gate or {}).get('w10'))} 아래로 마감 (다음 확정 {fri})"
+            ),
             "주봉 20주선 위": f"주봉 종가 {f(w20)} 위로 마감 (다음 확정 {fri})",
             "월봉 10개월선 위": f"월봉 종가 {f(m10)} 위로 마감 (다음 확정 {eom})",
         }
@@ -363,7 +372,7 @@ def tm_status(bars: list[Bar], ctx: Context) -> dict:
     conds = {
         "L1 신호": states[i].long_level >= 1 and (i == 0 or states[i - 1].long_level < 1),
         "50일선 위": ma50 is not None and last.close > ma50,
-        "VIX 평온(R0·R1)": ctx.regime.get(last.day) in ("R0", "R1"),
+        "VIX 주봉 5<10": ctx.regime.get(last.day) in ("R0", "R1"),
         "주봉 20주선 위": ctx.weekly_up.get(last.day, False),
         "월봉 10개월선 위": ctx.monthly_up.get(last.day, False),
     }
@@ -432,7 +441,7 @@ def fear_status(vix: list[Bar], vix3m: list[Bar]) -> dict:
 SIZE_BY_REGIME = {"R0": "계획대로", "R1": "계획대로", "R2": "계획의 1/2", "R3": "계획의 1/3"}
 
 
-def analyze(asset: Asset, vix: list[Bar], vix_ma50: float | None = None) -> dict:
+def analyze(asset: Asset, vix: list[Bar], gate: dict | None = None) -> dict:
     daily = completed(fetch_yahoo(asset.symbol, "max"), asset.market)
     ctx = _ctx(vix, daily)
     last = daily[-1]
@@ -455,7 +464,7 @@ def analyze(asset: Asset, vix: list[Bar], vix_ma50: float | None = None) -> dict
         "ma50": _r(snap["ma"].get(50)),
         "ma200": _r(snap["ma"].get(200)),
         "adv": round(sum(b.close * b.volume for b in daily[-20:]) / len(daily[-20:])),
-        "tm": _with_wait(tm_status(daily, ctx), wait_levels(daily, "long", vix_ma50)),
+        "tm": _with_wait(tm_status(daily, ctx), wait_levels(daily, "long", gate)),
         "short": base_short(daily, vix),
     }
 
@@ -526,29 +535,36 @@ def _with_wait(tm: dict, levels: dict[str, str]) -> dict:
 
 
 def _regime_by_day(vix: list[Bar], daily: list[Bar]) -> dict[date, str]:
-    """자산 거래일마다 그날 장 마감 때 알 수 있던 마지막 VIX 레짐.
+    """자산 거래일마다 그날 장 마감 때 알 수 있던 VIX 레짐 (매수 허용 = R0·R1).
 
     같은 날짜의 미국 마감은 한국 마감 뒤(KST 새벽)에 나오므로 전날까지만 쓴다.
+    매수 허용은 VIX 주봉 5주선 < 10주선이 정한다 (사용자 결정 2026-10-28, 블로그 방식).
+    일봉 50일선 레짐은 비중(R2 1/2, R3 1/3)에만 남는다.
     """
     reg = vix_regimes(vix)
     days = sorted(reg)
+    weekly = vix_weekly(vix)
     out, k = {}, -1
     for b in daily:
         while k + 1 < len(days) and days[k + 1] < b.day:
             k += 1
         if k >= 0:
-            out[b.day] = reg[days[k]]
+            out[b.day] = gated_regime(reg[days[k]], weekly_gate_at(weekly, b.day)[2])
     return out
 
 
 def build() -> dict:
     vix = completed(fetch_yahoo("^VIX", "max"), "US")
     vix3m = completed(fetch_yahoo("^VIX3M", "max"), "US")
-    regime = vix_regimes(vix).get(vix[-1].day)
+    raw = vix_regimes(vix).get(vix[-1].day)
     vix_ma50 = sma([b.close for b in vix], 50)[-1]
+    today = datetime.now(timezone(timedelta(hours=9))).date()
+    w5, w10, calm = weekly_gate_at(vix_weekly(vix), today)
+    regime = gated_regime(raw, calm)
+    gate = {"w5": _r(w5), "w10": _r(w10), "open": calm}
     universe = watchlist()
     with ThreadPoolExecutor(max_workers=6) as pool:
-        futures = {a.symbol: pool.submit(analyze, a, vix, vix_ma50) for a in universe}
+        futures = {a.symbol: pool.submit(analyze, a, vix, gate) for a in universe}
     assets = []
     for a in universe:
         try:
@@ -572,8 +588,10 @@ def build() -> dict:
             "date": vix[-1].day.isoformat(),
             "close": _r(vix[-1].close),
             "regime": regime,
+            "raw_regime": raw,
             "size_limit": SIZE_BY_REGIME.get(regime, "?"),
             "ma50": _r(vix_ma50),
+            "gate": gate,
         },
         "fear": fear_status(vix, vix3m),
         "actions": make_actions(assets, products),
@@ -702,12 +720,15 @@ def write_summary(data: dict) -> list[str]:
     """분석 JSON만 근거로 쓴 요약문 (숫자는 모두 data에서 온다)."""
     v = data["vix"]
     out = []
+    g = v.get("gate") or {}
     if v["regime"] in ("R0", "R1"):
-        out.append(f"VIX {v['close']}로 50일선({v['ma50']}) 아래라 롱 규칙이 열려 있어요.")
+        out.append(
+            f"VIX 주봉 5주선({g.get('w5')})이 10주선({g.get('w10')}) 아래라 롱 규칙이 열려 있어요."
+        )
     else:
         out.append(
-            f"VIX {v['close']}가 50일선({v['ma50']}) 위({v['regime']})라 롱 신규 진입은 막혀 "
-            f"있어요. VIX가 {v['ma50']} 아래로 마감하면 다시 열려요. 숏 규칙은 VIX와 무관해요."
+            f"VIX 주봉 5주선({g.get('w5')})이 10주선({g.get('w10')}) 위라 롱 신규 진입은 막혀 "
+            f"있어요. 주봉이 5<10으로 마감하면(금요일) 다음 주에 열려요. 숏 규칙은 VIX와 무관해요."
         )
     f = data["fear"]
     if f.get("state", "없음") != "없음":
@@ -731,7 +752,9 @@ def telegram_summary(data: dict) -> str:
     v, f = data["vix"], data["fear"]
     lines = [
         f"📊 미네르바 일일 분석 ({data['generated_at'][:16].replace('T', ' ')})",
-        f"🌡 VIX {v['close']} · {v['regime']} → 신규 비중 {v['size_limit']}",
+        f"🌡 VIX {v['close']} · 주봉 5/10 {(v.get('gate') or {}).get('w5')}/"
+        f"{(v.get('gate') or {}).get('w10')} {'열림' if v['regime'] in ('R0', 'R1') else '닫힘'}"
+        f" → 신규 비중 {v['size_limit']}",
         f"😨 공포 초입: {f['state']} (VIX/VIX3M {f['premium']:+.1%})"
         if f.get("premium") is not None
         else "😨 공포 초입: 데이터 없음",

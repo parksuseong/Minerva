@@ -271,7 +271,7 @@ def _snapshot(cfg: dict, now: datetime | None = None) -> dict:
         "market": "국내주식",
         # 계좌번호는 화면에 뒤 2자리만 보인다
         "account": f"****{cfg['cano'][-2:]}-{cfg['prd']}",
-        "updated_at": now.strftime("%Y-%m-%d %H:%M"),
+        "updated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
         **parse_balance(balance),
         "orders": [o for o in orders if o["time"].startswith(today)],
         "trades": trades,

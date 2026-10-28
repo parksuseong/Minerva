@@ -162,3 +162,20 @@ def test_with_cost_demotes_thin_edges():
     assert with_cost(v, 0.001)["label"] == "검증됨"
     weak = {**v, "edge": 0.001, "edge_in": 0.002, "edge_out": 0.001}
     assert with_cost(weak, 0.003)["label"] == "부적합"
+
+
+def test_apply_fdr_demotes_lucky_passes():
+    from minerva.strategy.daily import apply_fdr
+
+    def asset(sym, p, label="검증됨"):
+        return {"symbol": sym, "verify": {"long": {"label": label, "trades": 40, "p_value": p}}}
+
+    assets = [asset("A", 0.001), asset("B", 0.3), asset("C", 0.002, "미검증"), {"error": "x"}]
+    passed = apply_fdr(assets, q=0.10)
+    assert passed == {"A", "C"}
+    assert assets[0]["verify"]["long"]["label"] == "검증됨"
+    assert (
+        assets[1]["verify"]["long"]["label"] == "미검증"
+        and "다중 검정" in assets[1]["verify"]["long"]["why"]
+    )
+    assert assets[2]["verify"]["long"]["label"] == "미검증"  # 비용 등으로 이미 미검증이면 그대로

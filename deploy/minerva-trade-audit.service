@@ -1,0 +1,14 @@
+# 자동매매 운용 점검(조회 전용). minerva-trade-audit.timer가 실행한다.
+# 설치: sudo cp deploy/minerva-trade-audit.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-trade-audit.timer
+[Unit]
+Description=Minerva trade audit (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.audit --notify
+# 규칙 위반이면 1로 끝나지만 알림은 이미 보냈으니 서비스 실패로 남기지 않는다.
+SuccessExitStatus=0 1

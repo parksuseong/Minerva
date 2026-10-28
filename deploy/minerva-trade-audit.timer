@@ -1,0 +1,9 @@
+# 평일 16:00 (15:45 대사 뒤) 그날 주문·보유가 규칙과 맞는지 점검해 텔레그램으로 보고.
+[Unit]
+Description=Audit Minerva auto trading at 16:00 KST
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:00:00 Asia/Seoul
+
+[Install]
+WantedBy=timers.target

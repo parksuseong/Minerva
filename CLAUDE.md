@@ -48,7 +48,7 @@ Minerva/
 - `risk-rules` — 비중·손절·레버리지 한도 (모든 신호보다 우선)
 - `backtest-guard` — 패턴·승률 검증 규칙 (사후 맞춤 금지)
 - 검증 현황: `docs/backtests/2026-10-28-results.md` (가설 A~N 판정, 다음 후보 P1~P4)
-- 에이전트: `strategist`(분석), `risk-officer`(반박·검증), `backtester`(규칙 검증)
+- 에이전트: `strategist`(분석), `risk-officer`(반박·검증), `backtester`(규칙 검증), `trade-auditor`(실전 주문·보유 점검)
 - 지표 값은 `.venv/bin/python -m minerva.strategy.report <심볼...>`로 계산한다.
 - 규칙 검증은 `.venv/bin/python -m minerva.strategy.backtest <심볼...> --help` 참고.
 
@@ -68,6 +68,7 @@ Minerva/
 - 주문 대상은 국내·검증됨·롱 진입/청산·국내 인버스뿐이다. 비중은 종목당 20%×레짐 계수, 최대 5종목. 사용자가 직접 산 종목은 건드리지 않는다(`positions.json`에 있는 봇 보유분만).
 - 실전 전환은 사용자가 직접 한다: `echo live > ~/.minerva/trade/mode` (Claude가 대신 켜지 않는다). 기본은 모의 실행.
 - 계좌 평가액이 고점 대비 −15%면 `NO_ENTRY` 파일이 생겨 신규 매수만 멈춘다(손절·청산은 계속). 출금 뒤엔 `peak.json`을 지운다.
+- 운용 점검: 평일 16:00 `python -m minerva.audit --notify` (`minerva-trade-audit.timer`). ❌·⚠️가 나오면 `trade-auditor` 에이전트로 원인을 찾는다.
 - 주문 경로 확인: 장중에 `python -m minerva.trade selftest --yes` (KODEX 인버스 1주 매수→매도, 실주문).
 - 텔레그램으로 "매매중지"가 오면 `touch ~/.minerva/trade/HALT`, "매매재개"가 오면 그 파일을 지운다.
 - 재주문: 통신 오류·응답 유실만 10초 간격으로 최대 3회 다시 낸다. 다시 내기 전에 주문 내역을 조회해 중복을 막는다. 증권사 거부(rt_cd≠0)는 다시 내지 않는다.

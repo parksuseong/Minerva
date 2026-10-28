@@ -64,7 +64,7 @@ Minerva/
 - `actions`(API `/api/signals`): 오늘 낼 주문 — LONG_ENTRY·LONG_EXIT·SHORT_ENTRY·SHORT_EXIT·BUY/SELL(인버스). 자동매매가 읽는 목록이다. 진입은 다음 거래일 시가, 손절은 장중 스톱 주문 가정.
 - 진행 중인 봉은 버린다(`completed`).
 - 실제 투자는 국내만 한다(사용자 결정). 미국·코인 신호는 참고용이다.
-- 💼 계좌 탭과 `/api/account`는 실계좌라 열람 토큰(`~/.minerva/account/view.token`, 헤더 `X-Minerva-Token`)이 있어야 열린다.
+- 💼 계좌 탭과 `/api/account`는 공개다(사용자 요청 2026-10-28). 잠그려면 `~/.minerva/account/view.token`에 토큰을 넣는다(헤더 `X-Minerva-Token`).
 - 화면 탭: 🎯 오늘 할 일 / 📈 종목 분석 / 💼 계좌 / 🏢 오피스 (`#today` 같은 해시로 이동).
 
 ## 오피스 패널 (🏢 오피스 탭)

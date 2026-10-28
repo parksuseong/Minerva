@@ -4,7 +4,7 @@
 - 종목 분석: 배치 `minerva-daily.timer` → `~/.minerva/daily/latest.json`
 - 계좌: `python -m minerva.kis` (`minerva-account.timer`) → `~/.minerva/account/latest.json`
   증권사 키는 그 프로세스만 읽는다. 웹 서버에는 키가 없다.
-  실계좌 정보라 열람 토큰(`X-Minerva-Token`)이 있어야 보여준다.
+  기본은 공개(사용자 요청). 열람 토큰을 설정하면 `X-Minerva-Token`이 있어야 보여준다.
 """
 
 from __future__ import annotations

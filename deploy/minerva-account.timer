@@ -1,0 +1,10 @@
+# 평일 08:00~18:50(KST) 10분마다, 그리고 기동 2분 뒤 한 번. 장 마감 뒤 체결까지 담는다.
+[Unit]
+Description=Refresh Minerva account snapshot every 10 minutes on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08..18:00/10:00 Asia/Seoul
+OnBootSec=2min
+
+[Install]
+WantedBy=timers.target

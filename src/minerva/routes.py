@@ -2,17 +2,19 @@
 
 웹 서버는 계산도 주문도 하지 않는다. 각 데이터는 별도 프로세스가 파일로 쓴다.
 - 종목 분석: 배치 `minerva-daily.timer` → `~/.minerva/daily/latest.json`
-- 계좌: (예정) 증권사 연동 프로세스 → `~/.minerva/account/latest.json`
+- 계좌: `python -m minerva.kis` (`minerva-account.timer`) → `~/.minerva/account/latest.json`
   증권사 키는 그 프로세스만 읽는다. 웹 서버에는 키가 없다.
+  실계좌 정보라 열람 토큰(`X-Minerva-Token`)이 있어야 보여준다.
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException
 
 router = APIRouter()
 
@@ -24,6 +26,17 @@ def daily_path() -> Path:
 def account_path() -> Path:
     default = "~/.minerva/account/latest.json"
     return Path(os.environ.get("MINERVA_ACCOUNT_OUT", default)).expanduser()
+
+
+def account_view_token() -> str | None:
+    """MINERVA_ACCOUNT_TOKEN 또는 `~/.minerva/account/view.token`. 둘 다 없으면 잠그지 않는다."""
+    if os.environ.get("MINERVA_ACCOUNT_TOKEN"):
+        return os.environ["MINERVA_ACCOUNT_TOKEN"]
+    default = "~/.minerva/account/view.token"
+    path = Path(os.environ.get("MINERVA_ACCOUNT_TOKEN_FILE", default)).expanduser()
+    if not path.exists():
+        return None
+    return path.read_text().strip() or None
 
 
 def _read(path: Path) -> dict | None:
@@ -54,11 +67,14 @@ def signals() -> dict:
 
 
 @router.get("/api/account")
-def account() -> dict:
+def account(x_minerva_token: str = Header("")) -> dict:
+    want = account_view_token()
+    if want and not hmac.compare_digest(x_minerva_token, want):
+        raise HTTPException(status_code=403, detail="invalid token")
     data = _read(account_path())
     if data is None:
         return {
             "status": "not_connected",
-            "message": "증권사 계좌가 아직 연결되지 않았어요 (한국투자증권 API 연동 예정)",
+            "message": "증권사 계좌가 아직 연결되지 않았어요 (한국투자증권 스냅숏 대기 중)",
         }
     return data

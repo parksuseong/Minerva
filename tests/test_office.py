@@ -121,6 +121,8 @@ def test_daily_endpoint_pending_then_data(tmp_path, monkeypatch):
 def test_account_not_connected_until_snapshot(tmp_path, monkeypatch):
     snap = tmp_path / "account.json"
     monkeypatch.setenv("MINERVA_ACCOUNT_OUT", str(snap))
+    monkeypatch.delenv("MINERVA_ACCOUNT_TOKEN", raising=False)
+    monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(tmp_path / "missing.token"))
     client = TestClient(app)
     assert client.get("/api/account").json()["status"] == "not_connected"
     snap.write_text(json.dumps({"status": "ok", "positions": []}))

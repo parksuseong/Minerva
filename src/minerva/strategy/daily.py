@@ -526,12 +526,15 @@ def _with_wait(tm: dict, levels: dict[str, str]) -> dict:
 
 
 def _regime_by_day(vix: list[Bar], daily: list[Bar]) -> dict[date, str]:
-    """자산 거래일마다 그날까지 확정된 마지막 VIX 레짐 (한국장은 전날 미국 마감 기준)."""
+    """자산 거래일마다 그날 장 마감 때 알 수 있던 마지막 VIX 레짐.
+
+    같은 날짜의 미국 마감은 한국 마감 뒤(KST 새벽)에 나오므로 전날까지만 쓴다.
+    """
     reg = vix_regimes(vix)
     days = sorted(reg)
     out, k = {}, -1
     for b in daily:
-        while k + 1 < len(days) and days[k + 1] <= b.day:
+        while k + 1 < len(days) and days[k + 1] < b.day:
             k += 1
         if k >= 0:
             out[b.day] = reg[days[k]]

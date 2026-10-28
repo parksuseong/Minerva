@@ -50,6 +50,8 @@ PARK_RESERVE = 0.02  # 평가액의 2%는 현금으로 남긴다 (수수료·소
 TRIM_AT = 1.5  # 한도의 1.5배를 넘으면 한도까지 던다
 ROTATE_MIN_DAYS = 5  # 산 지 5일(달력) 안 된 종목은 교체하지 않는다 (잦은 매매 방지)
 ROTATE_P_RATIO = 0.5  # 새 신호의 p값이 보유 종목의 절반 이하여야 교체한다
+# 거래가 적은 종목에 시장가로 크게 넣으면 가격이 밀린다: 한 번 주문은 20일 평균 거래대금의 1%까지
+LIQUIDITY_CAP = 0.01
 REGIME_FACTOR = {"R0": 1.0, "R1": 1.0, "R2": 1 / 2, "R3": 1 / 3}
 GAP_BUFFER = 1.03  # 시가가 전일 종가보다 높게 열려도 예수금을 넘지 않게
 LONG_STOP = 0.10  # 롱: 매입가 −10%
@@ -188,6 +190,7 @@ def plan(
 
     actions = [a for a in daily.get("actions", []) if a.get("market") == "KR" and a.get("verified")]
     evidence = _evidence(daily)
+    adv = {code_of(a["symbol"]): a["adv"] for a in daily.get("assets", []) if a.get("adv")}
     orders, skipped = [], []
 
     def sell(code: str, why: str, qty: int | None = None, name: str | None = None) -> None:
@@ -288,6 +291,8 @@ def plan(
             alloc = equity * INVERSE_TOTAL * factor - inverse_held
         else:
             alloc = equity * _cap(code) * factor
+        if code in adv:
+            alloc = min(alloc, adv[code] * LIQUIDITY_CAP)
         price = a["ref_price"] * GAP_BUFFER
         if slots <= 0 or math.floor(min(alloc, budget) / price) < 1:
             if alloc >= price:  # 배정은 되는데 돈·자리가 없다 → 교체 후보

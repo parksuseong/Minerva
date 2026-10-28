@@ -574,3 +574,12 @@ def test_park_idle_cash_once_a_day(tmp_path, monkeypatch):
     # (600,000 − 2% × 1,000,000) / (58,000 × 1.002) → 9주
     assert r["qty"] == 9 and json.loads((tmp_path / "park.json").read_text()) == {"qty": 9}
     assert trade.park_idle_cash(CFG, now, {r["key"]}) is None
+
+
+def test_thin_stock_order_capped_by_trading_value():
+    daily = _daily([_act("LONG_ENTRY", "006040.KS", "동원산업", ref=1000)])
+    daily["assets"] = [{"symbol": "006040.KS", "name": "동원산업", "adv": 5_000_000}]
+    rich = {**ACCOUNT, "equity": 10_000_000, "cash_d2": 10_000_000}
+    orders, _ = trade.plan(daily, rich, {})
+    # 20% 배정(2,000,000)이 아니라 거래대금 1%(50,000)까지만: 50,000 / 1,030
+    assert orders[0]["qty"] == 48

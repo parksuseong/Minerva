@@ -1,4 +1,4 @@
-"""분석 대상 종목군: 코스피 시총 상위 50, 나스닥 시총 상위 10.
+"""분석 대상 종목군: 코스피 시총 상위 200, 나스닥 시총 상위 10.
 
 순위는 네이버 증권 공개 API에서 받아 하루 동안 캐시한다. 받기에 실패하면
 마지막 캐시를, 그것도 없으면 아래 고정 목록을 쓴다.
@@ -13,7 +13,8 @@ import urllib.request
 from minerva.strategy.report import CACHE_DIR
 
 TTL = 24 * 3600
-KOSPI_URL = "https://m.stock.naver.com/api/stocks/marketValue/KOSPI?page=1&pageSize=80"
+KOSPI_URL = "https://m.stock.naver.com/api/stocks/marketValue/KOSPI?pageSize=80&page={page}"
+MAX_PAGES = 6  # 한 쪽에 80개(ETF·우선주 포함)까지만 와서 여러 쪽을 받는다
 NASDAQ_URL = "https://api.stock.naver.com/stock/exchange/NASDAQ/marketValue?page=1&pageSize=30"
 
 FALLBACK_KOSPI = [
@@ -92,10 +93,18 @@ def pick_nasdaq(stocks: list[dict], n: int) -> list[tuple[str, str]]:
     return out
 
 
-def kospi_top(n: int = 50) -> list[tuple[str, str]]:
-    return _cached(
-        f"kospi{n}", lambda: pick_kospi(_get_json(KOSPI_URL)["stocks"], n), FALLBACK_KOSPI
-    )
+def _kospi_stocks(n: int) -> list[dict]:
+    stocks: list[dict] = []
+    for page in range(1, MAX_PAGES + 1):
+        batch = _get_json(KOSPI_URL.format(page=page))["stocks"]
+        stocks += batch
+        if not batch or len(pick_kospi(stocks, n)) >= n:
+            break
+    return stocks
+
+
+def kospi_top(n: int = 200) -> list[tuple[str, str]]:
+    return _cached(f"kospi{n}", lambda: pick_kospi(_kospi_stocks(n), n), FALLBACK_KOSPI)
 
 
 def nasdaq_top(n: int = 10) -> list[tuple[str, str]]:

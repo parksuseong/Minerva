@@ -63,6 +63,8 @@ class Asset:
     mult: int = 1
 
 
+KOSPI_TOP = 200  # 사용자 결정 2026-10-28: 50 → 200 (장기 백테스트 수익↑·낙폭↓)
+
 CORE = [
     Asset("^KS11", "코스피", "KR"),
     Asset("SPY", "S&P500 (SPY)", "US"),
@@ -72,7 +74,7 @@ CORE = [
 
 
 def watchlist() -> list[Asset]:
-    kr = [Asset(s, n, "KR") for s, n in kospi_top(50)]
+    kr = [Asset(s, n, "KR") for s, n in kospi_top(KOSPI_TOP)]
     us = [Asset(s, n, "US") for s, n in nasdaq_top(10)]
     return CORE + kr + us
 
@@ -453,6 +455,7 @@ def analyze(asset: Asset, vix: list[Bar], vix_ma50: float | None = None) -> dict
         "rsi": _r(st.rsi, 1),
         "ma50": _r(snap["ma"].get(50)),
         "ma200": _r(snap["ma"].get(200)),
+        "adv": round(sum(b.close * b.volume for b in daily[-20:]) / len(daily[-20:])),
         "tm": _with_wait(tm_status(daily, ctx), wait_levels(daily, "long", vix_ma50)),
         "short": base_short(daily, vix),
     }

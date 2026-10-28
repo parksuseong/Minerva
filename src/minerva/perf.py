@@ -80,7 +80,11 @@ def record_closed(trade_dir: Path, journal: list[dict], account: dict, day: str)
     new = []
     for e in journal:
         is_sell = e.get("side") == "sell" and e.get("result") == "sent"
-        if not is_sell or e.get("kind") == "test" or not str(e.get("at", "")).startswith(day):
+        if (
+            not is_sell
+            or e.get("kind") in ("test", "park")
+            or not str(e.get("at", "")).startswith(day)
+        ):
             continue
         if e["key"] in seen:
             continue

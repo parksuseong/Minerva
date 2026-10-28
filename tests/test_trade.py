@@ -536,3 +536,41 @@ def test_lock_is_exclusive_between_processes(tmp_path):
     assert subprocess.run([sys.executable, "-c", code]).returncode == 0
     held.close()
     assert subprocess.run([sys.executable, "-c", code]).returncode == 1
+
+
+def test_unpark_funds_buys_and_defers_them():
+    account = {
+        **ACCOUNT,
+        "cash_d2": 20_000,
+        "positions": [{"code": trade.PARK_CODE, "qty": 16, "price": 58000, "value": 928_000}],
+    }
+    daily = _daily([_act("LONG_ENTRY", "069500.KS", "KODEX 200", ref=88905)])
+    orders, _ = trade.plan(daily, account, {}, park_qty=16)
+    assert orders[0]["code"] == trade.PARK_CODE and orders[0]["action"] == "UNPARK"
+    buy = orders[1]
+    assert buy["code"] == "069500" and buy["qty"] == math.floor(400_000 / (88905 * 1.03))
+    need = buy["qty"] * 88905 * 1.03 - 20_000
+    assert orders[0]["qty"] == math.ceil(need * 1.01 / 58000)
+
+
+def test_no_unpark_when_cash_suffices_or_user_owns_etf():
+    daily = _daily([_act("LONG_ENTRY", "069500.KS", "KODEX 200", ref=88905)])
+    account = {**ACCOUNT, "positions": [{"code": trade.PARK_CODE, "qty": 16, "price": 58000}]}
+    orders, _ = trade.plan(daily, account, {}, park_qty=16)
+    assert [o["code"] for o in orders] == ["069500"]
+    account["cash_d2"] = 0
+    orders, _ = trade.plan(daily, account, {}, park_qty=0)  # 사용자가 산 CD ETF는 안 판다
+    assert orders == []
+
+
+def test_park_idle_cash_once_a_day(tmp_path, monkeypatch):
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: {**ACCOUNT, "cash_d2": 600_000})
+    monkeypatch.setattr(trade, "quote", lambda cfg, code: 58000.0)
+    monkeypatch.setattr(kis, "access_token", lambda cfg, now=None: "t")
+    monkeypatch.setattr(trade, "buyable_qty", lambda cfg, t, code, price=None: 100)
+    monkeypatch.setattr(trade, "send_order", lambda cfg, o, live: {**o, "result": "sent"})
+    now = NOW.replace(hour=9, minute=2)
+    r = trade.park_idle_cash(CFG, now, set())
+    # (600,000 − 2% × 1,000,000) / (58,000 × 1.002) → 9주
+    assert r["qty"] == 9 and json.loads((tmp_path / "park.json").read_text()) == {"qty": 9}
+    assert trade.park_idle_cash(CFG, now, {r["key"]}) is None

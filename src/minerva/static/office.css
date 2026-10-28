@@ -3,10 +3,13 @@
     --desk: #8a5a3b; --desk-top: #a8714c; --screen: #0e1420; --screen-on: #3fd18b;
     --ink: #e8e9f3; --muted: #9a9cb5; --accent: #ffcf5a; --bad: #ff6b6b; --card: #23263a;
   }
+  /* 페이지 테마 선택(data-theme)을 따른다. 없으면 시스템 설정. */
   @media (prefers-color-scheme: light) {
-    #office { --bg: #f3efe6; --floor-a: #e6dccb; --floor-b: #ded3bf; --wall: #cbbda3;
+    :root:not([data-theme="dark"]) #office { --bg: #f3efe6; --floor-a: #e6dccb; --floor-b: #ded3bf; --wall: #cbbda3;
       --ink: #2b2a33; --muted: #6d6a78; --card: #fffaf0; --screen: #1d2533; }
   }
+  :root[data-theme="light"] #office { --bg: #f3efe6; --floor-a: #e6dccb; --floor-b: #ded3bf; --wall: #cbbda3;
+    --ink: #2b2a33; --muted: #6d6a78; --card: #fffaf0; --screen: #1d2533; }
   #office * { box-sizing: border-box; }
   #office { background: var(--bg); color: var(--ink);
     font: 14px/1.4 "Galmuri11", "DungGeunMo", ui-monospace, Menlo, monospace; border-radius: 14px; overflow: hidden; margin: 12px 0;

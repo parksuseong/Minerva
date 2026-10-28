@@ -12,6 +12,14 @@ def test_index_serves_html():
     assert "Minerva" in response.text
 
 
+def test_index_has_theme_switch():
+    page = client.get("/").text
+    assert 'id="theme"' in page
+    for mode in ("system", "light", "dark"):
+        assert f'data-theme="{mode}"' in page
+    assert ':root[data-theme="dark"]' in page
+
+
 def test_health():
     response = client.get("/api/health")
     assert response.status_code == 200

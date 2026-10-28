@@ -1,4 +1,5 @@
 import json
+import math
 from datetime import datetime
 
 import pytest
@@ -265,3 +266,51 @@ def test_is_open_day_parses_holiday_api(monkeypatch):
     monkeypatch.setattr(kis.time, "sleep", lambda s: None)
     assert REAL_IS_OPEN_DAY(CFG, NOW) is True
     assert REAL_IS_OPEN_DAY(CFG, datetime(2026, 10, 31, tzinfo=kis.KST)) is False
+
+
+def test_inverse_signal_sells_bot_longs_first():
+    account = {
+        **ACCOUNT,
+        "cash_d2": 10_000,
+        "positions": [
+            {"code": "005930", "qty": 3, "price": 50000},
+            {"code": "035420", "qty": 1, "price": 9000},
+        ],
+    }
+    owned = {"005930": {"name": "삼성", "kind": "long"}}  # 035420은 사용자가 직접 산 종목
+    daily = _daily([_act("BUY", "114800.KS", "KODEX 인버스", ref=1600)])
+    orders, _ = trade.plan(daily, account, owned)
+    assert [(o["side"], o["code"]) for o in orders] == [("sell", "005930"), ("buy", "114800")]
+    assert orders[0]["action"] == "SWITCH"
+    # 예산 = 예수금 10,000 + 매도 대금 150,000 (배정 200,000보다 작아 예산이 묶는다)
+    assert orders[1]["qty"] == math.floor(160_000 / (1600 * trade.GAP_BUFFER))
+
+
+def test_buys_wait_for_sells_until_after_open(tmp_path, monkeypatch):
+    held = [{"code": "005930", "qty": 3, "price": 50000}]
+    account = {**ACCOUNT, "positions": held}
+    (tmp_path / "positions.json").write_text(
+        json.dumps({"005930": {"name": "삼성", "kind": "long"}})
+    )
+    daily = _daily([_act("LONG_EXIT", "005930.KS", "삼성"), _act("LONG_ENTRY", "000660.KS", "H")])
+    (tmp_path / "daily.json").write_text(json.dumps(daily))
+    monkeypatch.setattr(trade, "DAILY_FILE", tmp_path / "daily.json")
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: account)
+    first = trade.run_open(NOW)
+    assert [(r["side"], r["code"]) for r in first] == [("sell", "005930")]
+    account["positions"] = []  # 09:00 시가에 매도 체결
+    second = trade.run_open(NOW.replace(hour=9, minute=2))
+    assert [(r["side"], r["code"]) for r in second] == [("buy", "000660")]
+    assert trade.run_open(NOW.replace(hour=9, minute=2)) == []
+
+
+def test_rejected_buy_is_not_resent_at_0902(tmp_path, monkeypatch):
+    (tmp_path / "journal.jsonl").write_text(
+        json.dumps({"key": "2026-10-28:005930:buy", "result": "rejected"}) + "\n"
+    )
+    (tmp_path / "daily.json").write_text(json.dumps(_daily([_act("LONG_ENTRY", "005930.KS", "A")])))
+    monkeypatch.setattr(trade, "DAILY_FILE", tmp_path / "daily.json")
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: ACCOUNT)
+    assert trade.run_open(NOW.replace(hour=9, minute=2)) == []

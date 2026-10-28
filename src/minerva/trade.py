@@ -123,9 +123,21 @@ def plan(daily: dict, account: dict, owned: dict) -> tuple[list[dict], list[str]
         code = code_of(a["symbol"])
         if a["action"] in EXIT and code in owned and code in held:
             orders.append(_order("sell", a, code, held[code]["qty"]))
+    # 인버스 매수 신호가 뜨면 봇의 롱을 먼저 모두 정리한다 (사용자 결정 2026-10-28: 자금 확보)
+    inverse_in = [a for a in actions if a["action"] == "BUY" and code_of(a["symbol"]) not in held]
+    if inverse_in:
+        selling = {o["code"] for o in orders}
+        for code, pos in owned.items():
+            if pos.get("kind") == "long" and code in held and code not in selling:
+                switch = {"name": pos["name"], "action": "SWITCH", "date": inverse_in[0]["date"]}
+                orders.append(_order("sell", switch, code, held[code]["qty"]))
+                orders[-1]["kind"] = "long"
     open_after = len(held) - len(orders)
     alloc = account.get("equity", 0) * WEIGHT * REGIME_FACTOR.get(regime, 1 / 3)
-    budget = account.get("cash_d2", 0)
+    # 매도 대금도 쓸 수 있다고 보고 계획한다. 실제 매수는 매도 체결 뒤(09:02)에 낸다.
+    budget = account.get("cash_d2", 0) + sum(
+        o["qty"] * (held[o["code"]].get("price") or 0) for o in orders
+    )
     for a in actions:
         if a["action"] not in ENTRY:
             continue
@@ -271,17 +283,21 @@ def _line(r: dict) -> str:
 
 
 def run_open(now: datetime | None = None) -> list[dict]:
+    """08:50 장전: 매도(와 매도가 없을 땐 매수). 09:02: 매도 체결 뒤 남은 매수."""
     now = now or datetime.now(kis.KST)
+    pre_open = now.hour * 60 + now.minute < 9 * 60
+    # 같은 사유 알림은 08:50 실행에서만 보낸다 (09:02엔 조용히 끝낸다)
+    say = notify.send if pre_open else (lambda text: False)
     if halted():
-        notify.send("⏸ 매매 중지 상태라 오늘 주문을 내지 않았어요")
+        say("⏸ 매매 중지 상태라 오늘 주문을 내지 않았어요")
         return []
     daily = _load(DAILY_FILE, None)
     if not daily or not daily.get("generated_at"):
-        notify.send("⚠️ 일일 분석이 없어 오늘 주문을 내지 않았어요")
+        say("⚠️ 일일 분석이 없어 오늘 주문을 내지 않았어요")
         return []
     made = datetime.fromisoformat(daily["generated_at"])
     if now - made > MAX_SIGNAL_AGE:
-        notify.send(f"⚠️ 일일 분석이 오래돼서({daily['generated_at']}) 주문을 내지 않았어요")
+        say(f"⚠️ 일일 분석이 오래돼서({daily['generated_at']}) 주문을 내지 않았어요")
         return []
     cfg = kis.load_config()
     try:
@@ -290,17 +306,23 @@ def run_open(now: datetime | None = None) -> list[dict]:
         log.warning("holiday check failed: %s", e)
         open_day = None
     if open_day is False:
-        notify.send(f"📅 {now:%m/%d}은 휴장일이라 주문을 내지 않아요")
+        say(f"📅 {now:%m/%d}은 휴장일이라 주문을 내지 않아요")
         return []
     account = kis._snapshot(cfg, now)
     owned = _load(TRADE_DIR / "positions.json", {})
-    done = {e["key"] for e in _read_journal() if e.get("result") in ("sent", "dry")}
+    # 거부·실패한 주문도 09:02에 다시 내지 않는다 (재시도는 send_order 안에서 끝낸다)
+    done = {e["key"] for e in _read_journal()}
     live = mode() == "live"
     orders, skipped = plan(daily, account, owned)
     if check_drawdown(account):
         skipped += [
             f"{o['name']}: 계좌 손실 한도로 신규 매수 중지" for o in orders if o["side"] == "buy"
         ]
+        orders = [o for o in orders if o["side"] == "sell"]
+    # 매도가 있으면 매수는 매도가 체결된 뒤(09:02 실행)로 미뤄 매도 대금으로 산다
+    if pre_open and any(o["side"] == "sell" for o in orders):
+        later = [o for o in orders if o["side"] == "buy"]
+        skipped += [f"{o['name']}: 매도 체결 뒤 09:02에 매수" for o in later]
         orders = [o for o in orders if o["side"] == "sell"]
     results = []
     for o in orders:
@@ -320,7 +342,11 @@ def run_open(now: datetime | None = None) -> list[dict]:
         if r["result"] == "sent":
             _track(owned, r)
     _save(TRADE_DIR / "positions.json", owned)
-    head = "🛒 오늘 주문" + ("" if live else " (모의 실행: 실제 주문 안 냄)")
+    if not pre_open and not results:
+        return results
+    head = ("🛒 오늘 주문" if pre_open else "🛒 매도 체결 뒤 매수 (09:02)") + (
+        "" if live else " (모의 실행: 실제 주문 안 냄)"
+    )
     lines = [_line(r) for r in results] or ["낼 주문 없음"]
     if skipped:
         lines += ["", "건너뜀:"] + [f"· {s}" for s in skipped]

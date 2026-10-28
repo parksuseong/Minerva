@@ -47,7 +47,9 @@ def closed_trade(sell: dict, fills: list[dict]) -> dict | None:
         for f in fills
         if f["code"] == sell["code"] and "매도" in f["side"] and f["time"].startswith(day)
     ]
-    qty = sum(f["qty"] for f in mine)
+    # 같은 날 사용자가 직접 판 수량이 섞이지 않게 봇이 낸 수량까지만 센다
+    filled = sum(f["qty"] for f in mine)
+    qty = min(filled, sell.get("qty") or filled)
     entry = sell.get("entry_avg")
     if not qty or not entry:
         return None

@@ -237,20 +237,13 @@ def test_drawdown_counts_realized_losses(tmp_path):
 
 def test_reconcile_drops_unfilled_and_rewatches_unsold(tmp_path, monkeypatch):
     (tmp_path / "positions.json").write_text(
-        json.dumps({"005930": {"name": "A", "kind": "long", "stop": None}})
-    )
-    (tmp_path / "journal.jsonl").write_text(
         json.dumps(
             {
-                "key": "2026-10-28:035420:sell",
-                "side": "sell",
-                "result": "sent",
-                "code": "035420",
-                "name": "N",
-                "at": "2026-10-29T08:50:00",
+                "005930": {"name": "A", "kind": "long", "stop": None, "qty": 3},
+                "035420": {"name": "N", "kind": "long", "stop": 9, "qty": 2, "selling": 2},
+                "000660": {"name": "H", "kind": "long", "stop": 9, "qty": 1, "selling": 1},
             }
         )
-        + "\n"
     )
     acc = {
         **ACCOUNT,
@@ -261,8 +254,9 @@ def test_reconcile_drops_unfilled_and_rewatches_unsold(tmp_path, monkeypatch):
     monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: acc)
     notes = trade.run_reconcile(NOW)
     owned = json.loads((tmp_path / "positions.json").read_text())
-    assert list(owned) == ["035420"] and owned["035420"]["stop"] is None
+    assert list(owned) == ["035420"] and "selling" not in owned["035420"]
     assert any("미체결" in n for n in notes) and any("2주 남음" in n for n in notes)
+    assert not any("H" in n for n in notes)  # 체결된 매도는 조용히 정리
 
 
 def test_selftest_requires_yes_flag(capsys):
@@ -382,14 +376,14 @@ def test_index_etf_gets_larger_weight_and_inverse_only_one():
     assert any("곱버스" in s and "한 상품만" in s for s in skipped)
 
 
-def test_inverse_cap_counts_held_inverse():
+def test_inverse_held_blocks_another_inverse():
     account = {
         **ACCOUNT,
         "positions": [{"code": "252670", "qty": 300, "price": 600, "value": 180_000}],
     }
     inv1 = _act("BUY", "114800.KS", "KODEX 인버스", ref=1600)
-    orders, _ = trade.plan(_daily([inv1]), account, {})
-    assert orders[0]["qty"] == math.floor(20_000 / (1600 * trade.GAP_BUFFER))
+    orders, skipped = trade.plan(_daily([inv1]), account, {})
+    assert orders == [] and any("한 상품만" in s for s in skipped)
 
 
 def test_rebalance_trims_overweight_bot_position_only():
@@ -407,12 +401,21 @@ def test_rebalance_trims_overweight_bot_position_only():
     assert orders[0]["signal_date"] == "2026-10-29-trim"
 
 
-def test_trim_keeps_position_tracked():
-    owned = {"086790": {"name": "A", "kind": "long"}}
-    trade._track(owned, {"side": "sell", "code": "086790", "action": "TRIM"})
-    assert "086790" in owned
-    trade._track(owned, {"side": "sell", "code": "086790", "action": "LONG_EXIT"})
-    assert owned == {}
+def test_track_trim_reduces_and_exit_waits_for_fill():
+    owned = {"086790": {"name": "A", "kind": "long", "qty": 10}}
+    trade._track(owned, {"side": "sell", "code": "086790", "action": "TRIM", "qty": 3})
+    assert owned["086790"]["qty"] == 7
+    trade._track(
+        owned,
+        {
+            "side": "sell",
+            "code": "086790",
+            "action": "LONG_EXIT",
+            "qty": 7,
+            "at": "2026-10-29T08:50:00",
+        },
+    )
+    assert owned["086790"]["selling"] == 7  # 체결 확인 전까지는 지우지 않는다
 
 
 def _rotation_setup(new_p, opened="2026-10-01"):
@@ -462,3 +465,74 @@ def test_rotation_skips_when_selling_still_cannot_fund():
 def test_order_line_shows_reason():
     r = {"side": "sell", "result": "sent", "name": "A", "code": "1", "qty": 2, "action": "TRIM"}
     assert "[리밸런싱]" in trade._line(r)
+
+
+def test_sells_only_bot_quantity_when_user_added_shares():
+    account = {
+        **ACCOUNT,
+        "positions": [{"code": "005930", "qty": 60, "price": 50000, "avg": 48000}],
+    }
+    owned = {"005930": {"name": "삼성", "kind": "long", "qty": 10}}
+    orders, _ = trade.plan(_daily([_act("LONG_EXIT", "005930.KS", "삼성")]), account, owned)
+    assert [(o["code"], o["qty"]) for o in orders] == [("005930", 10)]
+
+
+def test_watch_stop_sells_bot_share_and_waits_for_fill(tmp_path, monkeypatch):
+    (tmp_path / "mode").write_text("live")
+    (tmp_path / "positions.json").write_text(
+        json.dumps({"005930": {"name": "A", "kind": "long", "stop": 9000, "qty": 3}})
+    )
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    sent = []
+    monkeypatch.setattr(
+        trade, "send_order", lambda cfg, o, live: sent.append(o) or {**o, "result": "sent"}
+    )
+    pos = {"code": "005930", "qty": 8, "avg": 10000.0, "price": 8990.0}
+    trade.run_watch({"positions": [pos]})
+    assert sent[0]["qty"] == 3
+    trade.run_watch({"positions": [pos]})  # 체결 전: 다시 내지 않는다
+    assert len(sent) == 1
+    trade.run_watch({"positions": [{**pos, "qty": 5}]})  # 봇 몫 3주 체결
+    assert json.loads((tmp_path / "positions.json").read_text()) == {}
+
+
+def test_switch_only_when_inverse_buy_is_possible():
+    account = {
+        **ACCOUNT,
+        "cash_d2": 0,
+        "positions": [
+            {"code": "005930", "qty": 3, "price": 50000},
+            {"code": "114800", "qty": 120, "price": 1600, "value": 192_000},
+        ],
+    }
+    owned = {
+        "005930": {"name": "삼성", "kind": "long", "qty": 3},
+        "114800": {"name": "인버스", "kind": "inverse", "qty": 120},
+    }
+    daily = _daily([_act("BUY", "252670.KS", "곱버스", ref=600)])
+    orders, _ = trade.plan(daily, account, owned)
+    assert orders == []  # 인버스 한도가 이미 찼으니 롱을 팔지 않는다
+
+
+def test_drawdown_block_keeps_exits_but_drops_switch_and_buys():
+    account = {**ACCOUNT, "positions": [{"code": "005930", "qty": 3, "price": 50000}]}
+    owned = {"005930": {"name": "삼성", "kind": "long", "qty": 3}}
+    daily = _daily([_act("BUY", "114800.KS", "인버스", ref=1600)])
+    orders, skipped = trade.plan(daily, account, owned, allow_buys=False)
+    assert orders == [] and any("손실 한도" in s for s in skipped)
+
+
+def test_lock_is_exclusive_between_processes(tmp_path):
+    import subprocess
+    import sys
+
+    held = trade._lock(wait=False)
+    assert held is not None
+    code = (
+        "import sys; from pathlib import Path; from minerva import trade; "
+        f"trade.TRADE_DIR = Path({str(tmp_path)!r}); "
+        "sys.exit(0 if trade._lock(wait=False) is None else 1)"
+    )
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 0
+    held.close()
+    assert subprocess.run([sys.executable, "-c", code]).returncode == 1

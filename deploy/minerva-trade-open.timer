@@ -5,6 +5,8 @@ Description=Place Minerva pre-open market orders at 08:50 KST
 
 [Timer]
 OnCalendar=Mon..Fri *-*-* 08:50:00 Asia/Seoul
+# 매도가 있던 날: 09:00 체결 뒤 매도 대금으로 남은 매수
+OnCalendar=Mon..Fri *-*-* 09:02:00 Asia/Seoul
 AccuracySec=1s
 
 [Install]

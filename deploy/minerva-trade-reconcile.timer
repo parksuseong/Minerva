@@ -1,0 +1,9 @@
+# 평일 15:45 (장 마감·종가 체결 뒤) 봇 보유 목록을 실제 잔고와 맞춘다.
+[Unit]
+Description=Reconcile Minerva bot positions with the account at 15:45 KST
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:45:00 Asia/Seoul
+
+[Install]
+WantedBy=timers.target

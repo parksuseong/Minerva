@@ -314,3 +314,36 @@ def test_rejected_buy_is_not_resent_at_0902(tmp_path, monkeypatch):
     monkeypatch.setattr(kis, "load_config", lambda: CFG)
     monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: ACCOUNT)
     assert trade.run_open(NOW.replace(hour=9, minute=2)) == []
+
+
+def test_preflight_flags_stale_analysis_and_dry_mode(monkeypatch):
+    monkeypatch.setattr(trade, "_timer_active", lambda unit: True)
+    monkeypatch.setattr(kis, "access_token", lambda cfg, now=None: "t")
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: ACCOUNT)
+    stale = _daily([])
+    stale["generated_at"] = "2026-10-27T16:30+09:00"  # 목요일 08:40 기준 40시간 전
+    checks = trade.preflight_checks(NOW.replace(minute=40), stale, lambda: CFG)
+    bad = [m for ok, m in checks if not ok]
+    assert any("모의" in m for m in bad) and any("일일 분석" in m for m in bad)
+
+
+def test_preflight_passes_when_ready(tmp_path, monkeypatch):
+    (tmp_path / "mode").write_text("live")
+    monkeypatch.setattr(trade, "_timer_active", lambda unit: True)
+    monkeypatch.setattr(kis, "access_token", lambda cfg, now=None: "t")
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: ACCOUNT)
+    checks = trade.preflight_checks(NOW.replace(minute=40), _daily([]), lambda: CFG)
+    assert all(ok for ok, _ in checks)
+
+
+def test_preflight_monday_accepts_friday_analysis(tmp_path, monkeypatch):
+    (tmp_path / "mode").write_text("live")
+    monkeypatch.setattr(trade, "_timer_active", lambda unit: False)
+    monkeypatch.setattr(kis, "access_token", lambda cfg, now=None: "t")
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: ACCOUNT)
+    friday = _daily([])
+    friday["generated_at"] = "2026-10-30T16:31+09:00"
+    monday = datetime(2026, 11, 2, 8, 40, tzinfo=kis.KST)
+    checks = dict((m, ok) for ok, m in trade.preflight_checks(monday, friday, lambda: CFG))
+    assert checks["일일 분석: 2026-10-30T16:31"] is True
+    assert checks["타이머 꺼짐: minerva-trade-open.timer"] is False

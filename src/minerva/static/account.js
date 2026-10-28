@@ -1,5 +1,5 @@
 // "계좌" 탭. /api/account (minerva.kis가 쓴 한국투자증권 스냅숏)를 그린다.
-// 실계좌라 열람 토큰이 필요하다. 한 번 입력하면 이 기기에 기억한다.
+// 서버에 열람 토큰이 설정돼 있으면 입력을 받고, 한 번 입력하면 이 기기에 기억한다.
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;",

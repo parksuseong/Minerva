@@ -75,8 +75,6 @@ def watchlist() -> list[Asset]:
 PRODUCTS = [
     Asset("114800.KS", "KODEX 인버스", "KR", "inv", "^KS11", -1),
     Asset("252670.KS", "KODEX 200선물인버스2X (곱버스)", "KR", "inv", "^KS11", -2),
-    Asset("QID", "QID (나스닥 −2배)", "US", "inv", "QQQ", -2),
-    Asset("SSG", "SSG (반도체 −2배)", "US", "inv", "SOXX", -2),
 ]
 
 SHORT_RULE = ShortRule(hold=20, stop=0.07)
@@ -514,20 +512,21 @@ def _action(a: dict, side: str, st: dict, code: str) -> dict:
     return out
 
 
+# 개별 종목·지수 자체의 숏은 개인이 실행할 수 없어 보여주지도 주문하지도 않는다.
+# 하락 대응은 국내 인버스 ETF(BUY/SELL)로만 한다 (사용자 결정 2026-10-28).
+ASSET_SIDES = ("long",)
+
+
 def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
     """오늘 낼 주문 목록. 검증된 것을 앞에 둔다."""
     out = []
     for a in assets:
         if "error" in a:
             continue
-        for side, st, codes in (
-            ("long", a["tm"], ("LONG_ENTRY", "LONG_EXIT")),
-            ("short", a["short"], ("SHORT_ENTRY", "SHORT_EXIT")),
-        ):
-            if st["state"] == "진입 신호":
-                out.append(_action(a, side, st, codes[0]))
-            elif st["state"] == "청산 신호":
-                out.append(_action(a, side, st, codes[1]))
+        if a["tm"]["state"] == "진입 신호":
+            out.append(_action(a, "long", a["tm"], "LONG_ENTRY"))
+        elif a["tm"]["state"] == "청산 신호":
+            out.append(_action(a, "long", a["tm"], "LONG_EXIT"))
     for p in products:
         if "error" in p:
             continue
@@ -541,7 +540,7 @@ def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
 def _holds(data: dict) -> list[tuple[dict, str, dict]]:
     out = []
     for a in data["assets"]:
-        for side in ("long", "short"):
+        for side in ASSET_SIDES:
             st = a.get("tm" if side == "long" else "short", {})
             if st.get("state") == "보유 중":
                 out.append((a, side, st))
@@ -552,7 +551,7 @@ def _near(data: dict, n: int = 5) -> list[tuple[dict, str, dict]]:
     """검증된 규칙 중 빠진 조건이 1개뿐인 후보."""
     out = []
     for a in data["assets"]:
-        for side in ("long", "short"):
+        for side in ASSET_SIDES:
             st = a.get("tm" if side == "long" else "short", {})
             ok = a.get("verify", {}).get(side, {}).get("label") == "검증됨"
             if ok and st.get("state") == "대기" and len(st.get("missing", [])) == 1:

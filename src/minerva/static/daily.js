@@ -16,7 +16,8 @@
     const tip = v ? `거래 ${v.trades}회 · 승률 ${pct(v.win_rate)} · 우위 안 ${pct(v.edge_in)} / 밖 ${pct(v.edge_out)}` : "";
     return `<span class="badge" title="${esc(tip)}"${color ? ` style="color:${color}"` : ""}>${SIDE[side]} ${esc(l)}</span>`;
   };
-  const sides = (a) => (a.kind ? [["short", a.tm]] : [["long", a.tm], ["short", a.short]]);
+  // 종목 자체 숏은 실행할 수 없어 숨긴다. 숏은 국내 인버스 ETF로만 (daily.py ASSET_SIDES)
+  const sides = (a) => (a.kind ? [["short", a.tm]] : [["long", a.tm]]);
 
   function sideDetail(side, st) {
     if (!st) return "";
@@ -61,7 +62,6 @@
   const AUTO = ["LONG_ENTRY", "LONG_EXIT", "BUY", "SELL"];
   function autoTag(x) {
     if (x.market !== "KR") return "📎 참고 (해외·코인은 주문 안 함)";
-    if (!AUTO.includes(x.action)) return "📎 참고 (개별주 공매도 불가)";
     if (!x.verified) return "📎 참고 (미검증)";
     return "🤖 자동주문 대상";
   }

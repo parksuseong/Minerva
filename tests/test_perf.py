@@ -8,6 +8,7 @@ SELL = {
     "side": "sell",
     "result": "sent",
     "code": "000660",
+    "qty": 3,
     "name": "SK하이닉스",
     "kind": "long",
     "action": "LONG_EXIT",
@@ -52,3 +53,17 @@ def test_bot_pnl_and_weekly_report(tmp_path):
     )
     assert "청산 1건" in text and "승률 100%" in text and "백테스트 기대: 승률 60%" in text
     assert "30건부터" in text
+
+
+def test_closed_trade_ignores_user_sells_same_day():
+    fills = FILLS + [
+        {
+            "time": "2026-10-29 10:00",
+            "code": "000660",
+            "side": "현금매도",
+            "qty": 7,
+            "price": 110000,
+        }
+    ]
+    row = perf.closed_trade({**SELL, "qty": 3}, fills)
+    assert row["qty"] == 3

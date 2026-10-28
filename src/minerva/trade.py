@@ -151,19 +151,36 @@ def _value(p: dict) -> float:
 
 
 def plan(
-    daily: dict, account: dict, owned: dict, today: str | None = None
+    daily: dict,
+    account: dict,
+    owned: dict,
+    today: str | None = None,
+    allow_buys: bool = True,
+    allow_rotate: bool = True,
 ) -> tuple[list[dict], list[str]]:
     """일일 분석 + 계좌 → (낼 주문, 건너뛴 이유). 매도를 먼저 둔다.
 
     순서: 청산 신호 → 인버스 전환(롱 정리) → 리밸런싱(비중 초과분 덜기) → 신규 매수(근거 강한 순)
     → 교체 매매(돈·자리가 없어 못 산 강한 신호가 있으면 약한 보유 종목을 판다).
+    매수를 위한 매도(인버스 전환·교체)는 그 매수가 실제로 가능할 때만 낸다.
+    allow_buys=False(손실 한도)면 청산·리밸런싱만, allow_rotate=False(09:02)면 교체를 하지 않는다.
     """
     today = today or datetime.now(kis.KST).strftime("%Y-%m-%d")
     regime = daily.get("vix", {}).get("regime", "R3")
     factor = REGIME_FACTOR.get(regime, 1 / 3)
     equity = account.get("equity", 0)
     held = {p["code"]: p for p in account.get("positions", [])}
-    bot = {c: owned[c] for c in owned if c in held}  # 사용자가 직접 산 종목은 건드리지 않는다
+    # 사용자가 직접 산 종목은 건드리지 않는다. 매도를 이미 낸(체결 대기) 종목도 다시 다루지 않는다
+    bot = {c: owned[c] for c in owned if c in held and not owned[c].get("selling")}
+
+    def bot_qty(code: str) -> int:
+        # 봇이 산 수량만 판다. 같은 종목을 사용자가 더 샀어도 그 몫은 건드리지 않는다
+        mine = bot[code].get("qty")
+        return held[code]["qty"] if mine is None else min(mine, held[code]["qty"])
+
+    def bot_value(code: str) -> float:
+        return bot_qty(code) * (held[code].get("price") or 0)
+
     actions = [a for a in daily.get("actions", []) if a.get("market") == "KR" and a.get("verified")]
     evidence = _evidence(daily)
     orders, skipped = [], []
@@ -173,9 +190,10 @@ def plan(
             "sell",
             {"name": name or bot[code]["name"], "action": why, "date": today},
             code,
-            qty or held[code]["qty"],
+            qty or bot_qty(code),
         )
         o["kind"] = bot[code].get("kind", "long")
+        o["held_before"] = held[code]["qty"]  # 체결 확인용: 이 수량에서 판 만큼 줄면 체결
         o["entry_avg"] = held[code].get("avg")
         o["opened"] = bot[code].get("opened")
         if why in ("TRIM",):
@@ -187,10 +205,28 @@ def plan(
         if a["action"] in EXIT and code in bot:
             sell(code, a["action"], name=a["name"])
             orders[-1]["signal_date"] = a["date"]
-    # 인버스 매수 신호가 뜨면 봇의 롱을 먼저 모두 정리한다 (사용자 결정 2026-10-28: 자금 확보)
-    if any(a["action"] == "BUY" and code_of(a["symbol"]) not in held for a in actions):
-        for code, pos in bot.items():
-            if pos.get("kind") == "long" and code not in {o["code"] for o in orders}:
+    # 인버스 매수 신호가 뜨면 봇의 롱을 먼저 모두 정리한다 (사용자 결정 2026-10-28: 자금 확보).
+    # 단, 그 인버스를 실제로 살 수 있을 때만 판다 (인버스 한도·예수금·이미 보유 확인).
+    inv_held_value = sum(
+        bot_value(c) if c in bot else _value(held[c]) for c in held if c in INVERSES
+    )
+    inv_room = equity * INVERSE_TOTAL * factor - inv_held_value
+    longs = [c for c, pos in bot.items() if pos.get("kind") == "long"]
+    cash_if_switch = account.get("cash_d2", 0) + sum(bot_value(c) for c in longs)
+    inverse_ok = (
+        allow_buys
+        and not any(c in INVERSES for c in held)
+        and any(
+            a["action"] == "BUY"
+            and code_of(a["symbol"]) not in held
+            and a.get("ref_price")
+            and min(inv_room, cash_if_switch) >= a["ref_price"] * GAP_BUFFER
+            for a in actions
+        )
+    )
+    if inverse_ok:
+        for code in longs:
+            if code not in {o["code"] for o in orders}:
                 sell(code, "SWITCH")
     # 리밸런싱: 오른 종목이 한도의 TRIM_AT배를 넘으면 한도까지 던다.
     # 위험 관리용이라 덜 오른 종목을 더 사서 채우지는 않는다 (검증 안 된 추가 매수).
@@ -198,12 +234,12 @@ def plan(
         if code in {o["code"] for o in orders} or not equity:
             continue
         p, cap = held[code], equity * _cap(code)
-        if _value(p) > cap * TRIM_AT and p.get("price"):
-            qty = math.ceil((_value(p) - cap) / p["price"])
-            if 0 < qty < p["qty"]:
+        if bot_value(code) > cap * TRIM_AT and p.get("price"):
+            qty = math.ceil((bot_value(code) - cap) / p["price"])
+            if 0 < qty < bot_qty(code):
                 sell(code, "TRIM", qty)
     selling = {o["code"]: o["qty"] for o in orders}
-    slots = MAX_POSITIONS - sum(1 for c in bot if selling.get(c) != held[c]["qty"])
+    slots = MAX_POSITIONS - sum(1 for c in bot if selling.get(c) != bot_qty(c))
     inverse_held = sum(_value(held[c]) for c in held if c in INVERSES and c not in selling)
     # 매도 대금도 쓸 수 있다고 보고 계획한다. 실제 매수는 매도 체결 뒤(09:02)에 낸다.
     budget = account.get("cash_d2", 0) + sum(
@@ -220,6 +256,11 @@ def plan(
         )
 
     unfunded = []
+    if not allow_buys:
+        skipped += [
+            f"{a['name']}: 계좌 손실 한도로 신규 매수 중지" for a in actions if a["action"] in ENTRY
+        ]
+        return orders, skipped
     for a in sorted((a for a in actions if a["action"] in ENTRY), key=rank):
         code = code_of(a["symbol"])
         if code in held:
@@ -229,7 +270,9 @@ def plan(
             skipped.append(f"{a['name']}: 기준가 없음")
             continue
         if code in INVERSES:
-            if any(o["code"] in INVERSES for o in orders if o["side"] == "buy"):
+            if any(c in INVERSES for c in held) or any(
+                o["code"] in INVERSES for o in orders if o["side"] == "buy"
+            ):
                 skipped.append(f"{a['name']}: 인버스는 한 상품만")
                 continue
             alloc = equity * INVERSE_TOTAL * factor - inverse_held
@@ -249,6 +292,9 @@ def plan(
         budget -= qty * price
         slots -= 1
     # 교체 매매: 못 산 신호가 보유 종목보다 확실히 강하면 약한 것부터 판다 (09:02에 산다)
+    if not allow_rotate:
+        skipped += [f"{a['name']}: 예수금·자리 부족" for a, _, _ in unfunded]
+        unfunded = []
     for a, alloc, price in unfunded:
         new_p, new_edge = rank(a)[0], a.get("net_edge") or 0
         candidates = sorted(
@@ -263,7 +309,7 @@ def plan(
             if new_p > old_p * ROTATE_P_RATIO or new_edge - old_edge <= perf.cost_rate(c):
                 break  # 가장 약한 것도 못 이기면 나머지도 못 이긴다
             picks.append(c)
-            cash += _value(held[c])
+            cash += bot_value(c)
             free += 1
             if free > 0 and math.floor(min(alloc, cash) / price) >= 1:
                 break
@@ -271,7 +317,7 @@ def plan(
         if picks and free > 0 and qty >= 1:
             for c in picks:
                 sell(c, "ROTATE")
-                selling[c] = held[c]["qty"]
+                selling[c] = bot_qty(c)
             orders.append(_order("buy", a, code_of(a["symbol"]), qty))
             budget, slots = cash - qty * price, free - 1
         else:
@@ -295,6 +341,7 @@ def _order(side: str, a: dict, code: str, qty: int) -> dict:
         "action": a["action"],
         "signal_date": a["date"],
         "kind": "inverse" if a["action"] in ("BUY", "SELL") else "long",
+        "ref_price": a.get("ref_price"),
     }
 
 
@@ -320,8 +367,9 @@ def _post(cfg: dict, token: str, path: str, tr_id: str, body: dict) -> dict:
     return data
 
 
-def buyable_qty(cfg: dict, token: str, code: str) -> int:
-    """시장가 기준 미수 없이 살 수 있는 수량 (조회 전용)."""
+def buyable_qty(cfg: dict, token: str, code: str, price: float | None = None) -> int:
+    """미수 없이 살 수 있는 수량 (조회 전용). 시장가로 물으면 상한가 기준이라 20~30% 적게
+    나오므로, 기준가(전일 종가 × 갭 여유)를 지정가로 넣어 묻는다."""
     pages = kis._get(
         cfg,
         token,
@@ -331,8 +379,8 @@ def buyable_qty(cfg: dict, token: str, code: str) -> int:
             "CANO": cfg["cano"],
             "ACNT_PRDT_CD": cfg["prd"],
             "PDNO": code,
-            "ORD_UNPR": "",
-            "ORD_DVSN": "01",
+            "ORD_UNPR": str(int(price)) if price else "",
+            "ORD_DVSN": "00" if price else "01",
             "CMA_EVLU_AMT_ICLD_YN": "N",
             "OVRS_ICLD_YN": "N",
         },
@@ -342,10 +390,12 @@ def buyable_qty(cfg: dict, token: str, code: str) -> int:
 
 def _already_sent(cfg: dict, token: str, o: dict, since: str) -> bool:
     """응답을 못 받은 주문이 실제로 들어갔는지 오늘 주문 내역으로 확인한다."""
-    snap = kis._snapshot(cfg)
+    snap = kis.snapshot(cfg)
     side = "매수" if o["side"] == "buy" else "매도"
+    # 같은 종목·방향·수량이 그 시각 이후에 있으면 우리 주문으로 본다
     return any(
-        r["code"] == o["code"] and side in r["side"] and r["time"] >= since for r in snap["orders"]
+        r["code"] == o["code"] and side in r["side"] and r["qty"] == o["qty"] and r["time"] >= since
+        for r in snap["orders"]
     )
 
 
@@ -382,6 +432,9 @@ def send_order(cfg: dict, o: dict, live: bool) -> dict:
         except (kis.KisError, OSError, urllib.error.URLError) as e:
             last = str(e)
             log.warning("order %s attempt %d failed: %s", order_key(o), attempt + 1, e)
+            if any(code in last for code in kis.TOKEN_ERRORS):
+                (kis.STATE_DIR / "token.json").unlink(missing_ok=True)  # 폐기된 토큰: 새로 받는다
+                token = kis.access_token(cfg)
             continue
         if data.get("rt_cd") == "0":
             odno = (data.get("output") or {}).get("ODNO", "")
@@ -446,40 +499,42 @@ def run_open(now: datetime | None = None) -> list[dict]:
     if open_day is False:
         say(f"📅 {now:%m/%d}은 휴장일이라 주문을 내지 않아요")
         return []
-    account = kis._snapshot(cfg, now)
+    account = kis.snapshot(cfg, now)
     owned = _load(TRADE_DIR / "positions.json", {})
     # 거부·실패한 주문도 09:02에 다시 내지 않는다 (재시도는 send_order 안에서 끝낸다)
     done = {e["key"] for e in _read_journal()}
     live = mode() == "live"
-    orders, skipped = plan(daily, account, owned)
-    if check_drawdown(account):
-        skipped += [
-            f"{o['name']}: 계좌 손실 한도로 신규 매수 중지" for o in orders if o["side"] == "buy"
-        ]
-        orders = [o for o in orders if o["side"] == "sell"]
+    # 09:02엔 교체하지 않는다: 그 자리에서 판 돈은 매수 가능 금액에 바로 안 잡힌다
+    orders, skipped = plan(
+        daily, account, owned, allow_buys=not check_drawdown(account), allow_rotate=pre_open
+    )
     # 매도가 있으면 매수는 매도가 체결된 뒤(09:02 실행)로 미뤄 매도 대금으로 산다
     if pre_open and any(o["side"] == "sell" for o in orders):
         later = [o for o in orders if o["side"] == "buy"]
         skipped += [f"{o['name']}: 매도 체결 뒤 09:02에 매수" for o in later]
         orders = [o for o in orders if o["side"] == "sell"]
     results = []
-    for o in orders:
-        key = order_key(o)
-        if key in done:
-            continue
-        if o["side"] == "buy" and live:
-            # 증권사 기준 매수 가능 수량을 넘지 않게 줄인다
-            o["qty"] = min(o["qty"], buyable_qty(cfg, kis.access_token(cfg), o["code"]))
-            if o["qty"] < 1:
-                skipped.append(f"{o['name']}: 매수 가능 수량 0")
+    try:
+        for o in orders:
+            key = order_key(o)
+            if key in done:
                 continue
-        r = send_order(cfg, o, live)
-        r["key"], r["at"] = key, now.isoformat(timespec="seconds")
-        _journal(r)
-        results.append(r)
-        if r["result"] == "sent":
-            _track(owned, r)
-    _save(TRADE_DIR / "positions.json", owned)
+            if o["side"] == "buy" and live:
+                # 증권사 기준 매수 가능 수량을 넘지 않게 줄인다
+                price = (o.get("ref_price") or 0) * GAP_BUFFER
+                o["qty"] = min(o["qty"], buyable_qty(cfg, kis.access_token(cfg), o["code"], price))
+                if o["qty"] < 1:
+                    skipped.append(f"{o['name']}: 매수 가능 수량 0")
+                    continue
+            r = send_order(cfg, o, live)
+            r["key"], r["at"] = key, now.isoformat(timespec="seconds")
+            _journal(r)
+            results.append(r)
+            if r["result"] == "sent":
+                _track(owned, r)
+                _save(TRADE_DIR / "positions.json", owned)  # 중간에 오류가 나도 낸 주문은 남긴다
+    finally:
+        _save(TRADE_DIR / "positions.json", owned)
     if not pre_open and not results:
         return results
     head = ("🛒 오늘 주문" if pre_open else "🛒 매도 체결 뒤 매수 (09:02)") + (
@@ -493,15 +548,24 @@ def run_open(now: datetime | None = None) -> list[dict]:
 
 
 def _track(owned: dict, r: dict) -> None:
+    """접수된 주문을 봇 보유 목록에 반영한다. 매도는 체결이 확인될 때(watch·대사) 지운다."""
     if r["side"] == "buy":
         owned[r["code"]] = {
             "name": r["name"],
             "kind": r["kind"],
             "opened": r["at"][:10],
+            "qty": r["qty"],  # 봇이 산 수량. 체결 확인 때 실제 체결 수량으로 고친다
             "stop": None,  # 체결 평균가가 나오면 watch가 정한다
         }
-    elif r.get("action") != "TRIM":  # 리밸런싱은 일부만 판다
-        owned.pop(r["code"], None)
+    elif r["code"] in owned:
+        pos = owned[r["code"]]
+        if r.get("action") == "TRIM":  # 리밸런싱은 일부만 판다
+            if pos.get("qty") is not None:
+                pos["qty"] = max(pos["qty"] - r["qty"], 0)
+        else:
+            pos["selling"] = r["qty"]
+            pos["sell_at"] = r["at"]
+            pos["held_before"] = r.get("held_before")
 
 
 def _read_journal() -> list[dict]:
@@ -528,16 +592,28 @@ def run_watch(account: dict | None = None) -> list[dict]:
     if not owned:
         return []
     cfg = kis.load_config()
-    account = account or kis._snapshot(cfg)
+    account = account or kis.snapshot(cfg)
     held = {p["code"]: p for p in account.get("positions", [])}
     live = mode() == "live"
     results = []
     for code, pos in list(owned.items()):
         p = held.get(code)
+        mine = pos.get("qty")
+        if pos.get("selling"):
+            # 낸 매도가 체결됐으면 목록에서 지운다. 아직이면 기다린다 (손절을 또 내지 않는다)
+            base = pos.get("held_before") or mine
+            if p is None or (base is not None and p["qty"] <= base - pos["selling"]):
+                if p is None or mine is None or mine - pos["selling"] <= 0:
+                    owned.pop(code)
+                else:
+                    pos["qty"] = mine - pos["selling"]
+                    pos.pop("selling")
+            continue
         if p is None:
             continue  # 아직 체결 전이거나 직접 판 종목
         if pos.get("stop") is None and p["avg"] > 0:
             pos["stop"] = round(stop_price(pos["kind"], code, p["avg"]))
+            pos["qty"] = p["qty"] if mine is None else min(mine, p["qty"])  # 실제 체결 수량
             notify.send(
                 f"🎯 {pos['name']} 체결 확인 · 평균 {p['avg']:,.0f}원 · 손절 {pos['stop']:,}원"
             )
@@ -546,7 +622,8 @@ def run_watch(account: dict | None = None) -> list[dict]:
                 "side": "sell",
                 "code": code,
                 "name": pos["name"],
-                "qty": p["qty"],
+                "qty": min(pos.get("qty") or p["qty"], p["qty"]),  # 봇 몫만 판다
+                "held_before": p["qty"],
                 "action": "STOP",
                 "signal_date": datetime.now(kis.KST).strftime("%Y-%m-%d"),
                 "kind": pos["kind"],
@@ -558,7 +635,9 @@ def run_watch(account: dict | None = None) -> list[dict]:
             r["at"] = datetime.now(kis.KST).isoformat(timespec="seconds")
             _journal(r)
             results.append(r)
-            if r["result"] in ("sent", "dry"):
+            if r["result"] == "sent":
+                _track(owned, r)
+            elif r["result"] == "dry":
                 owned.pop(code)
             elif pos.get("stop_alerted"):
                 continue  # 30초마다 다시 시도하되 실패 알림은 한 번만
@@ -572,7 +651,7 @@ def run_reconcile(now: datetime | None = None) -> list[str]:
     """장 마감 뒤 봇 보유 목록을 실제 잔고와 맞춘다. 맞춘 내용을 알린다."""
     now = now or datetime.now(kis.KST)
     cfg = kis.load_config()
-    account = kis._snapshot(cfg, now)
+    account = kis.snapshot(cfg, now)
     closed = perf.record_closed(TRADE_DIR, _read_journal(), account, now.strftime("%Y-%m-%d"))
     check_drawdown(account)
     held = {p["code"]: p for p in account.get("positions", [])}
@@ -582,21 +661,18 @@ def run_reconcile(now: datetime | None = None) -> list[str]:
     for code, pos in list(owned.items()):
         if code not in held:
             owned.pop(code)
+            if pos.get("selling"):
+                continue  # 낸 매도가 체결됐다 (정상)
             why = status.get(code, "오늘 주문 내역 없음 → 직접 매도한 것으로 봄")
             notes.append(f"• {pos['name']}: 잔고에 없음 ({why}) → 봇 목록에서 뺌")
-    today = now.strftime("%Y-%m-%d")
-    for e in _read_journal():
-        sold_today = e.get("side") == "sell" and e.get("result") == "sent"
-        if sold_today and str(e.get("at", "")).startswith(today) and e["code"] in held:
-            if e["code"] not in owned:
-                owned[e["code"]] = {
-                    "name": e["name"],
-                    "kind": e.get("kind", "long"),
-                    "opened": "?",
-                    "stop": None,  # watch가 평균가로 다시 정한다
-                }
-            left = held[e["code"]]["qty"]
-            notes.append(f"• {e['name']}: 매도 접수했지만 {left}주 남음 → 다시 감시 (확인 필요)")
+        elif pos.get("selling"):
+            mine = pos.get("qty")
+            left = held[code]["qty"] if mine is None else min(mine, held[code]["qty"])
+            pos.pop("selling")
+            pos.pop("sell_at", None)
+            pos["qty"] = left
+            # 체결 안 된 매도는 접어 두고 손절 감시를 다시 한다. 청산 신호면 다음 날 다시 낸다
+            notes.append(f"• {pos['name']}: 매도 접수했지만 {left}주 남음 → 다시 감시 (확인 필요)")
     _save(TRADE_DIR / "positions.json", owned)
     for c in closed:
         notes.append(
@@ -614,7 +690,7 @@ def run_selftest(code: str = SELFTEST_CODE, wait: float = 90) -> list[dict]:
     if not (9 * 60 + 5 <= now.hour * 60 + now.minute <= 15 * 60 + 15):
         raise ValueError("시험 주문은 장중(09:05~15:15)에만 한다")
     cfg = kis.load_config()
-    before = {p["code"]: p["qty"] for p in kis._snapshot(cfg)["positions"]}.get(code, 0)
+    before = {p["code"]: p["qty"] for p in kis.snapshot(cfg)["positions"]}.get(code, 0)
     results = []
     for side, target in (("buy", before + 1), ("sell", before)):
         o = {
@@ -636,7 +712,7 @@ def run_selftest(code: str = SELFTEST_CODE, wait: float = 90) -> list[dict]:
         qty = None
         while time.time() < deadline:
             time.sleep(5)
-            qty = {p["code"]: p["qty"] for p in kis._snapshot(cfg)["positions"]}.get(code, 0)
+            qty = {p["code"]: p["qty"] for p in kis.snapshot(cfg)["positions"]}.get(code, 0)
             if qty == target:
                 break
         r["filled"] = qty == target
@@ -682,7 +758,7 @@ def preflight_checks(now: datetime, daily: dict | None, cfg_loader=None) -> list
         checks.append((True, "한투 토큰 정상"))
         open_day = is_open_day(cfg, now)
         checks.append((open_day is not False, "오늘 개장일" if open_day else "오늘 휴장일"))
-        account = kis._snapshot(cfg, now)
+        account = kis.snapshot(cfg, now)
         checks.append((True, f"계좌 조회 정상 · 평가액 {account.get('equity', 0):,.0f}원"))
         orders, skipped = plan(daily or {}, account, _load(TRADE_DIR / "positions.json", {}))
         checks.append((True, f"예정 주문 {len(orders)}건 · 건너뜀 {len(skipped)}건"))
@@ -707,7 +783,7 @@ def run_preview() -> list[dict]:
     """16:30 분석 뒤: 내일 08:50에 낼 주문을 미리 알린다 (주문 안 냄)."""
     daily = _load(DAILY_FILE, {})
     cfg = kis.load_config()
-    orders, skipped = plan(daily, kis._snapshot(cfg), _load(TRADE_DIR / "positions.json", {}))
+    orders, skipped = plan(daily, kis.snapshot(cfg), _load(TRADE_DIR / "positions.json", {}))
     state = "⏸ 매매 중지 상태" if halted() else ("🔴 실전" if mode() == "live" else "🧪 모의 실행")
     lines = [
         f"📋 내일 08:50 주문 미리보기 · {state}",
@@ -721,6 +797,24 @@ def run_preview() -> list[dict]:
     lines += ["", "멈추려면 텔레그램에 '매매중지'"]
     notify.send("\n".join(lines))
     return orders
+
+
+def _lock(wait: bool, timeout: float = 120):
+    """프로세스 사이 잠금. 잡으면 파일 객체(프로세스가 끝날 때 풀린다), 못 잡으면 None."""
+    import fcntl
+
+    TRADE_DIR.mkdir(parents=True, exist_ok=True)
+    f = open(TRADE_DIR / ".lock", "w")  # noqa: SIM115 — 프로세스 끝까지 잡고 있어야 한다
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except BlockingIOError:
+            if not wait or time.time() > deadline:
+                f.close()
+                return None
+            time.sleep(0.5)
 
 
 COMMANDS = {
@@ -743,6 +837,12 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO)
     if args.command == "selftest" and not args.yes:
         parser.error("selftest는 실제 주문을 낸다. --yes 를 붙여야 실행한다")
+    # 주문·감시·대사가 동시에 돌면 positions.json을 서로 덮어쓴다. 한 번에 하나만 돈다.
+    # watch는 30초마다 다시 오니 기다리지 않고 건너뛴다.
+    lock = _lock(wait=args.command != "watch")
+    if lock is None:
+        print(f"{args.command} skipped: 다른 자동매매 작업이 실행 중")
+        return 0
     try:
         results = COMMANDS[args.command]()
     except (kis.KisError, OSError, KeyError, ValueError) as e:

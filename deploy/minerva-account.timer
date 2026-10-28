@@ -1,9 +1,11 @@
-# 평일 08:00~18:50(KST) 10분마다, 그리고 기동 2분 뒤 한 번. 장 마감 뒤 체결까지 담는다.
+# 평일 08:00~18:59(KST) 30초마다, 그리고 기동 2분 뒤 한 번. 장 마감 뒤 체결까지 담는다.
+# 한 번에 조회 2건(+토큰)이라 초당 한도에 걸리지 않는다.
 [Unit]
-Description=Refresh Minerva account snapshot every 10 minutes on weekdays
+Description=Refresh Minerva account snapshot every 30 seconds on weekdays
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 08..18:00/10:00 Asia/Seoul
+OnCalendar=Mon..Fri *-*-* 08..18:*:00/30 Asia/Seoul
+AccuracySec=1s
 OnBootSec=2min
 
 [Install]

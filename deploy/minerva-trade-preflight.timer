@@ -1,0 +1,9 @@
+# 평일 08:40 (주문 10분 전) 모드·토큰·계좌·분석·휴장일·타이머를 점검해 텔레그램으로 알린다.
+[Unit]
+Description=Minerva pre-trade checks at 08:40 KST
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:40:00 Asia/Seoul
+
+[Install]
+WantedBy=timers.target

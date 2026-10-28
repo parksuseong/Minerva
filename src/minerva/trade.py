@@ -4,6 +4,7 @@
 `~/.minerva/trade/mode` 파일 내용이 `live`일 때만 실제 주문을 낸다.
 `~/.minerva/trade/HALT` 파일이 있으면 아무것도 하지 않는다 (매매 중지 스위치).
 
+- `preflight` (평일 08:40): 모드·토큰·계좌·분석 최신 여부·휴장일·타이머를 점검해 알린다
 - `open`  (평일 08:50): 전날 일일 분석의 국내·검증됨 신호로 장전 동시호가 시장가 주문
 - `watch` (장중 30초): 이 봇이 산 종목만 손절가 감시, 닿으면 시장가 매도
 - `reconcile` (평일 15:45): 봇 보유 목록과 실제 잔고를 맞춘다 (미체결·직접 매도 정리)
@@ -502,6 +503,61 @@ def run_selftest(code: str = SELFTEST_CODE, wait: float = 90) -> list[dict]:
     return results
 
 
+PREFLIGHT_TIMERS = (
+    "minerva-trade-open.timer",
+    "minerva-trade-watch.timer",
+    "minerva-account.timer",
+)
+
+
+def _timer_active(unit: str) -> bool:
+    import subprocess
+
+    r = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True)
+    return r.stdout.strip() == "active"
+
+
+def preflight_checks(now: datetime, daily: dict | None, cfg_loader=None) -> list[tuple[bool, str]]:
+    """08:40 사전 점검 항목 (통과 여부, 설명)."""
+    checks = []
+    checks.append((mode() == "live", f"모드: {'실전' if mode() == 'live' else '모의 실행'}"))
+    checks.append((not halted(), "매매 중지 스위치(HALT) " + ("켜짐" if halted() else "꺼짐")))
+    if entries_blocked():
+        checks.append((False, "신규 매수 중지(NO_ENTRY) 켜짐: 계좌 손실 한도"))
+    if daily and daily.get("generated_at"):
+        made = datetime.fromisoformat(daily["generated_at"])
+        # 월요일은 금요일 16:30 분석을 쓴다
+        limit = timedelta(hours=68 if now.weekday() == 0 else 20)
+        checks.append((now - made <= limit, f"일일 분석: {daily['generated_at'][:16]}"))
+    else:
+        checks.append((False, "일일 분석 없음"))
+    try:
+        cfg = (cfg_loader or kis.load_config)()
+        kis.access_token(cfg, now)
+        checks.append((True, "한투 토큰 정상"))
+        open_day = is_open_day(cfg, now)
+        checks.append((open_day is not False, "오늘 개장일" if open_day else "오늘 휴장일"))
+        account = kis._snapshot(cfg, now)
+        checks.append((True, f"계좌 조회 정상 · 평가액 {account.get('equity', 0):,.0f}원"))
+        orders, skipped = plan(daily or {}, account, _load(TRADE_DIR / "positions.json", {}))
+        checks.append((True, f"예정 주문 {len(orders)}건 · 건너뜀 {len(skipped)}건"))
+    except (kis.KisError, OSError, KeyError, ValueError) as e:
+        checks.append((False, f"한투 연결 실패: {e}"))
+    for unit in PREFLIGHT_TIMERS:
+        if not _timer_active(unit):
+            checks.append((False, f"타이머 꺼짐: {unit}"))
+    return checks
+
+
+def run_preflight(now: datetime | None = None) -> list[tuple[bool, str]]:
+    now = now or datetime.now(kis.KST)
+    checks = preflight_checks(now, _load(DAILY_FILE, None))
+    ok = all(c[0] for c in checks)
+    head = "✅ 08:50 주문 준비 완료" if ok else "❌ 08:50 주문 전 확인 필요"
+    notify.send("\n".join([head] + [("• " if c[0] else "❌ ") + c[1] for c in checks]))
+    return checks
+
+
 def run_preview() -> list[dict]:
     """16:30 분석 뒤: 내일 08:50에 낼 주문을 미리 알린다 (주문 안 냄)."""
     daily = _load(DAILY_FILE, {})
@@ -528,6 +584,7 @@ COMMANDS = {
     "preview": run_preview,
     "reconcile": run_reconcile,
     "selftest": run_selftest,
+    "preflight": run_preflight,
 }
 
 

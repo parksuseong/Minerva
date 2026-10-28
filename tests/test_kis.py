@@ -213,3 +213,20 @@ def test_request_retries_rate_limit(monkeypatch):
     monkeypatch.setattr(kis.urllib.request, "urlopen", fake_urlopen)
     data, headers = kis._request(kis.urllib.request.Request("https://x"))
     assert data == {"rt_cd": "0"} and len(calls) == 3
+
+
+def test_market_order_shows_fill_price():
+    row = {
+        "ord_dt": "20261028",
+        "ord_tmd": "121100",
+        "prdt_name": "KODEX 인버스",
+        "pdno": "114800",
+        "sll_buy_dvsn_cd_name": "현금매수",
+        "ord_qty": "1",
+        "ord_unpr": "0",
+        "tot_ccld_qty": "1",
+        "avg_prvs": "1583",
+        "cncl_yn": "N",
+    }
+    orders, trades = kis.parse_orders([{"output1": [row]}])
+    assert orders[0]["price"] == 1583 and trades[0]["price"] == 1583

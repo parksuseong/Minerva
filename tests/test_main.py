@@ -26,3 +26,14 @@ def test_health():
     body = response.json()
     assert body["status"] == "ok"
     assert "server_time" in body
+
+
+def test_pages_revalidate_so_ui_changes_show():
+    from fastapi.testclient import TestClient
+
+    from minerva.main import app
+
+    client = TestClient(app)
+    assert client.get("/").headers["cache-control"] == "no-cache"
+    assert client.get("/static/office.css").headers["cache-control"] == "no-cache"
+    assert "cache-control" not in client.get("/api/health").headers

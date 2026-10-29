@@ -40,6 +40,16 @@ app.include_router(data_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def revalidate(request, call_next):
+    # 캐시 헤더가 없으면 브라우저가 옛 CSS·JS를 한동안 그대로 써서 화면 수정이 안 보인다.
+    # no-cache는 매번 ETag로 확인만 하므로 바뀌지 않았으면 본문을 다시 받지 않는다.
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")

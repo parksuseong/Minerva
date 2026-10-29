@@ -35,11 +35,11 @@ def test_passed_by_month_applies_cost_and_fdr():
         "B.KS|2026-02-02": {"long": _v(edge=0.002)},  # 비용 0.3% 빼면 우위 없음
         "C.KS|2026-02-02": {"long": _v(p=0.9)},  # 다중 검정 미통과
         "D.KS|2026-02-02": None,  # 봉이 모자라 판정 없음
-        "^KS11|2026-02-02": {"long": _v(), "short": _v(edge=0.0005)},
+        "^KS11|2026-02-02": {"long": _v()},
     }
     out = wf.passed_by_month(cache, ["A.KS", "B.KS", "C.KS", "D.KS"], [m])[m]
     assert list(out["stocks"]) == ["A.KS"]
-    assert out["index_long"] is True and out["index_short"] is False
+    assert out["index_long"] is True and "index_short" not in out
 
 
 def test_short_pvalue_detects_timed_entries():

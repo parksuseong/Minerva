@@ -64,54 +64,18 @@ def test_telegram_without_actions_says_nothing_to_do():
 def test_actions_from_entries_and_exits():
     from minerva.strategy.daily import make_actions, telegram_summary
 
-    ver = {"long": {"label": "검증됨"}, "short": {"label": "미검증"}}
     asset = {
         "symbol": "SPY",
         "name": "SPY",
         "market": "US",
         "date": "2026-10-27",
-        "verify": ver,
+        "verify": {"long": {"label": "검증됨"}},
         "tm": {"state": "진입 신호", "ref_price": 100, "stop": 90},
-        "short": {
-            "state": "청산 신호",
-            "reason": "익절 조건",
-            "pnl": 0.03,
-            "exit": "다음 거래일 시가 청산",
-        },
     }
-    inv = {
-        "symbol": "QID",
-        "name": "QID",
-        "market": "US",
-        "date": "2026-10-27",
-        "kind": "inv",
-        "verify": {"short": {"label": "검증됨"}},
-        "tm": {"state": "진입 신호", "stop_px": 107},
-    }
-    acts = make_actions([asset], [inv])
-    # 종목 자체 숏(SHORT_*)은 실행할 수 없어 주문 목록에 넣지 않는다
-    assert [a["action"] for a in acts] == ["BUY", "LONG_ENTRY"]
-    assert acts[0]["stop"] == 107 and acts[1]["stop"] == 90
+    acts = make_actions([asset], [])
+    assert [a["action"] for a in acts] == ["LONG_ENTRY"] and acts[0]["stop"] == 90
     text = telegram_summary(_data(actions=acts))
-    assert "🎯 오늘 할 일 2건" in text and "롱 진입 SPY [✅]" in text
-
-
-def test_inverse_follows_underlying_short(monkeypatch):
-    from minerva.strategy import daily
-
-    bars = bars_until(date(2026, 10, 20), 5)
-    monkeypatch.setattr(daily, "fetch_yahoo", lambda s, r: bars)
-    monkeypatch.setattr(daily, "short_status", lambda b: {"state": "진입 신호", "stop_px": 1})
-    monkeypatch.setattr(daily, "regime_is_fear", lambda vix: False)
-    monkeypatch.setattr(daily, "verify", lambda s, b, c: {"short": {"label": "검증됨"}})
-    inv = daily.Asset("QID", "QID", "US", "inv", "QQQ", -2)
-    out = daily.product_status(inv, bars, {"QQQ": "나스닥100"})
-    assert out["tm"]["state"] == "진입 신호" and out["underlying"] == "나스닥100"
-    # 레버리지·곱버스는 다루지 않는다: 인버스도 지수 ETF도 1배만
-    assert all(
-        (p.kind == "inv" and p.mult == -1) or (p.kind == "etf" and p.mult == 1)
-        for p in daily.PRODUCTS
-    )
+    assert "🎯 오늘 할 일 1건" in text and "롱 진입 SPY [✅]" in text
 
 
 def test_product_uses_own_price_for_orders(monkeypatch):
@@ -120,9 +84,7 @@ def test_product_uses_own_price_for_orders(monkeypatch):
     bars = bars_until(date(2026, 10, 20), 5)
     monkeypatch.setattr(daily, "fetch_yahoo", lambda s, r: bars)
     entry = {"state": "진입 신호", "ref_price": 5638.0, "stop": 5000}
-    monkeypatch.setattr(daily, "short_status", lambda b: dict(entry))
     monkeypatch.setattr(daily, "tm_status", lambda b, c: dict(entry))
-    monkeypatch.setattr(daily, "regime_is_fear", lambda vix: False)
     raw = {
         "label": "검증됨",
         "trades": 90,
@@ -131,14 +93,17 @@ def test_product_uses_own_price_for_orders(monkeypatch):
         "edge_out": 0.01,
         "p_value": 0.01,
     }
-    monkeypatch.setattr(daily, "verify", lambda s, b, c: {"short": raw, "long": raw})
-    inv = daily.product_status(daily.Asset("114800.KS", "I", "KR", "inv", "^KS11", -1), bars, {})
+    monkeypatch.setattr(daily, "verify", lambda s, b, c: {"long": raw})
     etf = daily.product_status(daily.Asset("069500.KS", "E", "KR", "etf", "^KS11", 1), bars, {})
     close = bars[-1].close
-    assert inv["tm"]["ref_price"] == round(close, 2) and etf["tm"]["ref_price"] == round(close, 2)
-    assert etf["tm"]["stop"] == round(close * 0.9, 2) and "long" in etf["verify"]
-    acts = daily.make_actions([], [inv, etf])
-    assert sorted(a["action"] for a in acts) == ["BUY", "LONG_ENTRY"]
+    assert etf["tm"]["ref_price"] == round(close, 2) and etf["tm"]["stop"] == round(close * 0.9, 2)
+    assert [a["action"] for a in daily.make_actions([], [etf])] == ["LONG_ENTRY"]
+
+
+def test_no_inverse_products():
+    from minerva.strategy import daily
+
+    assert [p.kind for p in daily.PRODUCTS] == ["etf"]
 
 
 def test_verdict_labels():
@@ -170,16 +135,6 @@ def test_wait_levels_give_prices_and_dates():
     lv = wait_levels(bars, "long", {"w5": 18.0, "w10": 16.0})
     assert "16.00" in lv["VIX 주봉 5<10"] and "확정" in lv["주봉 20주선 위"]
     assert "아래로" in wait_levels(bars, "short")["50일선 아래"]
-
-
-def test_base_asset_gets_short_side_and_fear_blocks_it(monkeypatch):
-    from minerva.strategy import daily
-
-    monkeypatch.setattr(daily, "short_status", lambda bars: {"state": "진입 신호", "stop": "x"})
-    monkeypatch.setattr(daily, "regime_is_fear", lambda vix: False)
-    assert daily.base_short([], None)["state"] == "진입 신호"
-    monkeypatch.setattr(daily, "regime_is_fear", lambda vix: True)
-    assert daily.base_short([], None)["missing"] == ["백워데이션 중 신규 숏 금지"]
 
 
 def test_costs_by_market():

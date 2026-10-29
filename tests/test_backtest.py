@@ -113,3 +113,29 @@ def test_cli_context_matches_live_verification():
     bars = [Bar(d, 100, 101, 99, 100, 10) for d in days]
     vix = [Bar(d, 15, 16, 14, 15 + (i % 7), 0) for i, d in enumerate(days)]
     assert live_context(bars, vix).regime == dm._ctx(vix, bars).regime
+
+
+def test_random_timing_draws_only_from_filtered_days(monkeypatch):
+    import random
+    from datetime import date, timedelta
+
+    from minerva.strategy import backtest as bt
+    from minerva.strategy.indicators import Bar
+
+    days = [date(2020, 1, 1) + timedelta(days=i) for i in range(300)]
+    bars = [
+        Bar(d, 100 + i % 9, 102 + i % 9, 98 + i % 9, 100 + (i * 7) % 11, 10)
+        for i, d in enumerate(days)
+    ]
+    rule = bt.Rule(level=1, above_ma=20, hold=5)
+    mask = bt.filter_mask(bars, rule)
+    seen = []
+    real_sample = random.Random.sample
+    monkeypatch.setattr(
+        random.Random,
+        "sample",
+        lambda self, pop, k: seen.append(list(pop)) or real_sample(self, pop, k),
+    )
+    bt.random_timing_pvalue(bars, rule, n_perm=3)
+    if seen:  # 신호가 2개 이상 나올 때만 검정한다
+        assert all(mask[i] for i in seen[0]) and len(seen[0]) == sum(mask[:-1])

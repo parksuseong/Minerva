@@ -891,6 +891,17 @@ def run_selftest(code: str = SELFTEST_CODE, wait: float = 90) -> list[dict]:
     return results
 
 
+def _plan_ahead(daily: dict, account: dict) -> tuple[list[dict], list[str]]:
+    """점검·미리보기용 계획. 08:50 실행과 같은 조건(파킹 자금·신규 매수 중지)으로 계산한다."""
+    return plan(
+        daily,
+        account,
+        _load(TRADE_DIR / "positions.json", {}),
+        allow_buys=not entries_blocked(),
+        park_qty=_load(TRADE_DIR / "park.json", {}).get("qty", 0),
+    )
+
+
 PREFLIGHT_TIMERS = (
     "minerva-trade-open.timer",
     "minerva-trade-watch.timer",
@@ -927,7 +938,7 @@ def preflight_checks(now: datetime, daily: dict | None, cfg_loader=None) -> list
         checks.append((open_day is not False, "오늘 개장일" if open_day else "오늘 휴장일"))
         account = kis.snapshot(cfg, now)
         checks.append((True, f"계좌 조회 정상 · 평가액 {account.get('equity', 0):,.0f}원"))
-        orders, skipped = plan(daily or {}, account, _load(TRADE_DIR / "positions.json", {}))
+        orders, skipped = _plan_ahead(daily or {}, account)
         checks.append((True, f"예정 주문 {len(orders)}건 · 건너뜀 {len(skipped)}건"))
     except (kis.KisError, OSError, KeyError, ValueError) as e:
         checks.append((False, f"한투 연결 실패: {e}"))
@@ -950,7 +961,7 @@ def run_preview() -> list[dict]:
     """16:30 분석 뒤: 내일 08:50에 낼 주문을 미리 알린다 (주문 안 냄)."""
     daily = _load(DAILY_FILE, {})
     cfg = kis.load_config()
-    orders, skipped = plan(daily, kis.snapshot(cfg), _load(TRADE_DIR / "positions.json", {}))
+    orders, skipped = _plan_ahead(daily, kis.snapshot(cfg))
     state = "⏸ 매매 중지 상태" if halted() else ("🔴 실전" if mode() == "live" else "🧪 모의 실행")
     lines = [
         f"📋 내일 08:50 주문 미리보기 · {state}",

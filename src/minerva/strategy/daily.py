@@ -4,8 +4,8 @@
 - 확정된 일봉만 쓴다 (장중·당일 미마감 봉은 버림).
 - 규칙: momentum-tm §2 TM 눌림 롱, vol-regime §2-1 공포 초입 매수,
   §2 레짐 비중 한도.
-- 대상: 코스피 지수·시총 상위 50, S&P500·나스닥100 선물·나스닥 시총 상위 10, 비트코인,
-  인버스(2배까지). 종목별 검증 여부는 자기 차트 백테스트로 자동 판정한다(`verify`).
+- 대상: 코스피 지수·시총 상위 200, S&P500·나스닥100 선물·나스닥 시총 상위 10, 비트코인,
+  KODEX 200. 종목별 검증 여부는 자기 차트 백테스트로 자동 판정한다(`verify`).
 - `actions`: 오늘 낼 주문(롱 진입·롱 청산). 자동매매가 읽는 목록이다. 숏은 하지 않는다.
 """
 
@@ -63,7 +63,7 @@ class Asset:
     symbol: str
     name: str
     market: str  # US / KR / CRYPTO
-    kind: str = "base"  # base / lev(레버리지) / inv(인버스)
+    kind: str = "base"  # base / etf(지수 ETF)
     underlying: str = ""
     mult: int = 1
 
@@ -112,7 +112,7 @@ def round_trip_cost(symbol: str, market: str) -> float:
         return COST_CRYPTO
     if market == "KR" and not symbol.startswith("^"):
         return COST_KR_STOCK
-    return COST_ETF  # 지수·선물·미국 ETF·국내 인버스 ETF
+    return COST_ETF  # 지수·선물·ETF
 
 
 def with_cost(v: dict, cost: float) -> dict:

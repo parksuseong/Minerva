@@ -41,9 +41,7 @@ DAILY_FILE = Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.j
 
 WEIGHT = 0.30  # 개별 종목당 계좌 평가액 대비 (risk-rules §1, 사용자 위임 2026-10-29)
 INDEX_ETF_WEIGHT = 0.60  # 지수 ETF는 분산돼 있어 개별주보다 크게 둔다
-INVERSE_TOTAL = 0.30  # 인버스는 합계 30%까지 (risk-rules §1), 한 번에 한 상품만
 INDEX_ETFS = {"069500"}
-INVERSES = {"114800"}
 MAX_POSITIONS = 10  # 사용자 결정 2026-10-28
 # 대기 자금 파킹: 신호가 없는 동안 현금을 CD금리 ETF에 넣어 이자를 받는다. 신호가 오면 그날 판다.
 PARK_CODE = "357870"
@@ -59,14 +57,14 @@ GAP_BUFFER = 1.03  # 매수 지정가 = 전일 종가 × 1.03. 더 높게 뜨면
 # 시장가 매수는 증권사가 상한가(+30%) 기준으로 증거금을 잡아 수량 계산과 어긋난다 → 매수는 지정가
 PARK_SLIP = 1.002  # 파킹 ETF는 현재가 바로 위 지정가로 산다 (바로 체결)
 LONG_STOP = 0.10  # 롱: 매입가 −10%
-SHORT_STOP = 0.07  # 인버스: 기초자산 +7% ≈ 인버스 −7%×배수
-ENTRY = ("LONG_ENTRY", "BUY")
-EXIT = ("LONG_EXIT", "SELL")
+# 롱만 한다. 숏·인버스는 매매하지 않는다 (사용자 결정 2026-10-30)
+ENTRY = ("LONG_ENTRY",)
+EXIT = ("LONG_EXIT",)
 RETRIES = 3
 RETRY_GAP = 10
 MAX_SIGNAL_AGE = timedelta(days=4)  # 주말·연휴를 넘긴 낡은 신호로는 주문하지 않는다
 DRAWDOWN_LIMIT = 0.15
-SELFTEST_CODE = "114800"  # KODEX 인버스: 1주가 싸고 거래가 많다
+SELFTEST_CODE = "357870"  # CD금리 ETF: 값이 거의 안 움직이고 거래가 많아 시험 손실이 작다
 
 
 def _load(path: Path, default):
@@ -141,8 +139,6 @@ def is_krx_code(code: str) -> bool:
 def _cap(code: str) -> float:
     if code in INDEX_ETFS:
         return INDEX_ETF_WEIGHT
-    if code in INVERSES:
-        return INVERSE_TOTAL
     return WEIGHT
 
 
@@ -174,9 +170,9 @@ def plan(
 ) -> tuple[list[dict], list[str]]:
     """일일 분석 + 계좌 → (낼 주문, 건너뛴 이유). 매도를 먼저 둔다.
 
-    순서: 청산 신호 → 인버스 전환(롱 정리) → 리밸런싱(비중 초과분 덜기) → 신규 매수(근거 강한 순)
+    순서: 청산 신호 → 리밸런싱(비중 초과분 덜기) → 신규 매수(근거 강한 순)
     → 교체 매매(돈·자리가 없어 못 산 강한 신호가 있으면 약한 보유 종목을 판다).
-    매수를 위한 매도(인버스 전환·교체)는 그 매수가 실제로 가능할 때만 낸다.
+    매수를 위한 매도(교체)는 그 매수가 실제로 가능할 때만 낸다.
     allow_buys=False(손실 한도)면 청산·리밸런싱만, allow_rotate=False(09:02)면 교체를 하지 않는다.
     """
     today = today or datetime.now(kis.KST).strftime("%Y-%m-%d")
@@ -228,39 +224,6 @@ def plan(
         if a["action"] in EXIT and code in bot:
             sell(code, a["action"], name=a["name"])
             orders[-1]["signal_date"] = a["date"]
-    # 인버스 매수 신호가 뜨면 봇의 롱을 먼저 모두 정리한다 (사용자 결정 2026-10-28: 자금 확보).
-    # 단, 그 인버스를 실제로 살 수 있을 때만 판다 (인버스 한도·예수금·이미 보유 확인).
-    inv_held_value = sum(
-        bot_value(c) if c in bot else _value(held[c]) for c in held if c in INVERSES
-    )
-    inv_room = equity * INVERSE_TOTAL * factor - inv_held_value
-    longs = [c for c, pos in bot.items() if pos.get("kind") == "long"]
-    cash_if_switch = account.get("cash_d2", 0) + sum(bot_value(c) for c in longs)
-    inverse_ok = (
-        allow_buys
-        and not any(c in INVERSES for c in held)
-        and any(
-            a["action"] == "BUY"
-            and code_of(a["symbol"]) not in held
-            and a.get("ref_price")
-            and min(inv_room, cash_if_switch) >= a["ref_price"] * GAP_BUFFER
-            for a in actions
-        )
-    )
-    if inverse_ok:
-        for code in longs:
-            if code not in {o["code"] for o in orders}:
-                sell(code, "SWITCH")
-    # 반대로 KODEX 200 롱 신호면 봇의 인버스를 먼저 판다 (사용자 결정 2026-10-29: 같이 안 든다)
-    elif allow_buys and any(
-        a["action"] == "LONG_ENTRY"
-        and code_of(a["symbol"]) in INDEX_ETFS
-        and code_of(a["symbol"]) not in held
-        for a in actions
-    ):
-        for code in bot:
-            if code in INVERSES and code not in {o["code"] for o in orders}:
-                sell(code, "UNSWITCH")
     # 리밸런싱: 오른 종목이 한도의 TRIM_AT배를 넘으면 한도까지 던다.
     # 위험 관리용이라 덜 오른 종목을 더 사서 채우지는 않는다 (검증 안 된 추가 매수).
     for code in bot:
@@ -273,7 +236,6 @@ def plan(
                 sell(code, "TRIM", qty)
     selling = {o["code"]: o["qty"] for o in orders}
     slots = MAX_POSITIONS - sum(1 for c in bot if selling.get(c) != bot_qty(c))
-    inverse_held = sum(_value(held[c]) for c in held if c in INVERSES and c not in selling)
     # 매도 대금도 쓸 수 있다고 보고 계획한다. 실제 매수는 매도 체결 뒤(09:02)에 낸다.
     budget = account.get("cash_d2", 0) + sum(
         q * (held[c].get("price") or 0) for c, q in selling.items()
@@ -286,12 +248,7 @@ def plan(
 
     def rank(a: dict) -> tuple:
         p = a.get("p_value")
-        # 같은 근거(같은 기초자산)인 인버스는 1배를 먼저 둔다 (감쇠가 작다)
-        return (
-            1.0 if p is None else p,
-            -(a.get("net_edge") or 0),
-            code_of(a["symbol"]) != "114800",
-        )
+        return (1.0 if p is None else p, -(a.get("net_edge") or 0))
 
     unfunded = []
     if not allow_buys:
@@ -307,15 +264,7 @@ def plan(
         if not a.get("ref_price"):
             skipped.append(f"{a['name']}: 기준가 없음")
             continue
-        if code in INVERSES:
-            if any(c in INVERSES for c in held) or any(
-                o["code"] in INVERSES for o in orders if o["side"] == "buy"
-            ):
-                skipped.append(f"{a['name']}: 인버스는 한 상품만")
-                continue
-            alloc = equity * INVERSE_TOTAL * factor - inverse_held
-        else:
-            alloc = equity * _cap(code) * factor
+        alloc = equity * _cap(code) * factor
         thin = code in adv and adv[code] * LIQUIDITY_CAP < alloc
         if thin:
             alloc = adv[code] * LIQUIDITY_CAP
@@ -393,7 +342,7 @@ def _order(side: str, a: dict, code: str, qty: int) -> dict:
         "qty": int(qty),
         "action": a["action"],
         "signal_date": a["date"],
-        "kind": "inverse" if a["action"] in ("BUY", "SELL") else "long",
+        "kind": "long",
         "ref_price": a.get("ref_price"),
         **(
             {"limit": limit_price(a["ref_price"] * GAP_BUFFER)}
@@ -530,11 +479,7 @@ def _journal(entry: dict) -> None:
 
 REASON = {
     "LONG_ENTRY": "진입 신호",
-    "BUY": "인버스 진입",
     "LONG_EXIT": "청산 신호",
-    "SELL": "인버스 청산",
-    "SWITCH": "인버스 전환",
-    "UNSWITCH": "롱 전환 (인버스 정리)",
     "TRIM": "리밸런싱",
     "ROTATE": "교체",
     "STOP": "손절",
@@ -723,8 +668,6 @@ def _read_journal() -> list[dict]:
 
 
 def stop_price(kind: str, code: str, avg: float) -> float:
-    if kind == "inverse":
-        return avg * (1 - SHORT_STOP)
     return avg * (1 - LONG_STOP)
 
 

@@ -11,7 +11,7 @@
     $("trade-mode").textContent = d.halted ? "⏸ 매매 중지" : d.mode === "live" ? "🔴 실전" : "🧪 모의 실행";
     const pos = Object.entries(d.positions || {});
     $("trade-positions").innerHTML = pos.length ? pos.map(([code, p]) =>
-      `<div class="row"><span><b>${esc(p.name)}</b> <span class="ticker">${esc(code)} · ${p.kind === "inverse" ? "인버스" : "롱"}</span></span>
+      `<div class="row"><span><b>${esc(p.name)}</b> <span class="ticker">${esc(code)} · 롱</span></span>
         <span class="mini">진입 ${esc(p.opened)} · 손절 ${p.stop ? num(p.stop) + "원" : "체결 대기"}</span></div>`).join("")
       : "봇이 보유 중인 종목 없음 · 평일 08:50 장전 시장가 주문, 장중 30초 손절 감시";
     const orders = (d.orders || []).slice(0, 10);

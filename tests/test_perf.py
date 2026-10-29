@@ -26,7 +26,7 @@ def test_closed_trade_net_of_costs():
     assert row["gross_ret"] == 0.1
     assert row["net_ret"] == round(0.1 - perf.cost_rate("000660"), 5)
     assert row["pnl"] == round(3 * 100000 * row["net_ret"])
-    assert perf.cost_rate("114800") < perf.cost_rate("000660")  # ETF엔 거래세가 없다
+    assert perf.cost_rate("069500") < perf.cost_rate("000660")  # ETF엔 거래세가 없다
 
 
 def test_record_closed_dedupes_and_skips_tests(tmp_path):

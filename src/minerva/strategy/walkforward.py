@@ -82,13 +82,21 @@ def _save(path: Path, cache: dict) -> None:
 
 
 def run_verifications(
-    symbols: list[str], starts: list[date], vix: list[Bar], path: Path = CACHE, workers: int = 2
+    symbols: list[str],
+    starts: list[date],
+    vix: list[Bar],
+    path: Path = CACHE,
+    workers: int = 2,
+    compute: bool = True,
 ) -> dict:
     cache = json.loads(path.read_text()) if path.exists() else {}
     todo = [
         (s, d.isoformat()) for d in starts for s in symbols if f"{s}|{d.isoformat()}" not in cache
     ]
     print(f"검증 {len(todo)}건 남음 (캐시 {len(cache)}건)", flush=True)
+    if todo and not compute:
+        # 다른 프로세스가 같은 캐시를 채우는 중일 수 있다: 같이 쓰면 서로 덮어쓴다
+        raise RuntimeError(f"워크포워드 검증이 {len(todo)}건 남았다. 먼저 --walk-forward로 채운다")
     with Pool(workers, initializer=_init, initargs=(vix,)) as pool:
         for i, (key, v) in enumerate(pool.imap_unordered(verify_at, todo, chunksize=4), 1):
             cache[key] = v
@@ -127,7 +135,15 @@ def passed_by_month(cache: dict, stocks: list[str], starts: list[date]) -> dict[
     return out
 
 
-def load_universe(daily: dict, vix: list[Bar], start: date, path: Path = CACHE, workers: int = 2):
+def load_universe(
+    daily: dict,
+    vix: list[Bar],
+    start: date,
+    path: Path = CACHE,
+    workers: int = 2,
+    mode: str = "tm",
+    compute: bool = True,
+):
     from minerva.strategy import portfolio as pf
 
     idx = dm.completed(fetch_yahoo(INDEX, "max"), "KR")
@@ -137,14 +153,14 @@ def load_universe(daily: dict, vix: list[Bar], start: date, path: Path = CACHE, 
         for a in daily.get("assets", [])
         if "error" not in a and a.get("market") == "KR" and not a["symbol"].startswith("^")
     }
-    cache = run_verifications([INDEX, *stocks], starts, vix, path, workers)
+    cache = run_verifications([INDEX, *stocks], starts, vix, path, workers, compute)
     months = passed_by_month(cache, list(stocks), starts)
     out = []
     for sym, name, kind, key, cap in (
         ("069500.KS", "KODEX 200", "long", "index_long", trade.INDEX_ETF_WEIGHT),
     ):
         prices = dm.completed(fetch_yahoo(sym, "max"), "KR")
-        entry, take = pf._signals_for(idx, kind, vix)
+        entry, take = pf._signals_for(idx, kind, vix, mode)
         ok = lambda m, k=key: months[m][k]  # noqa: E731
         out.append(
             pf.Instrument(
@@ -159,7 +175,7 @@ def load_universe(daily: dict, vix: list[Bar], start: date, path: Path = CACHE, 
         )
     for s in sorted({s for m in months.values() for s in m["stocks"]}):
         bars = dm.completed(fetch_yahoo(s, "max"), "KR")
-        entry, take = pf._signals_for(bars, "long", vix)
+        entry, take = pf._signals_for(bars, "long", vix, mode)
         p, edge = [months[m]["stocks"][s] for m in starts if s in months[m]["stocks"]][-1]
         ok = lambda m, s=s: s in months[m]["stocks"]  # noqa: E731
         out.append(

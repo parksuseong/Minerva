@@ -20,7 +20,7 @@ from pathlib import Path
 
 from minerva import trade
 from minerva.strategy import daily as dm
-from minerva.strategy.backtest import signals
+from minerva.strategy.backtest import filter_mask, signals
 from minerva.strategy.indicators import Bar, crossed_down, stoch_fast_k
 from minerva.strategy.report import fetch_yahoo
 
@@ -76,7 +76,16 @@ class Result:
     equity: list[tuple[date, float]] = field(default_factory=list)
 
 
-def _signals_for(src: list[Bar], kind: str, vix: list[Bar]) -> tuple[dict, dict]:
+def _signals_for(src: list[Bar], kind: str, vix: list[Bar], mode: str = "tm") -> tuple[dict, dict]:
+    """mode tm: 실전 규칙(필터 + TM 눌림 진입, Stoch 80 이탈 익절).
+    mode filter: 타이밍 없이 필터(50일선 위·VIX 관문·주봉/월봉 상승)가 맞으면 사고 깨지면 판다
+    (ROADMAP 23: 우위가 타이밍이 아니라 필터에서 나오는지 비교)."""
+    if mode == "filter":
+        mask = filter_mask(src, dm.TM_RULE, dm._ctx(vix, src))
+        return (
+            {b.day: f for b, f in zip(src, mask)},
+            {b.day: not f for b, f in zip(src, mask)},
+        )
     st = stoch_fast_k(src)
     flags = signals(src, dm.TM_RULE, dm._ctx(vix, src))
     take = [i > 0 and crossed_down(st, i, 80.0) for i in range(len(src))]
@@ -153,6 +162,7 @@ def simulate(
     days: list[date],
     regime: dict[date, str],
     cfg: Config,
+    factor_of=lambda r: REGIME_FACTOR.get(r, 1 / 3),
 ) -> Result:
     by = {u.code: u for u in universe}
     cash = cfg.capital
@@ -223,7 +233,7 @@ def simulate(
                     qty = math.ceil((value(code) - cap) / last_px[code])
                     if 0 < qty < p.qty:
                         pending_sell[code] = (qty, "trim")
-        factor = REGIME_FACTOR.get(regime.get(day, "R3"), 1 / 3)
+        factor = factor_of(regime.get(day, "R3"))
         budget = cash + sum(
             q * last_px.get(c, 0) * (1 - _cost(c, "sell")) for c, (q, _) in pending_sell.items()
         )
@@ -301,6 +311,44 @@ def compare(universe: list[Instrument], start: date, capital: float) -> dict[str
     }
 
 
+def index_hold(start: date, capital: float, weight: float) -> Result:
+    """KODEX 200을 첫날 weight만큼 사서 끝까지 들고 있는다 (나머지는 현금). 같은 비용 모델."""
+    bars = dm.completed(fetch_yahoo("069500.KS", "max"), "KR")
+    days = [b.day for b in bars if b.day >= start]
+    u = Instrument(
+        "069500",
+        "KODEX 200",
+        "long",
+        weight,
+        {b.day: b for b in bars},
+        {days[0]: True} if days else {},
+        {},
+    )
+    cfg = Config(capital=capital, trim=False, rotate=False, hold=10**9, long_stop=1.0)
+    return simulate([u], days, {}, cfg, factor_of=lambda _r: 1.0)
+
+
+def compare_rules(daily: dict, vix: list[Bar], start: date, capital: float, workers: int = 2):
+    """ROADMAP 23: 워크포워드 같은 종목·같은 비용·같은 비중으로 ① 현행 ② 필터만 ③ 지수 보유."""
+    from minerva.strategy import walkforward
+
+    out = {}
+    for name, mode, hold in (("① 현행(필터+TM)", "tm", 20), ("② 필터만", "filter", 10**9)):
+        uni, _ = walkforward.load_universe(
+            daily, vix, start, workers=workers, mode=mode, compute=False
+        )
+        idx = dm.completed(fetch_yahoo("^KS11", "max"), "KR")
+        days = [b.day for b in idx if b.day >= start]
+        out[name] = simulate(
+            uni, days, dm._regime_by_day(vix, idx), Config(capital=capital, hold=hold)
+        )
+    out[f"③ 지수 보유 {trade.INDEX_ETF_WEIGHT:.0%}"] = index_hold(
+        start, capital, trade.INDEX_ETF_WEIGHT
+    )
+    out["③ 지수 보유 100%"] = index_hold(start, capital, 1.0)
+    return out
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="실전 운용 규칙 포트폴리오 백테스트")
     parser.add_argument("--capital", type=float, default=1_000_000)
@@ -312,10 +360,19 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="월초마다 그 시점 데이터로 다시 검증한 종목만 산다 (선택 편향 제거, 수 시간)",
     )
+    parser.add_argument(
+        "--rules",
+        action="store_true",
+        help="워크포워드로 현행·필터만·지수 보유 비교 (ROADMAP 23, 워크포워드 캐시 사용)",
+    )
     parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args(argv)
     daily = json.loads(Path(args.daily).read_text())
     vix = dm.completed(fetch_yahoo("^VIX", "max"), "US")
+    if args.rules:
+        res = compare_rules(daily, vix, date.fromisoformat(args.start), args.capital, args.workers)
+        _print(res)
+        return
     if args.walk_forward:
         from minerva.strategy import walkforward
 
@@ -332,7 +389,10 @@ def main(argv: list[str] | None = None) -> None:
         codes = set(args.codes.split(",")) if args.codes else None
         uni = load_universe(daily, vix, codes)
     print("종목:", ", ".join(u.name for u in uni))
-    res = compare(uni, date.fromisoformat(args.start), args.capital)
+    _print(compare(uni, date.fromisoformat(args.start), args.capital))
+
+
+def _print(res: dict[str, Result]) -> None:
     print(f"{'변형':<22}{'최종':>14}{'연수익':>8}{'최대낙폭':>9}{'거래':>6}{'투자비율':>8}")
     for name, r in res.items():
         print(

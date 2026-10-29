@@ -681,3 +681,76 @@ def test_preview_plan_counts_parked_cash_and_entry_block(tmp_path):
     (tmp_path / "NO_ENTRY").write_text("")
     orders, skipped = trade._plan_ahead(daily, account)
     assert not any(o["side"] == "buy" for o in orders) and any("중지" in s for s in skipped)
+
+
+def test_unfilled_exit_is_retried_next_day(tmp_path, monkeypatch):
+    (tmp_path / "positions.json").write_text(
+        json.dumps(
+            {
+                "005930": {
+                    "name": "A",
+                    "kind": "long",
+                    "qty": 3,
+                    "stop": 9000,
+                    "selling": 3,
+                    "sell_action": "LONG_EXIT",
+                }
+            }
+        )
+    )
+    acc = {**ACCOUNT, "positions": [{"code": "005930", "qty": 3, "price": 10000}]}
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: acc)
+    trade.run_reconcile(NOW)
+    owned = json.loads((tmp_path / "positions.json").read_text())
+    assert owned["005930"]["exit_pending"] == "LONG_EXIT"
+    orders, _ = trade.plan(_daily([]), acc, owned, today="2026-10-30")
+    assert [(o["code"], o["action"]) for o in orders] == [("005930", "EXIT_RETRY")]
+    assert trade.order_key(orders[0]) == "2026-10-30-exit_retry:005930:sell"
+
+
+def test_rejected_exit_marks_pending(tmp_path, monkeypatch):
+    (tmp_path / "positions.json").write_text(
+        json.dumps({"005930": {"name": "A", "kind": "long", "qty": 3, "stop": 9000}})
+    )
+    (tmp_path / "mode").write_text("live")
+    monkeypatch.setattr(trade, "DAILY_FILE", tmp_path / "daily.json")
+    daily = {**_daily([_act("LONG_EXIT", "005930.KS", "A")]), "generated_at": NOW.isoformat()}
+    (tmp_path / "daily.json").write_text(json.dumps(daily))
+    acc = {**ACCOUNT, "positions": [{"code": "005930", "qty": 3, "price": 10000}]}
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: acc)
+    monkeypatch.setattr(trade, "send_order", lambda cfg, o, live: {**o, "result": "rejected"})
+    trade.run_open(NOW)
+    owned = json.loads((tmp_path / "positions.json").read_text())
+    assert owned["005930"]["exit_pending"] == "LONG_EXIT"
+
+
+def test_max_hold_sells_without_signal():
+    acc = {**ACCOUNT, "positions": [{"code": "005930", "qty": 3, "price": 10000}]}
+    owned = {"005930": {"name": "A", "kind": "long", "qty": 3, "opened": "2026-09-01"}}
+    orders, _ = trade.plan(_daily([]), acc, owned, today="2026-10-06")  # 평일 25일
+    assert [o["action"] for o in orders] == ["MAX_HOLD"]
+    owned["005930"]["opened"] = "2026-09-02"
+    assert trade.plan(_daily([]), acc, owned, today="2026-10-06")[0] == []
+    assert trade.weekdays_between("2026-10-30", "2026-11-02") == 1  # 금 → 월
+
+
+def test_reconcile_clamps_park_record_to_real_holding(tmp_path, monkeypatch):
+    (tmp_path / "park.json").write_text(json.dumps({"qty": 167}))
+    acc = {**ACCOUNT, "positions": [{"code": trade.PARK_CODE, "qty": 160, "price": 58000}]}
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: acc)
+    notes = trade.run_reconcile(NOW)
+    assert json.loads((tmp_path / "park.json").read_text())["qty"] == 160
+    assert any("파킹" in n for n in notes)
+
+
+def test_skipped_order_run_alerts(monkeypatch):
+    sent = []
+    monkeypatch.setattr(trade.notify, "send", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(trade, "_lock", lambda wait: None)
+    assert trade.main(["open"]) == 0 and "건너뛰었어요" in sent[0]
+    sent.clear()
+    trade.main(["watch"])
+    assert sent == []

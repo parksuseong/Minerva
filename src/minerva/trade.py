@@ -29,7 +29,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from minerva import kis, notify, perf
@@ -60,6 +60,10 @@ LONG_STOP = 0.10  # 롱: 매입가 −10%
 # 롱만 한다. 숏·인버스는 매매하지 않는다 (사용자 결정 2026-10-30)
 ENTRY = ("LONG_ENTRY",)
 EXIT = ("LONG_EXIT",)
+# 청산 매도가 거부·미체결이면 다음 날 신호가 없어 그대로 남는다. 팔릴 때까지 다시 낸다
+EXIT_RETRY_FROM = ("LONG_EXIT", "EXIT_RETRY", "MAX_HOLD", "ROTATE")
+# 규칙상 최대 20거래일 보유. 신호를 놓쳐도 평일 25일이 지나면 판다 (연휴 여유 포함)
+MAX_HOLD_WEEKDAYS = 25
 RETRIES = 3
 RETRY_GAP = 10
 MAX_SIGNAL_AGE = timedelta(days=4)  # 주말·연휴를 넘긴 낡은 신호로는 주문하지 않는다
@@ -130,6 +134,12 @@ def is_open_day(cfg: dict, day: datetime) -> bool | None:
 
 def code_of(symbol: str) -> str:
     return symbol.split(".")[0]
+
+
+def weekdays_between(start: str, end: str) -> int:
+    """start(포함 안 함)부터 end(포함)까지 평일 수. 휴장일은 모르므로 거래일보다 조금 많다."""
+    a, b = date.fromisoformat(start[:10]), date.fromisoformat(end[:10])
+    return sum(1 for i in range(1, (b - a).days + 1) if (a + timedelta(days=i)).weekday() < 5)
 
 
 def is_krx_code(code: str) -> bool:
@@ -224,6 +234,17 @@ def plan(
         if a["action"] in EXIT and code in bot:
             sell(code, a["action"], name=a["name"])
             orders[-1]["signal_date"] = a["date"]
+    # 안전망: 어제 못 판 청산을 다시 내고, 너무 오래 든 종목은 신호가 없어도 판다
+    for code, pos in bot.items():
+        if code in {o["code"] for o in orders}:
+            continue
+        if pos.get("exit_pending"):
+            sell(code, "EXIT_RETRY")
+        elif pos.get("opened") and weekdays_between(pos["opened"], today) >= MAX_HOLD_WEEKDAYS:
+            sell(code, "MAX_HOLD")
+        else:
+            continue
+        orders[-1]["signal_date"] = f"{today}-{orders[-1]['action'].lower()}"
     # 리밸런싱: 오른 종목이 한도의 TRIM_AT배를 넘으면 한도까지 던다.
     # 위험 관리용이라 덜 오른 종목을 더 사서 채우지는 않는다 (검증 안 된 추가 매수).
     for code in bot:
@@ -482,6 +503,8 @@ REASON = {
     "LONG_EXIT": "청산 신호",
     "TRIM": "리밸런싱",
     "ROTATE": "교체",
+    "EXIT_RETRY": "청산 재시도",
+    "MAX_HOLD": "보유 기간 초과",
     "STOP": "손절",
     "SELFTEST": "시험",
     "PARK": "대기 자금 파킹",
@@ -567,6 +590,8 @@ def run_open(now: datetime | None = None) -> list[dict]:
                 else:
                     _track(owned, r)
                     _save(TRADE_DIR / "positions.json", owned)  # 중간에 오류가 나도 남긴다
+            elif o["side"] == "sell" and o.get("action") in EXIT_RETRY_FROM and o["code"] in owned:
+                owned[o["code"]]["exit_pending"] = o["action"]  # 다음 거래일 08:50에 다시 낸다
         if not pre_open and live:
             r = park_idle_cash(cfg, now, done)
             if r:
@@ -657,7 +682,9 @@ def _track(owned: dict, r: dict) -> None:
         else:
             pos["selling"] = r["qty"]
             pos["sell_at"] = r["at"]
+            pos["sell_action"] = r.get("action")
             pos["held_before"] = r.get("held_before")
+            pos.pop("exit_pending", None)
 
 
 def _read_journal() -> list[dict]:
@@ -773,6 +800,9 @@ def run_reconcile(now: datetime | None = None) -> list[str]:
             left = held[code]["qty"] if mine is None else min(mine, held[code]["qty"])
             pos.pop("selling")
             pos.pop("sell_at", None)
+            if pos.get("sell_action") in EXIT_RETRY_FROM:
+                pos["exit_pending"] = pos["sell_action"]  # 다음 거래일 08:50에 남은 수량을 판다
+            pos.pop("sell_action", None)
             pos["qty"] = left
             # 체결 안 된 매도는 접어 두고 손절 감시를 다시 한다. 청산 신호면 다음 날 다시 낸다
             notes.append(f"• {pos['name']}: 매도 접수했지만 {left}주 남음 → 다시 감시 (확인 필요)")
@@ -784,6 +814,13 @@ def run_reconcile(now: datetime | None = None) -> list[str]:
             pos["qty"] = got
             pos.pop("ordered")
     _save(TRADE_DIR / "positions.json", owned)
+    # 파킹 수량은 주문을 낼 때 적는다. 덜 체결됐거나 직접 팔았으면 실제 보유에 맞춘다
+    park = _load(TRADE_DIR / "park.json", {})
+    real = (held.get(PARK_CODE) or {}).get("qty", 0)
+    if park.get("qty", 0) > real:
+        notes.append(f"• 파킹 기록 {park['qty']}주 → 실제 {real}주로 맞춤")
+        park["qty"] = real
+        _save(TRADE_DIR / "park.json", park)
     for c in closed:
         notes.append(
             f"• 청산 {c['name']} {c['entry']:,.0f}→{c['exit']:,.0f}원 · 비용 후 "
@@ -963,6 +1000,8 @@ def main(argv: list[str] | None = None) -> int:
     lock = _lock(wait=args.command != "watch")
     if lock is None:
         print(f"{args.command} skipped: 다른 자동매매 작업이 실행 중")
+        if args.command != "watch":  # 08:50·09:02 주문이 조용히 빠지면 매수·파킹이 통째로 없어진다
+            notify.send(f"⚠️ 자동 주문({args.command})을 건너뛰었어요: 다른 작업이 2분 넘게 실행 중")
         return 0
     try:
         results = COMMANDS[args.command]()

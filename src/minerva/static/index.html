@@ -85,8 +85,7 @@
     .act .tag { font-size: 12px; font-weight: 700; padding: 3px 8px; border-radius: 8px;
       align-self: start; white-space: nowrap; }
     .tag.LONG_ENTRY, .tag.BUY { background: #dcfce7; color: #14532d; }
-    .tag.SHORT_ENTRY { background: #fee2e2; color: #7f1d1d; }
-    .tag.LONG_EXIT, .tag.SHORT_EXIT, .tag.SELL { background: #e0e7ff; color: #1e3a8a; }
+    .tag.LONG_EXIT { background: #e0e7ff; color: #1e3a8a; }
     .filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 4px; }
     .filters button { border: 1px solid var(--line); background: var(--card); color: var(--text);
       font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; cursor: pointer; }
@@ -152,7 +151,7 @@
         <button data-m="KR">국내</button>
         <button data-m="US">미국</button>
         <button data-m="CRYPTO">코인</button>
-        <button data-m="inv">ETF·인버스</button>
+        <button data-m="inv">ETF</button>
         <label><input type="checkbox" id="an-verified"> 검증된 규칙만</label>
       </div>
       <div id="daily-list"></div>
@@ -253,7 +252,7 @@
       show(location.hash.slice(1));
     })();
   </script>
-  <script src="/static/daily.js?v=20261029"></script>
+  <script src="/static/daily.js?v=20261030"></script>
   <script src="/static/account.js?v=20261029b"></script>
   <script src="/static/trade.js?v=20261029"></script>
   <script src="/static/office.js?v=20261029b"></script>

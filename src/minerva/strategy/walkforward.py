@@ -23,7 +23,6 @@ from minerva.strategy import daily as dm
 from minerva.strategy.backtest import evaluate
 from minerva.strategy.indicators import Bar
 from minerva.strategy.report import CACHE_DIR, fetch_yahoo
-from minerva.strategy.short import evaluate_short
 
 # 검증 규칙·자료 처리가 바뀌면 옛 결과와 섞이지 않게 버전별 파일을 쓴다
 CACHE = CACHE_DIR / f"walkforward-v{dm.VERIFY_VERSION}.json"
@@ -59,7 +58,7 @@ def _init(vix: list[Bar]) -> None:
 
 
 def verify_at(job: tuple[str, str]) -> tuple[str, dict | None]:
-    """d 전날까지의 봉으로 롱 규칙(지수는 숏도) 판정. 비용 차감 전 값이다."""
+    """d 전날까지의 봉으로 롱 규칙 판정. 비용 차감 전 값이다."""
     symbol, day = job
     d = date.fromisoformat(day)
     bars = [b for b in dm.completed(fetch_yahoo(symbol, "max"), "KR") if b.day < d]
@@ -72,12 +71,6 @@ def verify_at(job: tuple[str, str]) -> tuple[str, dict | None]:
             "p_value": dm.timing_pvalue(bars, ctx),
         }
     }
-    if symbol == INDEX:
-        flags = dm.short_flags(bars)[0]
-        out["short"] = {
-            **dm._verdict(evaluate_short(bars, flags, dm.SHORT_RULE)),
-            "p_value": dm.short_pvalue(bars, flags),
-        }
     return f"{symbol}|{day}", out
 
 
@@ -106,7 +99,7 @@ def run_verifications(
 
 
 def passed_by_month(cache: dict, stocks: list[str], starts: list[date]) -> dict[date, dict]:
-    """월초별 통과: 종목 {심볼: (p, 비용 후 우위)}, 지수 롱·숏 통과 여부."""
+    """월초별 통과: 종목 {심볼: (p, 비용 후 우위)}, 지수 롱 통과 여부."""
     out = {}
     for m in starts:
         k = m.isoformat()
@@ -130,7 +123,6 @@ def passed_by_month(cache: dict, stocks: list[str], starts: list[date]) -> dict[
                 if a["verify"]["long"]["label"] == "검증됨"
             },
             "index_long": "long" in idx and dm.product_verdict(idx["long"])["label"] == "검증됨",
-            "index_short": "short" in idx and dm.product_verdict(idx["short"])["label"] == "검증됨",
         }
     return out
 
@@ -150,7 +142,6 @@ def load_universe(daily: dict, vix: list[Bar], start: date, path: Path = CACHE, 
     out = []
     for sym, name, kind, key, cap in (
         ("069500.KS", "KODEX 200", "long", "index_long", trade.INDEX_ETF_WEIGHT),
-        ("114800.KS", "KODEX 인버스", "inv", "index_short", trade.INVERSE_TOTAL),
     ):
         prices = dm.completed(fetch_yahoo(sym, "max"), "KR")
         entry, take = pf._signals_for(idx, kind, vix)

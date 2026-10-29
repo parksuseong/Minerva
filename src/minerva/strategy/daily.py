@@ -2,11 +2,11 @@
 
 사용: python -m minerva.strategy.daily [--out PATH] [--notify]
 - 확정된 일봉만 쓴다 (장중·당일 미마감 봉은 버림).
-- 규칙: momentum-tm §2 TM 눌림 롱, §4-1 TM 되돌림 숏, vol-regime §2-1 공포 초입 매수,
+- 규칙: momentum-tm §2 TM 눌림 롱, vol-regime §2-1 공포 초입 매수,
   §2 레짐 비중 한도.
 - 대상: 코스피 지수·시총 상위 50, S&P500·나스닥100 선물·나스닥 시총 상위 10, 비트코인,
   인버스(2배까지). 종목별 검증 여부는 자기 차트 백테스트로 자동 판정한다(`verify`).
-- `actions`: 오늘 낼 주문(롱 진입·롱 청산·숏 진입·숏 청산). 자동매매가 읽는 목록이다.
+- `actions`: 오늘 낼 주문(롱 진입·롱 청산). 자동매매가 읽는 목록이다. 숏은 하지 않는다.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from minerva.strategy.backtest import (
 )
 from minerva.strategy.indicators import (
     Bar,
-    crossed_down,
     ma_snapshot,
     resample,
     sma,
@@ -46,7 +45,6 @@ from minerva.strategy.regime import (
     weekly_gate_at,
 )
 from minerva.strategy.report import CACHE_DIR, fetch_yahoo
-from minerva.strategy.short import ShortRule, evaluate_short, run_short, short_timing_pvalue
 from minerva.strategy.universe import kospi_top, nasdaq_top
 
 OUT = Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
@@ -86,22 +84,17 @@ def watchlist() -> list[Asset]:
     return CORE + kr + us
 
 
-# 사용자 방침: 레버리지·곱버스(2배 인버스)는 매매도 화면도 하지 않는다 (2026-10-28). 인버스는 1배만.
-# 인버스 신호는 기초자산의 TM 되돌림 숏 규칙에서 나온다.
+# 사용자 방침: 숏·인버스·레버리지는 매매도 화면도 계산도 하지 않는다 (2026-10-30).
+# 코스피 숏 규칙이 무작위 타이밍 검정을 못 넘었다(p≈0.17, 2010년 이후 거래당 −0.03%).
 PRODUCTS = [
-    Asset("114800.KS", "KODEX 인버스", "KR", "inv", "^KS11", -1),
     # 지수 롱: 코스피 TM 눌림 규칙(거래 96회, 무작위 대비 p≈0.015)을 KODEX 200으로 실행한다
     Asset("069500.KS", "KODEX 200", "KR", "etf", "^KS11", 1),
 ]
 
-SHORT_RULE = ShortRule(hold=20, stop=0.07)
-# 숏 규칙이 표본 안팎 모두 + 인 기초자산 (SPY는 표본 밖 −, 삼성·하이닉스·애플·테슬라 ❌)
 VERIFY_TTL = 7 * 24 * 3600
 # 검증 캐시 버전: 규칙·관문·자료 처리를 바꾸면 올린다. 다르면 TTL과 상관없이 다시 계산한다.
-# 2: 국내 가짜 채움 봉 제거, 인버스 기초자산 숏 p값 추가 (2026-10-30)
+# 2: 국내 가짜 채움 봉 제거 (2026-10-30). 숏은 계산하지 않는다
 VERIFY_VERSION = 2
-# 숏 p값은 인버스 상품의 기초자산에만 계산한다 (개별 종목 숏은 실행하지 않는다)
-SHORT_P_SYMBOLS = {"^KS11"}
 VERIFY_MIN_TRADES = 30
 # 다중 검정: 무작위 타이밍 대비 p값에 거짓 발견 비율(FDR) 20%를 건다 (2026-10-28 추천안).
 # 0.10이면 2026-10 기준 통과 종목이 없다. 바꾸면 통과 종목이 크게 달라진다.
@@ -169,7 +162,7 @@ def _verdict(res: dict) -> dict:
 
 
 def verify(symbol: str, bars: list[Bar], ctx: Context) -> dict:
-    """그 종목 자기 차트로 롱·숏 규칙을 백테스트한다. 결과는 주 1회만 다시 계산한다."""
+    """그 종목 자기 차트로 롱 규칙을 백테스트한다. 결과는 주 1회만 다시 계산한다."""
     import time
 
     path = CACHE_DIR / "verify" / f"{symbol.replace('^', '_').replace('=', '_')}.json"
@@ -177,13 +170,8 @@ def verify(symbol: str, bars: list[Bar], ctx: Context) -> dict:
         out = json.loads(path.read_text())
         if out.get("version") == VERIFY_VERSION:
             return out
-    flags = short_flags(bars)[0]
-    short = _verdict(evaluate_short(bars, flags, SHORT_RULE))
-    if symbol in SHORT_P_SYMBOLS:
-        short["p_value"] = short_pvalue(bars, flags)
     out = {
         "long": {**_verdict(evaluate(bars, TM_RULE, ctx)), "p_value": timing_pvalue(bars, ctx)},
-        "short": short,
         "asof": bars[-1].day.isoformat(),
         "version": VERIFY_VERSION,
     }
@@ -193,13 +181,6 @@ def verify(symbol: str, bars: list[Bar], ctx: Context) -> dict:
     tmp.write_text(json.dumps(out, ensure_ascii=False))
     os.replace(tmp, path)
     return out
-
-
-def short_pvalue(bars: list[Bar], flags: list[bool]) -> float | None:
-    p = short_timing_pvalue(bars, flags, SHORT_RULE, n_perm=300)
-    if p is not None and p < 0.15:
-        p = short_timing_pvalue(bars, flags, SHORT_RULE, n_perm=3000)
-    return None if p is None else round(p, 4)
 
 
 def timing_pvalue(bars: list[Bar], ctx: Context) -> float | None:
@@ -238,76 +219,6 @@ def apply_fdr(assets: list[dict], q: float | None = None) -> set[str]:
     return passed
 
 
-def short_flags(bars: list[Bar]) -> tuple[list[bool], dict]:
-    """TM 되돌림 숏(S1): Stoch 80 하향 이탈 + 50일선·20주선·10개월선 아래."""
-    closes = [b.close for b in bars]
-    ma50 = sma(closes, 50)
-    st = stoch_fast_k(bars)
-    wu, mu = htf_direction(bars, "W", 20), htf_direction(bars, "M", 10)
-    flags = []
-    for i, b in enumerate(bars):
-        flags.append(
-            crossed_down(st, i, 80.0)
-            and ma50[i] is not None
-            and b.close < ma50[i]
-            and wu.get(b.day) is False
-            and mu.get(b.day) is False
-        )
-    i, last = len(bars) - 1, bars[-1]
-    conds = {
-        "Stoch 80 하향 이탈": crossed_down(st, i, 80.0),
-        "50일선 아래": ma50[i] is not None and last.close < ma50[i],
-        "주봉 20주선 아래": wu.get(last.day) is False,
-        "월봉 10개월선 아래": mu.get(last.day) is False,
-    }
-    return flags, conds
-
-
-def short_status(under: list[Bar]) -> dict:
-    flags, conds = short_flags(under)
-    trades = run_short(under, flags, SHORT_RULE)
-    last = under[-1]
-    if trades and trades[-1].reason != "open" and trades[-1].exit_day == last.day:
-        t = trades[-1]
-        return {
-            "state": "청산 신호",
-            "entry_day": t.entry_day.isoformat(),
-            "reason": EXIT_REASON[t.reason],
-            "exit_px": _r(t.entry),  # 가격을 뒤집어 저장했으므로 entry 칸이 청산가
-            "pnl": _r(t.ret, 4),
-            "exit": "손절은 장중 체결" if t.reason == "stop" else "다음 거래일 시가 청산",
-        }
-    if trades and trades[-1].reason == "open":
-        t = trades[-1]
-        entry = t.exit  # run_short는 숏 수익 계산을 위해 가격을 뒤집어 저장한다
-        return {
-            "state": "보유 중",
-            "entry_day": t.entry_day.isoformat(),
-            "stop": f"기초자산 {_r(entry * (1 + SHORT_RULE.stop))} 돌파 시 손절",
-            "stop_px": _r(entry * (1 + SHORT_RULE.stop)),
-            "pnl": _r(entry / last.close - 1, 4),
-            "days_left": SHORT_RULE.hold - t.bars,
-            "exit_rule": "기초자산 Stoch 20 상향 돌파 익절 / +7% 손절 / 20거래일",
-        }
-    if all(conds.values()):
-        return {
-            "state": "진입 신호",
-            "entry": "다음 거래일 시가 (인버스 매수)",
-            "stop": f"기초자산 {_r(last.close * (1 + SHORT_RULE.stop))} 돌파 시 손절",
-            "stop_px": _r(last.close * (1 + SHORT_RULE.stop)),
-            "ref_price": _r(last.close),
-            "max_days": SHORT_RULE.hold,
-            "exit_rule": "기초자산 Stoch 20 상향 돌파 익절 / +7% 손절 / 20거래일",
-        }
-    missing = [k for k, ok in conds.items() if not ok]
-    return _with_wait({"state": "대기", "missing": missing}, wait_levels(under, "short"))
-
-
-EXIT_REASON = {"take": "익절 조건", "stop": "손절가 도달", "time": "20거래일 만료"}
-INVERSE_NOTE = (
-    "기초자산 TM 되돌림 숏 규칙(검증: 개발 3/3, 독립 5/6, 우위 작음) · 비중은 롱의 1/2 이하"
-)
-
 MARKET_CLOSE = {
     "KR": (ZoneInfo("Asia/Seoul"), 15, 40),
     "US": (ZoneInfo("America/New_York"), 16, 10),
@@ -338,6 +249,9 @@ def completed(bars: list[Bar], market: str, now: datetime | None = None) -> list
     if bars[-1].day > local.date() or (bars[-1].day == local.date() and not closed):
         return bars[:-1]
     return bars
+
+
+EXIT_REASON = {"take": "익절 조건", "stop": "손절가 도달", "time": "20거래일 만료"}
 
 
 def _r(v: float | None, n: int = 2) -> float | None:
@@ -477,7 +391,7 @@ def analyze(asset: Asset, vix: list[Bar], gate: dict | None = None) -> dict:
     st = tm_states(daily)[-1]
     raw = verify(asset.symbol, daily, ctx)
     cost = round_trip_cost(asset.symbol, asset.market)
-    ver = {"long": with_cost(raw["long"], cost), "short": with_cost(raw["short"], cost)}
+    ver = {"long": with_cost(raw["long"], cost)}
     return {
         "symbol": asset.symbol,
         "name": asset.name,
@@ -493,24 +407,7 @@ def analyze(asset: Asset, vix: list[Bar], gate: dict | None = None) -> dict:
         "ma200": _r(snap["ma"].get(200)),
         "adv": round(sum(b.close * b.volume for b in daily[-20:]) / len(daily[-20:])),
         "tm": _with_wait(tm_status(daily, ctx), wait_levels(daily, "long", gate)),
-        "short": base_short(daily, vix),
     }
-
-
-def base_short(daily: list[Bar], vix: list[Bar] | None) -> dict:
-    """기초자산 자체의 숏(S1) 판정. 인버스 상품이 없는 종목은 선물·공매도로 실행한다."""
-    tm = short_status(daily)
-    if tm["state"] == "진입 신호" and regime_is_fear(vix):
-        tm = {"state": "대기", "missing": ["백워데이션 중 신규 숏 금지"]}
-    return tm
-
-
-def regime_is_fear(vix: list[Bar] | None) -> bool:
-    """VIX/VIX3M ≥ 1이면 공포 극점: 숏 신규 진입을 막는다 (S5 기각)."""
-    if not vix:
-        return False
-    m3 = completed(fetch_yahoo("^VIX3M", "max"), "US")
-    return bool(m3) and m3[-1].day == vix[-1].day and vix[-1].close >= m3[-1].close
 
 
 def _ctx(vix: list[Bar], daily: list[Bar]) -> Context:
@@ -525,7 +422,7 @@ def product_verdict(raw: dict) -> dict:
     """상품 판정 = 기초자산 규칙의 비용 후 판정 + 단독 검정(p < CORE_ALPHA).
 
     상품은 탐색 묶음(BH)에 들지 않으므로 지수 자체와 같은 단독 기준을 건다. p값이 없으면
-    (숏 규칙에 아직 계산 안 됨) 검증됨으로 두지 않는다.
+    검증됨으로 두지 않는다.
     """
     v = with_cost(raw, COST_ETF)
     p = raw.get("p_value")
@@ -537,7 +434,7 @@ def product_verdict(raw: dict) -> dict:
 
 
 def product_status(p: Asset, vix: list[Bar], names: dict[str, str]) -> dict:
-    """기초자산 신호를 그대로 따른다. 인버스는 숏 규칙(진입 = 인버스 매수), 지수 ETF는 롱 규칙."""
+    """기초자산(코스피) 롱 규칙 신호를 지수 ETF로 실행한다."""
     daily = completed(fetch_yahoo(p.symbol, "1y"), p.market)
     last = daily[-1]
     under = completed(fetch_yahoo(p.underlying, "max"), p.market)
@@ -546,16 +443,11 @@ def product_status(p: Asset, vix: list[Bar], names: dict[str, str]) -> dict:
     if under[-1].day < last.day:
         # 기초자산 자료가 상품보다 늦으면 어제 신호를 오늘 날짜로 다시 내게 된다
         tm = {"state": "대기", "missing": [f"기초자산 자료 지연 ({under[-1].day})"]}
-        side = "long" if p.kind == "etf" else "short"
-    elif p.kind == "etf":
+    else:
         tm = tm_status(under, ctx)
-        side = "long"
         if tm.get("state") == "진입 신호":
             tm["stop"] = _r(last.close * (1 - TM_RULE.stop))  # 손절은 ETF 매입가 기준
-    else:
-        tm = base_short(under, vix)
-        side = "short"
-        tm["note"] = INVERSE_NOTE
+    side = "long"
     # 주문 수량은 상품 가격으로 계산해야 한다 (기초자산 가격이 아니다)
     if "ref_price" in tm:
         tm["ref_price"] = _r(last.close)
@@ -666,10 +558,6 @@ def build() -> dict:
 ACTION_LABEL = {
     "LONG_ENTRY": "롱 진입",
     "LONG_EXIT": "롱 청산",
-    "SHORT_ENTRY": "숏 진입",
-    "SHORT_EXIT": "숏 청산",
-    "BUY": "인버스 매수",
-    "SELL": "인버스 매도",
 }
 
 
@@ -688,15 +576,13 @@ def _action(a: dict, side: str, st: dict, code: str) -> dict:
         "net_edge": v.get("net_edge"),
         "date": a["date"],
     }
-    if code.endswith("ENTRY") or code == "BUY":
+    if code == "LONG_ENTRY":
         out.update(
             when="다음 거래일 시가",
             ref_price=st.get("ref_price"),
             stop=st.get("stop_px", st.get("stop")),
-            stop_on="기초자산" if code == "BUY" else a["symbol"],
-            take=(
-                "Stoch 80 하향 이탈 종가" if side == "long" else "기초자산 Stoch 20 상향 돌파 종가"
-            ),
+            stop_on=a["symbol"],
+            take="Stoch 80 하향 이탈 종가",
             max_days=20,
         )
     else:
@@ -709,8 +595,7 @@ def _action(a: dict, side: str, st: dict, code: str) -> dict:
     return out
 
 
-# 개별 종목·지수 자체의 숏은 개인이 실행할 수 없어 보여주지도 주문하지도 않는다.
-# 하락 대응은 국내 인버스 ETF(BUY/SELL)로만 한다 (사용자 결정 2026-10-28).
+# 롱만 한다. 숏·인버스는 보여주지도 계산하지도 않는다 (사용자 결정 2026-10-30).
 ASSET_SIDES = ("long",)
 
 
@@ -733,18 +618,10 @@ def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
     for p in products:
         if "error" in p:
             continue
-        side, codes = (
-            ("long", ("LONG_ENTRY", "LONG_EXIT"))
-            if p.get("kind") == "etf"
-            else (
-                "short",
-                ("BUY", "SELL"),
-            )
-        )
         if p["tm"]["state"] == "진입 신호":
-            out.append(_action(p, side, p["tm"], codes[0]))
+            out.append(_action(p, "long", p["tm"], "LONG_ENTRY"))
         elif p["tm"]["state"] == "청산 신호":
-            out.append(_action(p, side, p["tm"], codes[1]))
+            out.append(_action(p, "long", p["tm"], "LONG_EXIT"))
     return sorted(out, key=lambda x: (not x["verified"], x["action"]))
 
 
@@ -752,7 +629,7 @@ def _holds(data: dict) -> list[tuple[dict, str, dict]]:
     out = []
     for a in data["assets"]:
         for side in ASSET_SIDES:
-            st = a.get("tm" if side == "long" else "short", {})
+            st = a.get("tm", {})
             if st.get("state") == "보유 중":
                 out.append((a, side, st))
     return out
@@ -763,14 +640,14 @@ def _near(data: dict, n: int = 5) -> list[tuple[dict, str, dict]]:
     out = []
     for a in data["assets"]:
         for side in ASSET_SIDES:
-            st = a.get("tm" if side == "long" else "short", {})
+            st = a.get("tm", {})
             ok = a.get("verify", {}).get(side, {}).get("label") == "검증됨"
             if ok and st.get("state") == "대기" and len(st.get("missing", [])) == 1:
                 out.append((a, side, st))
     return out[:n]
 
 
-SIDE = {"long": "롱", "short": "숏"}
+SIDE = {"long": "롱"}
 
 
 def _action_line(x: dict) -> str:
@@ -796,7 +673,7 @@ def write_summary(data: dict) -> list[str]:
     else:
         out.append(
             f"VIX 주봉 5주선({g.get('w5')})이 10주선({g.get('w10')}) 위라 롱 신규 진입은 막혀 "
-            f"있어요. 주봉이 5<10으로 마감하면(금요일) 다음 주에 열려요. 숏 규칙은 VIX와 무관해요."
+            f"있어요. 주봉이 5<10으로 마감하면(금요일) 다음 주에 열려요."
         )
     f = data["fear"]
     if f.get("state", "없음") != "없음":

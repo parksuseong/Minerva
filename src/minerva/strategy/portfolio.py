@@ -21,7 +21,7 @@ from pathlib import Path
 from minerva import trade
 from minerva.strategy import daily as dm
 from minerva.strategy.backtest import signals
-from minerva.strategy.indicators import Bar, crossed_down, crossed_up, stoch_fast_k
+from minerva.strategy.indicators import Bar, crossed_down, stoch_fast_k
 from minerva.strategy.report import fetch_yahoo
 
 FEE = 0.00015
@@ -82,12 +82,8 @@ class Result:
 
 def _signals_for(src: list[Bar], kind: str, vix: list[Bar]) -> tuple[dict, dict]:
     st = stoch_fast_k(src)
-    if kind == "long":
-        flags = signals(src, dm.TM_RULE, dm._ctx(vix, src))
-        take = [i > 0 and crossed_down(st, i, 80.0) for i in range(len(src))]
-    else:
-        flags = dm.short_flags(src)[0]
-        take = [i > 0 and crossed_up(st, i, 20.0) for i in range(len(src))]
+    flags = signals(src, dm.TM_RULE, dm._ctx(vix, src))
+    take = [i > 0 and crossed_down(st, i, 80.0) for i in range(len(src))]
     return (
         {b.day: f for b, f in zip(src, flags)},
         {b.day: t for b, t in zip(src, take)},
@@ -99,19 +95,21 @@ def load_universe(daily: dict, vix: list[Bar], codes: set[str] | None = None) ->
     out = []
     idx = dm.completed(fetch_yahoo("^KS11", "max"), "KR")
     for p in daily.get("products", []):
-        side = "short" if p.get("kind") == "inv" else "long"
-        v = p.get("verify", {}).get(side, {})
+        # 숏·인버스는 하지 않는다 (2026-10-30). 예전 분석 파일의 인버스 상품은 건너뛴다
+        if p.get("kind") == "inv":
+            continue
+        v = p.get("verify", {}).get("long", {})
         code = p["symbol"].split(".")[0]
         if v.get("label") != "검증됨":
             continue
         prices = dm.completed(fetch_yahoo(p["symbol"], "max"), "KR")
-        entry, take = _signals_for(idx, "long" if side == "long" else "inv", vix)
+        entry, take = _signals_for(idx, "long", vix)
         out.append(
             Instrument(
                 code,
                 p["name"],
-                "long" if side == "long" else "inv",
-                trade.INDEX_ETF_WEIGHT if side == "long" else trade.INVERSE_TOTAL,
+                "long",
+                trade.INDEX_ETF_WEIGHT,
                 {b.day: b for b in prices},
                 entry,
                 take,
@@ -307,7 +305,6 @@ VARIANTS = {
     "+리밸런싱": dict(rotate=False),
     "+교체": dict(trim=False),
     "전부(실전)": dict(),
-    "전부, 인버스 전환 없음": dict(switch=False),
 }
 
 
@@ -346,7 +343,7 @@ def main(argv: list[str] | None = None) -> None:
         for m, v in months.items():
             print(
                 m,
-                f"지수 롱 {'O' if v['index_long'] else 'X'} 숏 {'O' if v['index_short'] else 'X'}",
+                f"지수 롱 {'O' if v['index_long'] else 'X'}",
                 f"종목 {len(v['stocks'])}개",
             )
     else:

@@ -5,7 +5,7 @@
     ">": "&gt;", '"': "&quot;" }[c]));
   const pct = (v) => (v == null ? "-" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`);
   const num = (v) => (v == null ? "-" : Number(v).toLocaleString("ko-KR", { maximumFractionDigits: 2 }));
-  const SIDE = { long: "롱", short: "숏" };
+  const SIDE = { long: "롱" };
   const ICON = { "진입 신호": "🟢", "청산 신호": "🔷", "보유 중": "🔵", "대기": "⏳" };
 
   const label = (a, side) => (a.verify?.[side]?.label) || "미검증";
@@ -16,8 +16,8 @@
     const tip = v ? `거래 ${v.trades}회 · 승률 ${pct(v.win_rate)} · 우위 안 ${pct(v.edge_in)} / 밖 ${pct(v.edge_out)}` : "";
     return `<span class="badge" title="${esc(tip)}"${color ? ` style="color:${color}"` : ""}>${SIDE[side]} ${esc(l)}</span>`;
   };
-  // 종목 자체 숏은 실행할 수 없어 숨긴다. 숏은 국내 인버스 ETF로만 (daily.py ASSET_SIDES)
-  const sides = (a) => (a.kind === "inv" ? [["short", a.tm]] : [["long", a.tm]]);
+  // 롱만 한다. 숏·인버스는 보여주지 않는다 (예전 분석 파일의 인버스 상품도 숨긴다)
+  const sides = (a) => [["long", a.tm]];
 
   function sideDetail(side, st) {
     if (!st) return "";
@@ -45,23 +45,21 @@
   function assetHtml(a) {
     if (a.error) return `<div class="asset"><b>${esc(a.name)}</b> <span class="detail">데이터 오류</span></div>`;
     const ch = a.change == null ? "" : `<span class="${a.change >= 0 ? "up" : "down"}">${pct(a.change)}</span>`;
-    const brief = sides(a).map(([side, st]) => `${SIDE[side]} ${ICON[st?.state] || ""}${esc(st?.state)}`).join(" · ");
+    const brief = [["long", a.tm]].map(([side, st]) => `${SIDE[side]} ${ICON[st?.state] || ""}${esc(st?.state)}`).join(" · ");
     const info = a.kind === "etf"
-      ? `지수 ETF · ${esc(a.underlying)} 신호로 매매 · 비중 최대 40%`
-      : a.kind
-      ? `인버스 ${Math.abs(a.mult)}배 · 기초자산 ${esc(a.underlying)} · ${esc(a.tm?.note)}`
+      ? `지수 ETF · ${esc(a.underlying)} 신호로 매매`
       : `${esc(a.date)} 종가 · Stoch ${a.stoch} · CCI ${a.cci} · RSI ${a.rsi} · 50일선 ${num(a.ma50)}`;
     return `<details class="asset">
       <summary><div class="asset-head"><div><b>${esc(a.name)}</b>${sides(a).map(([s]) => badge(a, s)).join("")}</div>
         <div class="px">${num(a.close)} ${ch}</div></div>
         <div class="mini">${brief}</div></summary>
-      ${sides(a).map(([side, st]) => sideDetail(side, st)).join("")}
+      ${sideDetail("long", a.tm)}
       <div class="detail">${info}</div>
     </details>`;
   }
 
-  // minerva.trade와 같은 기준: 국내·검증됨·롱/인버스만 실제 주문한다
-  const AUTO = ["LONG_ENTRY", "LONG_EXIT", "BUY", "SELL"];
+  // minerva.trade와 같은 기준: 국내·검증됨·롱만 실제 주문한다
+  const AUTO = ["LONG_ENTRY", "LONG_EXIT"];
   function autoTag(x) {
     if (x.market !== "KR") return "📎 참고 (해외·코인은 주문 안 함)";
     if (!x.verified) return "📎 참고 (미검증)";
@@ -79,7 +77,8 @@
       <span></span><div class="mini">${autoTag(x)}</div></div>`;
   }
 
-  const rows = (d) => d.assets.concat(d.products || []).filter((a) => !a.error);
+  // 예전 분석 파일에 남은 인버스 상품(kind inv)은 보여주지 않는다
+  const rows = (d) => d.assets.concat(d.products || []).filter((a) => !a.error && a.kind !== "inv");
 
   function renderToday(d) {
     const acts = d.actions || [];
@@ -130,7 +129,7 @@
         <span class="chip ${regCls}">VIX ${v.close} · 주봉 5/10 ${v.gate ? `${v.gate.w5}/${v.gate.w10}` : "-"} · 롱 매수 ${regCls === "good" ? "열림" : "닫힘"}</span>
         <span class="chip">신규 비중 ${esc(v.size_limit)}</span>
         <span class="chip ${f.state === "없음" ? "" : "good"}">공포 초입: ${esc(f.state)} (VIX/VIX3M ${pct(f.premium)})</span>
-      </div><div class="detail">분석 ${esc(d.generated_at.replace("T", " "))} KST · 매일 09:10·16:30 갱신 · 숏은 롱 계획의 1/2 이하</div>` +
+      </div><div class="detail">분석 ${esc(d.generated_at.replace("T", " "))} KST · 매일 09:10·16:30 갱신</div>` +
       (d.summary?.length ? `<ul style="margin:8px 0 0 16px;padding:0">${
         d.summary.map((s) => `<li class="detail" style="color:inherit">${esc(s)}</li>`).join("")}</ul>` : "");
     renderToday(d);

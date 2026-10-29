@@ -464,6 +464,27 @@ def test_watch_stop_sells_bot_share_and_waits_for_fill(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "positions.json").read_text()) == {}
 
 
+def test_watch_waits_for_bot_order_fill_not_user_sale(tmp_path, monkeypatch):
+    (tmp_path / "mode").write_text("live")
+    (tmp_path / "positions.json").write_text(
+        json.dumps({"005930": {"name": "A", "kind": "long", "stop": 9000, "qty": 3}})
+    )
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(
+        trade, "send_order", lambda cfg, o, live: {**o, "result": "sent", "odno": "77"}
+    )
+    pos = {"code": "005930", "qty": 8, "avg": 10000.0, "price": 8990.0}
+    trade.run_watch({"positions": [pos]})
+    # 사용자가 직접 3주를 팔아 잔고는 줄었지만 봇 주문(77)은 아직 미체결
+    order = {"odno": "77", "code": "005930", "status": "미체결", "filled": 0}
+    trade.run_watch({"positions": [{**pos, "qty": 5}], "orders": [order]})
+    owned = json.loads((tmp_path / "positions.json").read_text())
+    assert owned["005930"]["selling"] == 3 and owned["005930"]["sell_odno"] == "77"
+    done = {**order, "status": "체결", "filled": 3}
+    trade.run_watch({"positions": [{**pos, "qty": 2}], "orders": [done]})
+    assert json.loads((tmp_path / "positions.json").read_text()) == {}
+
+
 def test_drawdown_block_keeps_exits_but_drops_buys():
     account = {**ACCOUNT, "positions": [{"code": "005930", "qty": 3, "price": 50000}]}
     owned = {"005930": {"name": "삼성", "kind": "long", "qty": 3}}
@@ -784,7 +805,9 @@ def test_no_false_peak_between_stop_fill_and_reconcile(tmp_path):
 
 def test_evidence_uses_long_only_and_skips_old_inverse():
     daily = {
-        "assets": [{"symbol": "005930.KS", "verify": {"long": {"p_value": 0.01, "net_edge": 0.02}}}],
+        "assets": [
+            {"symbol": "005930.KS", "verify": {"long": {"p_value": 0.01, "net_edge": 0.02}}}
+        ],
         "products": [
             {"symbol": "114800.KS", "kind": "inv", "verify": {"short": {"p_value": 0.001}}}
         ],

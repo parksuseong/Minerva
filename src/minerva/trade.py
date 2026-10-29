@@ -703,6 +703,7 @@ def _track(owned: dict, r: dict) -> None:
             pos["sell_at"] = r["at"]
             pos["sell_action"] = r.get("action")
             pos["held_before"] = r.get("held_before")
+            pos["sell_odno"] = r.get("odno") or None
             pos.pop("exit_pending", None)
 
 
@@ -730,32 +731,49 @@ def run_watch(account: dict | None = None) -> list[dict]:
     cfg = kis.load_config()
     account = account or kis.snapshot(cfg)
     held = {p["code"]: p for p in account.get("positions", [])}
+    by_odno = {o["odno"]: o for o in account.get("orders", []) if o.get("odno")}
     live = mode() == "live"
     results = []
     today = datetime.now(kis.KST).strftime("%Y-%m-%d")
     try:
-        _watch_positions(cfg, owned, held, live, today, results)
+        _watch_positions(cfg, owned, held, live, today, results, by_odno)
     finally:
         # 중간에 예외가 나도 낸 손절(selling 표시)을 저장한다. 안 그러면 30초 뒤 또 낸다
         _save(TRADE_DIR / "positions.json", owned)
     return results
 
 
+def _sell_done(pos: dict, p: dict | None, by_odno: dict) -> bool:
+    """낸 매도가 다 체결됐나. 주문번호가 있으면 그 주문의 체결 수량으로 본다.
+    잔고 수량만 보면 사용자가 같은 종목을 직접 팔 때 봇 매도가 끝난 것으로 잘못 본다."""
+    order = by_odno.get(pos.get("sell_odno") or "")
+    if order is not None and "filled" in order:
+        return p is None or order["filled"] >= pos["selling"]
+    base = pos.get("held_before") or pos.get("qty")
+    return p is None or (base is not None and p["qty"] <= base - pos["selling"])
+
+
 def _watch_positions(
-    cfg: dict, owned: dict, held: dict, live: bool, today: str, results: list[dict]
+    cfg: dict,
+    owned: dict,
+    held: dict,
+    live: bool,
+    today: str,
+    results: list[dict],
+    by_odno: dict | None = None,
 ) -> None:
     for code, pos in list(owned.items()):
         p = held.get(code)
         mine = pos.get("qty")
         if pos.get("selling"):
             # 낸 매도가 체결됐으면 목록에서 지운다. 아직이면 기다린다 (손절을 또 내지 않는다)
-            base = pos.get("held_before") or mine
-            if p is None or (base is not None and p["qty"] <= base - pos["selling"]):
+            if _sell_done(pos, p, by_odno or {}):
                 if p is None or mine is None or mine - pos["selling"] <= 0:
                     owned.pop(code)
                 else:
                     pos["qty"] = mine - pos["selling"]
                     pos.pop("selling")
+                    pos.pop("sell_odno", None)
             continue
         if p is None:
             continue  # 아직 체결 전이거나 직접 판 종목
@@ -819,6 +837,7 @@ def run_reconcile(now: datetime | None = None) -> list[str]:
             left = held[code]["qty"] if mine is None else min(mine, held[code]["qty"])
             pos.pop("selling")
             pos.pop("sell_at", None)
+            pos.pop("sell_odno", None)
             if pos.get("sell_action") in EXIT_RETRY_FROM:
                 pos["exit_pending"] = pos["sell_action"]  # 다음 거래일 08:50에 남은 수량을 판다
             pos.pop("sell_action", None)

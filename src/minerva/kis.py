@@ -202,6 +202,7 @@ def parse_orders(pages: list[dict]) -> tuple[list[dict], list[dict]]:
                 # 시장가 주문은 주문 단가가 0이라 체결 평균가를 보여준다
                 "price": _num(r.get("ord_unpr")) or _num(r.get("avg_prvs")),
                 "status": status,
+                "filled": filled,
                 "odno": r.get("odno", ""),  # 주문번호: 봇 주문의 체결을 정확히 찾는 데 쓴다
             }
             orders.append(row)

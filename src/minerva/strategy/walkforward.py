@@ -25,7 +25,8 @@ from minerva.strategy.indicators import Bar
 from minerva.strategy.report import CACHE_DIR, fetch_yahoo
 from minerva.strategy.short import evaluate_short
 
-CACHE = CACHE_DIR / "walkforward.json"
+# 검증 규칙·자료 처리가 바뀌면 옛 결과와 섞이지 않게 버전별 파일을 쓴다
+CACHE = CACHE_DIR / f"walkforward-v{dm.VERIFY_VERSION}.json"
 MIN_BARS = 300
 INDEX = "^KS11"
 _VIX: list[Bar] = []
@@ -72,7 +73,11 @@ def verify_at(job: tuple[str, str]) -> tuple[str, dict | None]:
         }
     }
     if symbol == INDEX:
-        out["short"] = dm._verdict(evaluate_short(bars, dm.short_flags(bars)[0], dm.SHORT_RULE))
+        flags = dm.short_flags(bars)[0]
+        out["short"] = {
+            **dm._verdict(evaluate_short(bars, flags, dm.SHORT_RULE)),
+            "p_value": dm.short_pvalue(bars, flags),
+        }
     return f"{symbol}|{day}", out
 
 
@@ -124,10 +129,8 @@ def passed_by_month(cache: dict, stocks: list[str], starts: list[date]) -> dict[
                 for a in assets
                 if a["verify"]["long"]["label"] == "검증됨"
             },
-            "index_long": "long" in idx
-            and dm.with_cost(idx["long"], dm.COST_ETF)["label"] == "검증됨",
-            "index_short": "short" in idx
-            and dm.with_cost(idx["short"], dm.COST_ETF)["label"] == "검증됨",
+            "index_long": "long" in idx and dm.product_verdict(idx["long"])["label"] == "검증됨",
+            "index_short": "short" in idx and dm.product_verdict(idx["short"])["label"] == "검증됨",
         }
     return out
 

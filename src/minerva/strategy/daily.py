@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -45,7 +46,7 @@ from minerva.strategy.regime import (
     weekly_gate_at,
 )
 from minerva.strategy.report import CACHE_DIR, fetch_yahoo
-from minerva.strategy.short import ShortRule, evaluate_short, run_short
+from minerva.strategy.short import ShortRule, evaluate_short, run_short, short_timing_pvalue
 from minerva.strategy.universe import kospi_top, nasdaq_top
 
 OUT = Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
@@ -96,6 +97,11 @@ PRODUCTS = [
 SHORT_RULE = ShortRule(hold=20, stop=0.07)
 # 숏 규칙이 표본 안팎 모두 + 인 기초자산 (SPY는 표본 밖 −, 삼성·하이닉스·애플·테슬라 ❌)
 VERIFY_TTL = 7 * 24 * 3600
+# 검증 캐시 버전: 규칙·관문·자료 처리를 바꾸면 올린다. 다르면 TTL과 상관없이 다시 계산한다.
+# 2: 국내 가짜 채움 봉 제거, 인버스 기초자산 숏 p값 추가 (2026-10-30)
+VERIFY_VERSION = 2
+# 숏 p값은 인버스 상품의 기초자산에만 계산한다 (개별 종목 숏은 실행하지 않는다)
+SHORT_P_SYMBOLS = {"^KS11"}
 VERIFY_MIN_TRADES = 30
 # 다중 검정: 무작위 타이밍 대비 p값에 거짓 발견 비율(FDR) 20%를 건다 (2026-10-28 추천안).
 # 0.10이면 2026-10 기준 통과 종목이 없다. 바꾸면 통과 종목이 크게 달라진다.
@@ -169,20 +175,31 @@ def verify(symbol: str, bars: list[Bar], ctx: Context) -> dict:
     path = CACHE_DIR / "verify" / f"{symbol.replace('^', '_').replace('=', '_')}.json"
     if path.exists() and time.time() - path.stat().st_mtime < VERIFY_TTL:
         out = json.loads(path.read_text())
-        if "p_value" not in out["long"]:  # 다중 검정 도입 전 캐시: p만 채우고 갱신 주기는 유지
-            stat = path.stat()
-            out["long"]["p_value"] = timing_pvalue(bars, ctx)
-            path.write_text(json.dumps(out, ensure_ascii=False))
-            os.utime(path, (stat.st_atime, stat.st_mtime))
-        return out
+        if out.get("version") == VERIFY_VERSION:
+            return out
+    flags = short_flags(bars)[0]
+    short = _verdict(evaluate_short(bars, flags, SHORT_RULE))
+    if symbol in SHORT_P_SYMBOLS:
+        short["p_value"] = short_pvalue(bars, flags)
     out = {
         "long": {**_verdict(evaluate(bars, TM_RULE, ctx)), "p_value": timing_pvalue(bars, ctx)},
-        "short": _verdict(evaluate_short(bars, short_flags(bars)[0], SHORT_RULE)),
+        "short": short,
         "asof": bars[-1].day.isoformat(),
+        "version": VERIFY_VERSION,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(out, ensure_ascii=False))
+    # 상품 두 개가 같은 기초자산(^KS11)을 동시에 쓸 수 있어 임시 파일에 쓰고 바꾼다
+    tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(out, ensure_ascii=False))
+    os.replace(tmp, path)
     return out
+
+
+def short_pvalue(bars: list[Bar], flags: list[bool]) -> float | None:
+    p = short_timing_pvalue(bars, flags, SHORT_RULE, n_perm=300)
+    if p is not None and p < 0.15:
+        p = short_timing_pvalue(bars, flags, SHORT_RULE, n_perm=3000)
+    return None if p is None else round(p, 4)
 
 
 def timing_pvalue(bars: list[Bar], ctx: Context) -> float | None:
@@ -298,8 +315,19 @@ MARKET_CLOSE = {
 }
 
 
+def is_filler(b: Bar) -> bool:
+    """야후가 거래 없는 날을 전날 종가로 채운 가짜 봉 (거래량 0, 시가=고가=저가=종가)."""
+    return b.volume == 0 and b.open == b.high == b.low == b.close
+
+
 def completed(bars: list[Bar], market: str, now: datetime | None = None) -> list[Bar]:
-    """마지막 봉이 아직 마감 전(당일 진행 중)이면 버린다."""
+    """마지막 봉이 아직 마감 전(당일 진행 중)이면 버린다. 국내는 가짜 채움 봉도 버린다.
+
+    채움 봉은 실제로 거래된 적 없는 가격이라 지표 창과 백테스트 체결가를 왜곡한다
+    (예: 2022-02-08·09 국내 약 180종목). 미국 VIX처럼 원래 거래량이 0인 자료는 그대로 둔다.
+    """
+    if market == "KR":
+        bars = [b for b in bars if not is_filler(b)]
     if not bars:
         return bars
     tz, hh, mm = MARKET_CLOSE[market]
@@ -493,6 +521,21 @@ def _ctx(vix: list[Bar], daily: list[Bar]) -> Context:
     )
 
 
+def product_verdict(raw: dict) -> dict:
+    """상품 판정 = 기초자산 규칙의 비용 후 판정 + 단독 검정(p < CORE_ALPHA).
+
+    상품은 탐색 묶음(BH)에 들지 않으므로 지수 자체와 같은 단독 기준을 건다. p값이 없으면
+    (숏 규칙에 아직 계산 안 됨) 검증됨으로 두지 않는다.
+    """
+    v = with_cost(raw, COST_ETF)
+    p = raw.get("p_value")
+    v["fdr_pass"] = p is not None and p < CORE_ALPHA
+    if v["label"] == "검증됨" and not v["fdr_pass"]:
+        v["label"] = "미검증"
+        v["why"] = f"단독 검정 미통과 (p={p}, 기준 {CORE_ALPHA})"
+    return v
+
+
 def product_status(p: Asset, vix: list[Bar], names: dict[str, str]) -> dict:
     """기초자산 신호를 그대로 따른다. 인버스는 숏 규칙(진입 = 인버스 매수), 지수 ETF는 롱 규칙."""
     daily = completed(fetch_yahoo(p.symbol, "1y"), p.market)
@@ -500,7 +543,11 @@ def product_status(p: Asset, vix: list[Bar], names: dict[str, str]) -> dict:
     under = completed(fetch_yahoo(p.underlying, "max"), p.market)
     ctx = _ctx(vix, under)
     raw = verify(p.underlying, under, ctx)
-    if p.kind == "etf":
+    if under[-1].day < last.day:
+        # 기초자산 자료가 상품보다 늦으면 어제 신호를 오늘 날짜로 다시 내게 된다
+        tm = {"state": "대기", "missing": [f"기초자산 자료 지연 ({under[-1].day})"]}
+        side = "long" if p.kind == "etf" else "short"
+    elif p.kind == "etf":
         tm = tm_status(under, ctx)
         side = "long"
         if tm.get("state") == "진입 신호":
@@ -520,7 +567,7 @@ def product_status(p: Asset, vix: list[Bar], names: dict[str, str]) -> dict:
         "kind": p.kind,
         "mult": p.mult,
         "underlying": names.get(p.underlying, p.underlying),
-        "verify": {side: with_cost(raw[side], COST_ETF)},
+        "verify": {side: product_verdict(raw[side])},
         "date": last.day.isoformat(),
         "close": _r(last.close),
         "change": _r(last.close / daily[-2].close - 1, 4) if len(daily) > 1 else None,
@@ -667,9 +714,14 @@ ASSET_SIDES = ("long",)
 def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
     """오늘 낼 주문 목록. 검증된 것을 앞에 둔다."""
     out = []
+    # 국내 종목 중 마지막 봉이 다른 종목보다 오래된 것(거래정지·자료 지연)은 묵은 신호라 뺀다
+    kr_days = [x["date"] for x in assets + products if x.get("market") == "KR" and "date" in x]
+    latest = max(kr_days) if kr_days else ""
     for a in assets:
         # 지수는 직접 살 수 없다. 코스피 신호는 KODEX 200(상품)으로만 주문한다
         if "error" in a or a["symbol"].startswith("^"):
+            continue
+        if a.get("market") == "KR" and a.get("date", latest) < latest:
             continue
         if a["tm"]["state"] == "진입 신호":
             out.append(_action(a, "long", a["tm"], "LONG_ENTRY"))

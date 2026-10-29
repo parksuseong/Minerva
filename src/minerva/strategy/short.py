@@ -102,3 +102,27 @@ def evaluate_short(
             [t for t in trades if t.entry_day >= cut], [b for b in bars if b.day >= cut]
         ),
     }
+
+
+def short_timing_pvalue(
+    bars: Sequence[Bar], flags: Sequence[bool], rule: ShortRule, n_perm: int = 300, seed: int = 7
+) -> float | None:
+    """숏 진입 타이밍이 무작위보다 나은지 (p). 롱의 `random_timing_pvalue`와 같은 방식:
+    같은 횟수의 무작위 진입으로 같은 청산 규칙을 돌려 평균 수익이 규칙 이상인 비율."""
+    import random
+
+    actual = [t.ret for t in run_short(bars, flags, rule) if t.reason != "open"]
+    k = sum(flags)
+    if len(actual) < 2 or k < 2:
+        return None
+    target = statistics.mean(actual)
+    rng = random.Random(seed)
+    slots = range(len(bars) - 1)
+    hits = 0
+    for _ in range(n_perm):
+        pick = set(rng.sample(slots, k))
+        fake = [i in pick for i in range(len(bars))]
+        rets = [t.ret for t in run_short(bars, fake, rule) if t.reason != "open"]
+        if rets and statistics.mean(rets) >= target:
+            hits += 1
+    return (hits + 1) / (n_perm + 1)

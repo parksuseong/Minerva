@@ -6,7 +6,8 @@ from minerva.strategy.indicators import Bar
 
 def bars_until(last: date, n: int = 3):
     return [
-        Bar(day=last - timedelta(days=n - 1 - i), open=1, high=1, low=1, close=1) for i in range(n)
+        Bar(day=last - timedelta(days=n - 1 - i), open=1, high=1, low=1, close=1, volume=100)
+        for i in range(n)
     ]
 
 
@@ -122,7 +123,14 @@ def test_product_uses_own_price_for_orders(monkeypatch):
     monkeypatch.setattr(daily, "short_status", lambda b: dict(entry))
     monkeypatch.setattr(daily, "tm_status", lambda b, c: dict(entry))
     monkeypatch.setattr(daily, "regime_is_fear", lambda vix: False)
-    raw = {"label": "검증됨", "trades": 90, "edge": 0.01, "edge_in": 0.01, "edge_out": 0.01}
+    raw = {
+        "label": "검증됨",
+        "trades": 90,
+        "edge": 0.01,
+        "edge_in": 0.01,
+        "edge_out": 0.01,
+        "p_value": 0.01,
+    }
     monkeypatch.setattr(daily, "verify", lambda s, b, c: {"short": raw, "long": raw})
     inv = daily.product_status(daily.Asset("114800.KS", "I", "KR", "inv", "^KS11", -1), bars, {})
     etf = daily.product_status(daily.Asset("069500.KS", "E", "KR", "etf", "^KS11", 1), bars, {})
@@ -252,3 +260,43 @@ def test_index_signal_is_not_an_order():
         "tm": {"state": "진입 신호", "ref_price": 6000, "stop": 5400},
     }
     assert make_actions([idx], []) == []
+
+
+def test_kr_filler_bars_dropped_but_not_us():
+    from minerva.strategy.daily import completed
+
+    d = date(2026, 2, 9)
+    real = Bar(d - timedelta(days=1), 100, 110, 95, 105, 1000)
+    filler = Bar(d, 105, 105, 105, 105, 0)
+    now = datetime(2026, 2, 9, 8, 0, tzinfo=timezone.utc)
+    assert completed([real, filler], "KR", now) == [real]
+    assert (
+        completed([real, filler], "US", datetime(2026, 2, 10, 0, 0, tzinfo=timezone.utc))[-1]
+        == filler
+    )
+
+
+def test_product_needs_own_significance():
+    from minerva.strategy.daily import product_verdict
+
+    raw = {"label": "검증됨", "trades": 90, "edge": 0.01, "edge_in": 0.01, "edge_out": 0.01}
+    assert product_verdict({**raw, "p_value": 0.01})["label"] == "검증됨"
+    assert product_verdict({**raw, "p_value": 0.2})["label"] == "미검증"
+    assert product_verdict(raw)["label"] == "미검증"  # p값이 없으면 통과시키지 않는다
+
+
+def test_stale_kr_asset_signal_skipped():
+    from minerva.strategy.daily import make_actions
+
+    def asset(sym, day):
+        return {
+            "symbol": sym,
+            "name": sym,
+            "market": "KR",
+            "date": day,
+            "verify": {"long": {"label": "검증됨"}},
+            "tm": {"state": "진입 신호", "ref_price": 100, "stop": 90},
+        }
+
+    acts = make_actions([asset("005930.KS", "2026-10-29"), asset("000660.KS", "2026-10-28")], [])
+    assert [a["symbol"] for a in acts] == ["005930.KS"]

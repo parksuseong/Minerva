@@ -92,6 +92,24 @@ def entries_blocked() -> bool:
     return (TRADE_DIR / "NO_ENTRY").exists()
 
 
+def _unrecorded_sells() -> bool:
+    """접수된 봇 매도(파킹·시험 제외) 중 아직 청산 기록에 없는 것이 있나."""
+    recorded = {r["key"] for r in perf._read_jsonl(TRADE_DIR / "closed.jsonl")}
+    return any(
+        e.get("side") == "sell"
+        and e.get("result") == "sent"
+        and e.get("kind") not in ("test", "park")
+        and e.get("code") != PARK_CODE
+        and e.get("key") not in recorded
+        and str(e.get("at", ""))[:10] >= _days_ago(3)
+        for e in _read_journal()
+    )
+
+
+def _days_ago(n: int) -> str:
+    return (datetime.now(kis.KST) - timedelta(days=n)).strftime("%Y-%m-%d")
+
+
 def check_drawdown(account: dict) -> bool:
     """봇 손익이 고점보다 평가액의 DRAWDOWN_LIMIT 넘게 줄면 신규 매수를 막는다. 막혔으면 True.
 
@@ -103,7 +121,9 @@ def check_drawdown(account: dict) -> bool:
     pnl = perf.bot_pnl(TRADE_DIR, _load(TRADE_DIR / "positions.json", {}), account)
     peak_file = TRADE_DIR / "peak.json"
     peak = _load(peak_file, {}).get("pnl", 0)
-    if pnl > peak or not peak_file.exists():
+    # 팔린 종목은 보유 평가손익에서 바로 빠지지만 실현 손익은 15:45 대사에서 적힌다. 그 사이엔
+    # 손익이 실제보다 높거나 낮게 보이므로 고점을 새로 잡지 않는다 (가짜 고점 → 가짜 매수 중지)
+    if (pnl > peak and not _unrecorded_sells()) or not peak_file.exists():
         _save(peak_file, {"pnl": pnl, "at": account.get("updated_at")})
     elif peak - pnl > equity * DRAWDOWN_LIMIT and not entries_blocked():
         kis._write_private(TRADE_DIR / "NO_ENTRY", f"{account.get('updated_at')} {pnl}\n")

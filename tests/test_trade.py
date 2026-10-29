@@ -754,3 +754,29 @@ def test_skipped_order_run_alerts(monkeypatch):
     sent.clear()
     trade.main(["watch"])
     assert sent == []
+
+
+def test_no_false_peak_between_stop_fill_and_reconcile(tmp_path):
+    # A +400k, B −300k → 봇 손익 +100k가 고점
+    owned = {"A": {"name": "A", "kind": "long"}, "B": {"name": "B", "kind": "long"}}
+    (tmp_path / "positions.json").write_text(json.dumps(owned))
+    both = {
+        "equity": 2_000_000,
+        "positions": [{"code": "A", "pnl": 400_000}, {"code": "B", "pnl": -300_000}],
+    }
+    trade.check_drawdown(both)
+    # B 손절 체결: 보유에서 빠졌지만 실현 손익은 아직 안 적힘 → 손익이 +400k로 보인다
+    (tmp_path / "positions.json").write_text(json.dumps({"A": owned["A"]}))
+    today = datetime.now(kis.KST).isoformat()
+    (tmp_path / "journal.jsonl").write_text(
+        json.dumps(
+            {"key": "s", "side": "sell", "result": "sent", "code": "B", "kind": "long", "at": today}
+        )
+        + "\n"
+    )
+    trade.check_drawdown({"equity": 2_000_000, "positions": [{"code": "A", "pnl": 400_000}]})
+    assert json.loads((tmp_path / "peak.json").read_text())["pnl"] == 100_000
+    # 대사에서 실현 손익이 적히면 다시 고점을 따라간다
+    (tmp_path / "closed.jsonl").write_text(json.dumps({"key": "s", "pnl": -300_000}) + "\n")
+    trade.check_drawdown({"equity": 2_000_000, "positions": [{"code": "A", "pnl": 500_000}]})
+    assert json.loads((tmp_path / "peak.json").read_text())["pnl"] == 200_000

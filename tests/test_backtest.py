@@ -100,3 +100,16 @@ def test_random_timing_pvalue_is_deterministic_and_bounded():
     p1 = random_timing_pvalue(bars, rule, n_perm=50, seed=1)
     assert p1 == random_timing_pvalue(bars, rule, n_perm=50, seed=1)
     assert p1 is None or 1 / 51 <= p1 <= 1
+
+
+def test_cli_context_matches_live_verification():
+    from datetime import date, timedelta
+
+    from minerva.strategy import daily as dm
+    from minerva.strategy.backtest import live_context
+    from minerva.strategy.indicators import Bar
+
+    days = [date(2024, 1, 1) + timedelta(days=i) for i in range(400)]
+    bars = [Bar(d, 100, 101, 99, 100, 10) for d in days]
+    vix = [Bar(d, 15, 16, 14, 15 + (i % 7), 0) for i, d in enumerate(days)]
+    assert live_context(bars, vix).regime == dm._ctx(vix, bars).regime

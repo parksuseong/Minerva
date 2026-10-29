@@ -67,6 +67,18 @@ class Context:
         )
 
 
+def live_context(daily: Sequence[Bar], vix: Sequence[Bar] | None) -> Context:
+    """실전 검증(`daily.verify`)과 같은 필터 자료. 레짐은 전날 미국 VIX + 주봉 5<10 관문.
+
+    `Context.build`는 같은 날짜 미국 VIX(한국 마감 뒤에 나옴)를 쓰고 관문이 없어 실전과 다르다.
+    """
+    from minerva.strategy import daily as dm  # daily가 이 모듈을 불러서 순환을 피한다
+
+    ctx = dm._ctx(list(vix or []), list(daily))
+    ctx.normalizing = vix_normalizing(vix) if vix else {}
+    return ctx
+
+
 @dataclass(frozen=True)
 class Trade:
     entry_day: date
@@ -293,7 +305,7 @@ def main(argv: list[str] | None = None) -> None:
     targets += [(s, fetch_yahoo(s, args.range)) for s in args.symbols]
     for name, daily in targets:
         bars = resample(daily, args.frame)
-        ctx = Context.build(daily, vix) if (rule.vix or rule.align) else None
+        ctx = live_context(daily, vix) if (rule.vix or rule.align) else None
         out = {
             "symbol": name,
             "frame": args.frame,

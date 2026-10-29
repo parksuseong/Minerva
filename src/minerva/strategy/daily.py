@@ -604,12 +604,15 @@ _VIX_CACHE: dict = {}
 def _vix_tables(vix: list[Bar]) -> tuple:
     """종목 200여 개가 같은 VIX로 레짐을 구하므로 한 번만 계산한다."""
     key = (len(vix), vix[-1].day if vix else None, vix[-1].close if vix else None)
-    if not vix or key not in _VIX_CACHE:  # 빈 VIX(테스트)는 캐시하지 않는다
+    hit = _VIX_CACHE.get(key) if vix else None  # 빈 VIX(테스트)는 캐시하지 않는다
+    if hit is None:
         reg = vix_regimes(vix)
         weekly = vix_weekly(vix)
+        hit = (reg, sorted(reg), weekly, [w[0] for w in weekly])
+        # 여러 스레드가 동시에 처음 부르면 다른 스레드의 clear()에 지워질 수 있어 지역값을 돌려준다
         _VIX_CACHE.clear()
-        _VIX_CACHE[key] = (reg, sorted(reg), weekly, [w[0] for w in weekly])
-    return _VIX_CACHE[key]
+        _VIX_CACHE[key] = hit
+    return hit
 
 
 def build() -> dict:

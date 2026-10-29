@@ -94,16 +94,15 @@ class Trade:
         return self.exit / self.entry - 1
 
 
-def signals(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list[bool]:
+def filter_mask(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list[bool]:
+    """타이밍(TM 레벨)을 뺀 나머지 조건(이평선 위·DMI·VIX·상위 시간축)이 맞는 날."""
     if (rule.vix or rule.align) and ctx is None:
         raise ValueError("vix/align 필터에는 Context가 필요하다")
-    states = tm_states(bars, cci_n=rule.cci_n, window=rule.window)
     ma = sma([b.close for b in bars], rule.above_ma) if rule.above_ma else None
     pdi, mdi, _ = dmi(bars) if rule.require_pdi else (None, None, None)
     out = []
-    for i, s in enumerate(states):
-        # 레벨이 처음 기준에 도달한 봉만 신호로 센다 (같은 이벤트 중복 진입 방지)
-        ok = s.long_level >= rule.level and (i == 0 or states[i - 1].long_level < rule.level)
+    for i in range(len(bars)):
+        ok = True
         if ok and ma is not None:
             ok = ma[i] is not None and bars[i].close > ma[i]
         if ok and pdi is not None:
@@ -117,6 +116,16 @@ def signals(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list
             ok = ctx.weekly_up.get(day, False) and ctx.monthly_up.get(day, False)
         out.append(ok)
     return out
+
+
+def signals(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list[bool]:
+    states = tm_states(bars, cci_n=rule.cci_n, window=rule.window)
+    mask = filter_mask(bars, rule, ctx)
+    # 레벨이 처음 기준에 도달한 봉만 신호로 센다 (같은 이벤트 중복 진입 방지)
+    return [
+        mask[i] and s.long_level >= rule.level and (i == 0 or states[i - 1].long_level < rule.level)
+        for i, s in enumerate(states)
+    ]
 
 
 def run(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list[Trade]:
@@ -177,6 +186,9 @@ def random_timing_pvalue(
 ) -> float | None:
     """규칙의 진입 타이밍이 무작위 타이밍보다 나은지: 같은 횟수의 무작위 신호로 같은 청산 규칙을
     돌려 평균 수익이 규칙 이상인 비율. 작을수록 우연이 아닐 가능성이 크다 (다중 검정 보정용).
+
+    무작위 진입도 같은 필터(이평선 위·VIX·상위 시간축)가 맞는 날에서만 뽑는다. 아무 날이나 뽑으면
+    필터 자체의 효과까지 타이밍 실력으로 쳐서 p값이 후하게 나온다 (2026-10-30 리뷰).
     """
     import random
 
@@ -189,7 +201,10 @@ def random_timing_pvalue(
         return None
     target = statistics.mean(actual)
     rng = random.Random(seed)
-    slots = range(len(bars) - 1)
+    mask = filter_mask(bars, rule, ctx)
+    slots = [i for i in range(len(bars) - 1) if mask[i]]
+    if len(slots) < k:
+        return None
     hits = 0
     for _ in range(n_perm):
         pick = set(rng.sample(slots, k))

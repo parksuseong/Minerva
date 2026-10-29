@@ -77,6 +77,7 @@ Minerva/
 - 봇 손익(청산 `closed.jsonl` + 보유 평가손익)이 고점보다 평가액의 15% 넘게 줄면 `NO_ENTRY` 파일이 생겨 신규 매수만 멈춘다(손절·청산은 계속). 입출금에는 반응하지 않는다.
 - 성과: 15:45 대사가 체결된 봇 매도를 `closed.jsonl`에 적고(비용 차감), 금 17:00 `python -m minerva.perf weekly`가 주간 리포트를 보낸다.
 - 백업: 평일 16:10 `python -m minerva.backup`이 `~/.minerva/{trade,account/latest.json,daily}`를 tar.gz로 묶어 텔레그램으로 보낸다(키·토큰 파일 제외, 서버엔 7개 보관). 코드는 GitHub.
+- 정기 요원 작업(cron, 평일): 16:15 `scripts/routine.sh review`(🦅 운용 감시관, 이상 있을 때만 알림), 17:05 `briefing`(🦊 전략가, 내일 신호·대기 가격). 요원은 `claude -p`로 돌고 읽기 도구만 쓴다. 점검 결과는 스크립트가 미리 만들어 넘긴다. `--strict-mcp-config`를 빼면 텔레그램 플러그인이 하나 더 떠서 상시 세션의 텔레그램이 끊긴다. 시험은 `DRY=1 scripts/routine.sh briefing`.
 - 운용 점검: 평일 16:00 `python -m minerva.audit --notify` (`minerva-trade-audit.timer`). ❌·⚠️가 나오면 `trade-auditor` 에이전트로 원인을 찾는다.
 - 주문 경로 확인: 장중에 `python -m minerva.trade selftest --yes` (KODEX 인버스 1주 매수→매도, 실주문).
 - 텔레그램으로 "매매중지"가 오면 `touch ~/.minerva/trade/HALT`, "매매재개"가 오면 그 파일을 지운다.

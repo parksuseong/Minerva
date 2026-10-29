@@ -90,6 +90,7 @@ Minerva/
 - 기록하는 건 이벤트 종류, 도구 이름, 짧은 라벨(Bash 설명, 파일 이름)뿐이다. 프롬프트·명령 원문·파일 내용은 기록하지 않는다.
 - 훅 등록: `python3 scripts/install_office_hooks.py` (사용자 설정 `~/.claude/settings.json`에 추가)
 - 기본은 토큰 없이 공개(사용자 요청). 잠그려면 서비스 환경변수 `MINERVA_OFFICE_TOKEN`을 설정한다.
+- 사용자 호칭은 `~/.minerva/profile.json`의 `boss`(`/api/profile`, 기본 "사장님"). 실명은 저장소에 쓰지 않는다(사용자 요청 2026-10-29).
 - 서버가 기동하면 `src/minerva/notify.py`가 텔레그램으로 알린다. 설정은 저장소 밖 `~/.minerva/telegram.env` (커밋 금지).
 
 ## 환경 메모

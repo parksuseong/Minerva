@@ -9,6 +9,7 @@
   const signed = (v, s) => `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${s}</span>`;
   const KEY = "minerva-account-token";
   let mem = "";
+  let boss = "사장님";
   const store = (op, value) => {
     if (op === "set") mem = value;
     if (op === "del") mem = "";
@@ -85,7 +86,7 @@
         if (r.status === 403) {
           const had = store("get");
           store("del");
-          lock(had ? "토큰이 맞지 않아요" : "계좌는 사장님 전용이에요");
+          lock(had ? "토큰이 맞지 않아요" : `계좌는 ${boss} 전용이에요`);
           return null;
         }
         return r.json();
@@ -94,5 +95,7 @@
       .catch(() => { $("acct-status").textContent = "계좌 정보를 불러오지 못했어요"; });
   }
 
+  fetch("/api/profile").then((r) => r.json()).then((p) => { boss = p.boss || boss; })
+    .catch(() => { /* 기본 호칭 유지 */ });
   load();
 })();

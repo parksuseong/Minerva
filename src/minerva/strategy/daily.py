@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import threading
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -92,6 +93,13 @@ PRODUCTS = [
 ]
 
 VERIFY_TTL = 7 * 24 * 3600
+
+
+def verify_ttl(symbol: str) -> int:
+    """종목마다 4~7일. 한꺼번에 만료되면 그날 분석이 몇 배로 느려진다."""
+    return VERIFY_TTL - zlib.crc32(symbol.encode()) % 4 * 24 * 3600
+
+
 # 검증 캐시 버전: 규칙·관문·자료 처리를 바꾸면 올린다. 다르면 TTL과 상관없이 다시 계산한다.
 # 2: 국내 가짜 채움 봉 제거 (2026-10-30). 숏은 계산하지 않는다
 VERIFY_VERSION = 2
@@ -166,7 +174,7 @@ def verify(symbol: str, bars: list[Bar], ctx: Context) -> dict:
     import time
 
     path = CACHE_DIR / "verify" / f"{symbol.replace('^', '_').replace('=', '_')}.json"
-    if path.exists() and time.time() - path.stat().st_mtime < VERIFY_TTL:
+    if path.exists() and time.time() - path.stat().st_mtime < verify_ttl(symbol):
         out = json.loads(path.read_text())
         if out.get("version") == VERIFY_VERSION:
             return out

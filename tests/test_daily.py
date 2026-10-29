@@ -238,3 +238,17 @@ def test_weekly_gate_uses_last_completed_week_only():
     # 관문이 열리면 매수 허용(R0·R1), 닫히면 일봉 레짐과 상관없이 막는다
     assert gated_regime("R2", True) == "R1" and gated_regime("R0", True) == "R0"
     assert gated_regime("R0", False) == "R2" and gated_regime("R3", False) == "R3"
+
+
+def test_index_signal_is_not_an_order():
+    from minerva.strategy.daily import make_actions
+
+    idx = {
+        "symbol": "^KS11",
+        "name": "코스피",
+        "market": "KR",
+        "date": "2026-10-29",
+        "verify": {"long": {"label": "검증됨"}},
+        "tm": {"state": "진입 신호", "ref_price": 6000, "stop": 5400},
+    }
+    assert make_actions([idx], []) == []

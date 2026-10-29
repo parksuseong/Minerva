@@ -668,7 +668,8 @@ def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
     """오늘 낼 주문 목록. 검증된 것을 앞에 둔다."""
     out = []
     for a in assets:
-        if "error" in a:
+        # 지수는 직접 살 수 없다. 코스피 신호는 KODEX 200(상품)으로만 주문한다
+        if "error" in a or a["symbol"].startswith("^"):
             continue
         if a["tm"]["state"] == "진입 신호":
             out.append(_action(a, "long", a["tm"], "LONG_ENTRY"))

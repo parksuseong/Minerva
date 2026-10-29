@@ -39,21 +39,25 @@ def cost_rate(code: str) -> float:
     return FEE * 2 + (0 if code in ETF_CODES else SELL_TAX)
 
 
-def closed_trade(sell: dict, fills: list[dict]) -> dict | None:
-    """봇 매도 기록 + 그날 체결 내역 → 청산 한 건. 체결이 없으면 None."""
+def closed_trade(sell: dict, fills: list[dict], used: int = 0) -> dict | None:
+    """봇 매도 기록 + 그날 체결 내역 → 청산 한 건. 체결이 없으면 None.
+
+    `used`: 같은 날 같은 종목의 앞선 봇 매도가 이미 가져간 체결 수량 (TRIM 뒤 STOP 등).
+    """
     day = str(sell.get("at", ""))[:10]
     mine = [
         f
         for f in fills
         if f["code"] == sell["code"] and "매도" in f["side"] and f["time"].startswith(day)
     ]
-    # 같은 날 사용자가 직접 판 수량이 섞이지 않게 봇이 낸 수량까지만 센다
     filled = sum(f["qty"] for f in mine)
-    qty = min(filled, sell.get("qty") or filled)
+    # 같은 날 사용자가 직접 판 수량이 섞이지 않게 봇이 낸 수량까지만 센다
+    qty = min(filled - used, sell.get("qty") or filled - used)
     entry = sell.get("entry_avg")
-    if not qty or not entry:
+    if qty <= 0 or not entry:
         return None
-    exit_px = sum(f["qty"] * f["price"] for f in mine) / qty
+    # 체결가는 그날 매도 체결 전체의 평균. 합계를 봇 수량으로 나누면 다른 매도분이 섞여 부풀려진다
+    exit_px = sum(f["qty"] * f["price"] for f in mine) / filled
     gross = exit_px / entry - 1
     net = gross - cost_rate(sell["code"])
     return {
@@ -76,7 +80,12 @@ def closed_trade(sell: dict, fills: list[dict]) -> dict | None:
 def record_closed(trade_dir: Path, journal: list[dict], account: dict, day: str) -> list[dict]:
     """그날 체결된 봇 매도를 청산 기록에 더한다. 이미 적은 건 건너뛴다."""
     path = trade_dir / "closed.jsonl"
-    seen = {r["key"] for r in _read_jsonl(path)}
+    old = _read_jsonl(path)
+    seen = {r["key"] for r in old}
+    used: dict[str, int] = {}  # 종목별로 그날 이미 청산 기록에 쓴 체결 수량
+    for r in old:
+        if r.get("closed") == day:
+            used[r["code"]] = used.get(r["code"], 0) + r["qty"]
     new = []
     for e in journal:
         is_sell = e.get("side") == "sell" and e.get("result") == "sent"
@@ -88,10 +97,11 @@ def record_closed(trade_dir: Path, journal: list[dict], account: dict, day: str)
             continue
         if e["key"] in seen:
             continue
-        row = closed_trade(e, account.get("trades", []))
+        row = closed_trade(e, account.get("trades", []), used.get(e["code"], 0))
         if row:
             new.append(row)
             seen.add(row["key"])
+            used[row["code"]] = used.get(row["code"], 0) + row["qty"]
     _append(path, new)
     return new
 
@@ -162,7 +172,7 @@ def weekly_report(trade_dir: Path, daily: dict, account: dict, owned: dict, now:
     # 백테스트 기대치: 이번에 거래한 종목들의 검증 승률·비용 후 우위
     ver = {}
     for a in daily.get("assets", []) + daily.get("products", []):
-        side = "short" if a.get("kind") else "long"
+        side = "short" if a.get("kind") == "inv" else "long"  # KODEX 200(etf)은 롱 규칙
         v = a.get("verify", {}).get(side, {})
         ver[a["symbol"].split(".")[0]] = v
     exp = [ver[r["code"]] for r in rows if ver.get(r["code"], {}).get("win_rate") is not None]

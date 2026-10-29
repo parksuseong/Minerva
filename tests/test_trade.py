@@ -37,7 +37,6 @@ def _isolate(tmp_path, monkeypatch):
     # 계산 검증용 비중은 고정한다 (운용 비중을 바꿔도 테스트 숫자가 그대로이게)
     monkeypatch.setattr(trade, "WEIGHT", 0.20)
     monkeypatch.setattr(trade, "INDEX_ETF_WEIGHT", 0.40)
-    monkeypatch.setattr(trade, "INVERSE_TOTAL", 0.20)
     monkeypatch.setattr(trade.time, "sleep", lambda s: None)
     monkeypatch.setattr(trade.notify, "send", lambda text: True)
     monkeypatch.setattr(trade, "is_open_day", lambda cfg, day: True)
@@ -179,10 +178,6 @@ def test_watch_sets_stop_then_sells(tmp_path, monkeypatch):
     assert r[0]["side"] == "sell" and r[0]["qty"] == 3 and r[0]["result"] == "dry"
 
 
-def test_inverse_stop():
-    assert trade.stop_price("inverse", "114800", 1000) == pytest.approx(930)
-
-
 def test_trade_api_reads_state(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
@@ -278,24 +273,6 @@ def test_is_open_day_parses_holiday_api(monkeypatch):
     assert REAL_IS_OPEN_DAY(CFG, datetime(2026, 10, 31, tzinfo=kis.KST)) is False
 
 
-def test_inverse_signal_sells_bot_longs_first():
-    account = {
-        **ACCOUNT,
-        "cash_d2": 10_000,
-        "positions": [
-            {"code": "005930", "qty": 3, "price": 50000},
-            {"code": "035420", "qty": 1, "price": 9000},
-        ],
-    }
-    owned = {"005930": {"name": "삼성", "kind": "long"}}  # 035420은 사용자가 직접 산 종목
-    daily = _daily([_act("BUY", "114800.KS", "KODEX 인버스", ref=1600)])
-    orders, _ = trade.plan(daily, account, owned)
-    assert [(o["side"], o["code"]) for o in orders] == [("sell", "005930"), ("buy", "114800")]
-    assert orders[0]["action"] == "SWITCH"
-    # 예산 = 예수금 10,000 + 매도 대금 150,000 (배정 200,000보다 작아 예산이 묶는다)
-    assert orders[1]["qty"] == math.floor(160_000 / (1600 * trade.GAP_BUFFER))
-
-
 def test_buys_wait_for_sells_until_after_open(tmp_path, monkeypatch):
     held = [{"code": "005930", "qty": 3, "price": 50000}]
     account = {**ACCOUNT, "positions": held}
@@ -370,21 +347,11 @@ def test_priority_spends_cash_on_strongest_evidence_first():
 
 def test_index_etf_gets_larger_weight():
     etf = _act("LONG_ENTRY", "069500.KS", "KODEX 200", ref=88905)
-    inv1 = {**_act("BUY", "114800.KS", "KODEX 인버스", ref=1600), "p_value": 0.01}
-    orders, _ = trade.plan(_daily([etf, inv1]), ACCOUNT, {})
+    stock = _act("LONG_ENTRY", "005930.KS", "삼성전자", ref=10000)
+    orders, _ = trade.plan(_daily([etf, stock]), ACCOUNT, {})
     by = {o["code"]: o["qty"] for o in orders}
     assert by["069500"] == math.floor(400_000 / (88905 * trade.GAP_BUFFER))  # 40%
-    assert by["114800"] == math.floor(200_000 / (1600 * trade.GAP_BUFFER))
-
-
-def test_inverse_held_is_not_bought_again():
-    account = {
-        **ACCOUNT,
-        "positions": [{"code": "114800", "qty": 120, "price": 1600, "value": 192_000}],
-    }
-    inv1 = _act("BUY", "114800.KS", "KODEX 인버스", ref=1600)
-    orders, skipped = trade.plan(_daily([inv1]), account, {})
-    assert orders == [] and any("이미 보유" in s for s in skipped)
+    assert by["005930"] == math.floor(200_000 / (10000 * trade.GAP_BUFFER))  # 20%
 
 
 def test_rebalance_trims_overweight_bot_position_only():
@@ -497,30 +464,20 @@ def test_watch_stop_sells_bot_share_and_waits_for_fill(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "positions.json").read_text()) == {}
 
 
-def test_switch_only_when_inverse_buy_is_possible():
-    account = {
-        **ACCOUNT,
-        "cash_d2": 0,
-        "positions": [
-            {"code": "005930", "qty": 3, "price": 50000},
-            {"code": "114800", "qty": 120, "price": 1600, "value": 192_000},
-        ],
-    }
-    owned = {
-        "005930": {"name": "삼성", "kind": "long", "qty": 3},
-        "114800": {"name": "인버스", "kind": "inverse", "qty": 120},
-    }
-    daily = _daily([_act("BUY", "114800.KS", "KODEX 인버스", ref=1600)])
-    orders, _ = trade.plan(daily, account, owned)
-    assert orders == []  # 인버스를 이미 들고 있으니 롱을 팔지 않는다
-
-
-def test_drawdown_block_keeps_exits_but_drops_switch_and_buys():
+def test_drawdown_block_keeps_exits_but_drops_buys():
     account = {**ACCOUNT, "positions": [{"code": "005930", "qty": 3, "price": 50000}]}
     owned = {"005930": {"name": "삼성", "kind": "long", "qty": 3}}
-    daily = _daily([_act("BUY", "114800.KS", "인버스", ref=1600)])
+    daily = _daily(
+        [_act("LONG_EXIT", "005930.KS", "삼성"), _act("LONG_ENTRY", "000660.KS", "하이닉스")]
+    )
     orders, skipped = trade.plan(daily, account, owned, allow_buys=False)
-    assert orders == [] and any("손실 한도" in s for s in skipped)
+    assert [(o["code"], o["side"]) for o in orders] == [("005930", "sell")]
+    assert any("손실 한도" in s for s in skipped)
+
+
+def test_inverse_actions_are_ignored():
+    daily = _daily([_act("BUY", "114800.KS", "KODEX 인버스", ref=1600)])
+    assert trade.plan(daily, ACCOUNT, {}) == ([], [])
 
 
 def test_lock_is_exclusive_between_processes(tmp_path):
@@ -648,21 +605,6 @@ def test_partial_limit_fill_is_followed_then_reported(tmp_path, monkeypatch):
     pos = json.loads((tmp_path / "positions.json").read_text())["005930"]
     assert pos["qty"] == 7 and "ordered" not in pos
     assert any("10주 중 7주 체결" in n for n in notes)
-
-
-def test_index_long_signal_sells_bot_inverse_first():
-    daily = _daily([_act("LONG_ENTRY", "069500.KS", "KODEX 200")])
-    account = {
-        **ACCOUNT,
-        "positions": [{"code": "114800", "qty": 10, "price": 1000, "avg": 1000}],
-    }
-    owned = {"114800": {"name": "KODEX 인버스", "kind": "inverse", "qty": 10}}
-    orders, _ = trade.plan(daily, account, owned)
-    assert orders[0]["code"] == "114800" and orders[0]["action"] == "UNSWITCH"
-    assert any(o["code"] == "069500" and o["side"] == "buy" for o in orders)
-    # 사용자가 직접 산 인버스는 건드리지 않는다
-    orders, _ = trade.plan(daily, account, {})
-    assert not any(o["side"] == "sell" for o in orders)
 
 
 def test_plan_follows_exit_even_after_verification_dropped():

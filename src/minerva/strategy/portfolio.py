@@ -1,4 +1,4 @@
-"""포트폴리오 백테스트: 실전 운용 규칙(비중·우선순위·인버스 전환·리밸런싱·교체)을 한 계좌로 돌린다.
+"""포트폴리오 백테스트: 실전 운용 규칙(비중·우선순위·리밸런싱·교체)을 한 계좌로 돌린다.
 
 종목별 백테스트(backtest.py)는 "돈이 무한하고 한 종목만 산다"고 가정한다. 실전은 예수금이
 한정돼 있고 정수 주만 사며, 교체·리밸런싱 같은 운용 규칙이 붙는다. 이 모듈은 그 규칙들이
@@ -27,8 +27,7 @@ from minerva.strategy.report import fetch_yahoo
 FEE = 0.00015
 SELL_TAX = 0.002
 SLIP = 0.0005
-ETFS = {"069500", "114800"}
-INDEX_ETFS = trade.INDEX_ETFS
+ETFS = {"069500"}
 REGIME_FACTOR = trade.REGIME_FACTOR
 
 
@@ -36,7 +35,7 @@ REGIME_FACTOR = trade.REGIME_FACTOR
 class Instrument:
     code: str
     name: str
-    kind: str  # long / inv
+    kind: str  # long (숏·인버스는 2026-10-30부터 안 한다)
     cap: float
     prices: dict[date, Bar]
     entry: dict[date, bool]
@@ -51,12 +50,9 @@ class Config:
     max_positions: int = 10
     trim: bool = True
     rotate: bool = True
-    switch: bool = True
-    unswitch: bool = True  # KODEX 200 롱 신호가 오면 인버스를 판다 (switch의 반대 방향)
     priority: bool = True
     hold: int = 20
     long_stop: float = 0.10
-    inv_stop: float = 0.07
     trim_at: float = 1.5
     rotate_ratio: float = 0.5
     rotate_min_days: int = 5
@@ -198,9 +194,7 @@ def simulate(
             bar = by[code].prices.get(day)
             if bar is None:
                 continue
-            stop = pos[code].entry * (
-                1 - (cfg.inv_stop if by[code].kind == "inv" else cfg.long_stop)
-            )
+            stop = pos[code].entry * (1 - cfg.long_stop)
             if bar.low <= stop:
                 px = min(stop, bar.open)
                 cash += pos[code].qty * px * (1 - _cost(code, "sell"))
@@ -222,14 +216,6 @@ def simulate(
         entries = [
             u for u in universe if u.entry.get(day) and u.code not in pos and day in u.prices
         ]
-        if cfg.switch and any(u.kind == "inv" for u in entries):
-            for code in pos:
-                if by[code].kind == "long":
-                    pending_sell[code] = (pos[code].qty, "switch")
-        if cfg.unswitch and any(u.code in INDEX_ETFS for u in entries):
-            for code in pos:
-                if by[code].kind == "inv":
-                    pending_sell[code] = (pos[code].qty, "switch")
         if cfg.trim:
             for code, p in pos.items():
                 cap = equity * by[code].cap
@@ -245,11 +231,8 @@ def simulate(
             1 for c in pos if not (c in pending_sell and pending_sell[c][0] >= pos[c].qty)
         )
         if cfg.priority:
-            entries.sort(key=lambda u: (u.p, -u.edge, u.code != "114800"))
-        inv_taken = any(by[c].kind == "inv" for c in pos)
+            entries.sort(key=lambda u: (u.p, -u.edge))
         for u in entries:
-            if u.kind == "inv" and inv_taken:
-                continue
             alloc = equity * u.cap * factor
             price = last_px[u.code] * 1.03
             qty = math.floor(min(alloc, budget) / price)
@@ -282,7 +265,6 @@ def simulate(
             pending_buy.append((u.code, qty))
             budget -= qty * price
             slots -= 1
-            inv_taken = inv_taken or u.kind == "inv"
     final = curve[-1][1] if curve else cfg.capital
     years = max((days[-1] - days[0]).days / 365.25, 1e-9) if days else 1
     peak, mdd = 0.0, 0.0

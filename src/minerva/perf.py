@@ -18,7 +18,7 @@ from pathlib import Path
 # 실제 비용 근사: 수수료 0.015%×2, 매도 거래세(주식만) 0.20%
 FEE = 0.00015
 SELL_TAX = 0.002
-ETF_CODES = {"114800", "069500", "357870"}  # 매도 거래세 없음
+ETF_CODES = {"069500", "357870"}  # 매도 거래세 없음
 
 
 def _read_jsonl(path: Path) -> list[dict]:

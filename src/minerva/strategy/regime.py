@@ -46,7 +46,6 @@ def gated_regime(raw: str | None, calm: bool) -> str:
 
     관문이 열리면 일봉이 R2·R3여도 R1(비중 100%)로 본다. 백테스트(2010~)에서 일봉 레짐으로
     비중을 줄이는 것보다 수익이 높았다(1,000만 원 연 +4.8% vs +4.4%, 낙폭 −10.1% vs −9.3%).
-    관문이 닫히면 인버스 비중도 1/2 이하가 된다.
     """
     if calm:
         return raw if raw in ("R0", "R1") else "R1"

@@ -117,3 +117,36 @@ def test_weekly_report_uses_long_stats_for_index_etf(tmp_path):
         tmp_path, daily, {"equity": 1}, {}, datetime(2026, 10, 30, 17, tzinfo=kis.KST)
     )
     assert "백테스트 기대: 승률 70%" in text
+
+
+def test_closed_trade_matches_fills_by_order_number():
+    day = "2026-10-29"
+    sell = {
+        "key": "a",
+        "code": "000660",
+        "name": "H",
+        "qty": 10,
+        "at": f"{day}T09:00:00",
+        "entry_avg": 100000,
+        "odno": "0000123",
+    }
+    fills = [
+        {
+            "time": f"{day} 09:00",
+            "code": "000660",
+            "side": "현금매도",
+            "qty": 10,
+            "price": 110000,
+            "odno": "123",
+        },
+        {
+            "time": f"{day} 10:00",
+            "code": "000660",
+            "side": "현금매도",
+            "qty": 5,
+            "price": 90000,
+            "odno": "999",
+        },
+    ]
+    row = perf.closed_trade(sell, fills)
+    assert row["qty"] == 10 and row["exit"] == 110000  # 직접 판 5주(90,000원)는 섞지 않는다

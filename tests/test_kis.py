@@ -76,6 +76,7 @@ def test_parse_orders_status_and_trades():
             "tot_ccld_qty": "2",
             "avg_prvs": "201",
             "cncl_yn": "N",
+            "odno": "0000777",
         },
         {
             "ord_dt": "20261028",
@@ -91,6 +92,7 @@ def test_parse_orders_status_and_trades():
     assert [o["status"] for o in orders] == ["취소", "부분체결 2", "체결"]
     assert orders[0]["time"] == "2026-10-28 10:05"
     assert [(t["name"], t["qty"], t["price"]) for t in trades] == [("B", 2, 201), ("A", 10, 99)]
+    assert trades[0]["odno"] == "0000777"
 
 
 def test_access_token_reuses_cache(tmp_path, monkeypatch):

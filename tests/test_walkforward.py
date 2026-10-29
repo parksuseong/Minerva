@@ -40,3 +40,22 @@ def test_passed_by_month_applies_cost_and_fdr():
     out = wf.passed_by_month(cache, ["A.KS", "B.KS", "C.KS", "D.KS"], [m])[m]
     assert list(out["stocks"]) == ["A.KS"]
     assert out["index_long"] is True and out["index_short"] is False
+
+
+def test_short_pvalue_detects_timed_entries():
+    from datetime import timedelta
+
+    from minerva.strategy.indicators import Bar
+    from minerva.strategy.short import ShortRule, short_timing_pvalue
+
+    # 10일마다 고점 다음 날 급락: 그 고점에서 숏한 규칙은 무작위보다 낫다
+    bars, flags, px = [], [], 100.0
+    for i in range(400):
+        top = i % 10 == 5
+        nxt = px * (0.95 if i % 10 == 6 else 1.006)
+        bars.append(
+            Bar(date(2020, 1, 1) + timedelta(days=i), px, max(px, nxt), min(px, nxt), nxt, 1)
+        )
+        flags.append(top)
+        px = nxt
+    assert short_timing_pvalue(bars, flags, ShortRule(hold=2, stop=0.5), n_perm=100) < 0.05

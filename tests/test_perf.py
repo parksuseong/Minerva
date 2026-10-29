@@ -67,3 +67,53 @@ def test_closed_trade_ignores_user_sells_same_day():
     ]
     row = perf.closed_trade({**SELL, "qty": 3}, fills)
     assert row["qty"] == 3
+
+
+def test_two_bot_sells_same_day_split_fills_at_average_price(tmp_path):
+    day = "2026-10-29"
+    base = {
+        "code": "000660",
+        "name": "하이닉스",
+        "side": "sell",
+        "result": "sent",
+        "at": f"{day}T09:00:00",
+        "entry_avg": 100000,
+    }
+    trim = {**base, "key": "a", "qty": 10, "action": "TRIM"}
+    stop = {**base, "key": "b", "qty": 20, "action": "STOP"}
+    fills = [
+        {"time": f"{day} 09:00", "code": "000660", "side": "현금매도", "qty": 30, "price": 100000}
+    ]
+    rows = perf.record_closed(tmp_path, [trim, stop], {"trades": fills}, day)
+    assert [(r["qty"], r["exit"]) for r in rows] == [(10, 100000), (20, 100000)]
+
+
+def test_weekly_report_uses_long_stats_for_index_etf(tmp_path):
+    (tmp_path / "closed.jsonl").write_text(
+        json.dumps(
+            {
+                "key": "k",
+                "code": "069500",
+                "name": "KODEX 200",
+                "closed": "2026-10-29",
+                "qty": 1,
+                "net_ret": 0.01,
+                "gross_ret": 0.011,
+                "pnl": 100,
+            }
+        )
+        + "\n"
+    )
+    daily = {
+        "products": [
+            {
+                "symbol": "069500.KS",
+                "kind": "etf",
+                "verify": {"long": {"win_rate": 0.7, "net_edge": 0.008}},
+            }
+        ]
+    }
+    text = perf.weekly_report(
+        tmp_path, daily, {"equity": 1}, {}, datetime(2026, 10, 30, 17, tzinfo=kis.KST)
+    )
+    assert "백테스트 기대: 승률 70%" in text

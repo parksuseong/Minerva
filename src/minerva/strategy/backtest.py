@@ -94,17 +94,16 @@ class Trade:
         return self.exit / self.entry - 1
 
 
-def signals(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list[bool]:
+def filter_mask(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list[bool]:
+    """타이밍(TM 레벨)을 뺀 나머지 조건(이평선 위·DMI·VIX·상위 시간축)이 맞는 날."""
     if (rule.vix or rule.align) and ctx is None:
         raise ValueError("vix/align 필터에는 Context가 필요하다")
-    states = tm_states(bars, cci_n=rule.cci_n, window=rule.window)
     ma = sma([b.close for b in bars], rule.above_ma) if rule.above_ma else None
     pdi, mdi, _ = dmi(bars) if rule.require_pdi else (None, None, None)
     out = []
-    for i, s in enumerate(states):
-        # 레벨이 처음 기준에 도달한 봉만 신호로 센다 (같은 이벤트 중복 진입 방지)
-        ok = s.long_level >= rule.level and (i == 0 or states[i - 1].long_level < rule.level)
-        if ok and ma is not None:
+    for i in range(len(bars)):
+        ok = True
+        if ma is not None:
             ok = ma[i] is not None and bars[i].close > ma[i]
         if ok and pdi is not None:
             ok = pdi[i] is not None and mdi[i] is not None and pdi[i] > mdi[i]
@@ -117,6 +116,16 @@ def signals(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list
             ok = ctx.weekly_up.get(day, False) and ctx.monthly_up.get(day, False)
         out.append(ok)
     return out
+
+
+def signals(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list[bool]:
+    mask = filter_mask(bars, rule, ctx)
+    states = tm_states(bars, cci_n=rule.cci_n, window=rule.window)
+    # 레벨이 처음 기준에 도달한 봉만 신호로 센다 (같은 이벤트 중복 진입 방지)
+    return [
+        mask[i] and s.long_level >= rule.level and (i == 0 or states[i - 1].long_level < rule.level)
+        for i, s in enumerate(states)
+    ]
 
 
 def run(bars: Sequence[Bar], rule: Rule, ctx: Context | None = None) -> list[Trade]:

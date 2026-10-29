@@ -1,5 +1,7 @@
 from datetime import date, timedelta
 
+import pytest
+
 from minerva.strategy import portfolio as pf
 from minerva.strategy.indicators import Bar
 
@@ -41,3 +43,20 @@ def test_stop_loss_and_cash_limit():
     r = pf.simulate([u], days, {d: "R1" for d in days}, pf.Config(capital=10_000))
     # 20% 배정 → 19주, −10% 손절 → 약 −2% 계좌 손실
     assert r.trades == 2 and 9_700 < r.final < 9_850
+
+
+def test_filter_mode_holds_while_filter_is_on(monkeypatch):
+    days = [date(2024, 1, 1) + timedelta(days=i) for i in range(4)]
+    bars = [Bar(d, 100, 101, 99, 100, 0) for d in days]
+    monkeypatch.setattr(pf, "filter_mask", lambda src, rule, ctx: [True, True, False, True])
+    monkeypatch.setattr(pf.dm, "_ctx", lambda vix, src: None)
+    entry, take = pf._signals_for(bars, "long", [], mode="filter")
+    assert [entry[d] for d in days] == [True, True, False, True]
+    assert [take[d] for d in days] == [False, False, True, False]
+
+
+def test_walkforward_rules_refuse_to_fill_cache(tmp_path):
+    from minerva.strategy import walkforward as wf
+
+    with pytest.raises(RuntimeError):
+        wf.run_verifications(["A"], [date(2024, 1, 2)], [], tmp_path / "c.json", compute=False)

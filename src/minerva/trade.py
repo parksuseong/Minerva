@@ -507,7 +507,10 @@ def send_order(cfg: dict, o: dict, live: bool) -> dict:
             log.warning("order %s attempt %d failed: %s", order_key(o), attempt + 1, e)
             if any(code in last for code in kis.TOKEN_ERRORS):
                 (kis.STATE_DIR / "token.json").unlink(missing_ok=True)  # 폐기된 토큰: 새로 받는다
-                token = kis.access_token(cfg)
+                try:
+                    token = kis.access_token(cfg)
+                except (kis.KisError, OSError) as te:  # 발급 제한 등: 다음 시도에서 다시
+                    last = f"토큰 재발급 실패: {te}"
             continue
         if data.get("rt_cd") == "0":
             odno = (data.get("output") or {}).get("ODNO", "")
@@ -740,6 +743,18 @@ def run_watch(account: dict | None = None) -> list[dict]:
     held = {p["code"]: p for p in account.get("positions", [])}
     live = mode() == "live"
     results = []
+    today = datetime.now(kis.KST).strftime("%Y-%m-%d")
+    try:
+        _watch_positions(cfg, owned, held, live, today, results)
+    finally:
+        # 중간에 예외가 나도 낸 손절(selling 표시)을 저장한다. 안 그러면 30초 뒤 또 낸다
+        _save(TRADE_DIR / "positions.json", owned)
+    return results
+
+
+def _watch_positions(
+    cfg: dict, owned: dict, held: dict, live: bool, today: str, results: list[dict]
+) -> None:
     for code, pos in list(owned.items()):
         p = held.get(code)
         mine = pos.get("qty")
@@ -771,7 +786,8 @@ def run_watch(account: dict | None = None) -> list[dict]:
                 "qty": min(pos.get("qty") or p["qty"], p["qty"]),  # 봇 몫만 판다
                 "held_before": p["qty"],
                 "action": "STOP",
-                "signal_date": datetime.now(kis.KST).strftime("%Y-%m-%d"),
+                # 같은 날짜 청산 신호와 key가 겹치면 다음 날 청산이 "이미 냄"으로 빠진다
+                "signal_date": f"{today}-stop",
                 "kind": pos["kind"],
                 "entry_avg": p["avg"],
                 "opened": pos.get("opened"),
@@ -785,12 +801,10 @@ def run_watch(account: dict | None = None) -> list[dict]:
                 _track(owned, r)
             elif r["result"] == "dry":
                 owned.pop(code)
-            elif pos.get("stop_alerted"):
-                continue  # 30초마다 다시 시도하되 실패 알림은 한 번만
-            pos["stop_alerted"] = True
+            elif pos.get("stop_alerted") == today:
+                continue  # 30초마다 다시 시도하되 실패 알림은 하루 한 번만
+            pos["stop_alerted"] = today
             notify.send(f"🛑 손절가 {pos['stop']:,}원 도달 (현재 {p['price']:,.0f}원)\n{_line(r)}")
-    _save(TRADE_DIR / "positions.json", owned)
-    return results
 
 
 def run_reconcile(now: datetime | None = None) -> list[str]:

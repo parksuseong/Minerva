@@ -683,3 +683,44 @@ def test_plan_never_orders_index_symbols():
     )
     orders, _ = trade.plan(daily, ACCOUNT, {})
     assert [o["code"] for o in orders] == ["069500"]
+
+
+def test_watch_saves_sent_stop_even_if_next_order_raises(tmp_path, monkeypatch):
+    (tmp_path / "mode").write_text("live")
+    (tmp_path / "positions.json").write_text(
+        json.dumps(
+            {
+                "005930": {"name": "A", "kind": "long", "stop": 9000, "qty": 3},
+                "000660": {"name": "B", "kind": "long", "stop": 9000, "qty": 2},
+            }
+        )
+    )
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    sent = []
+
+    def send(cfg, o, live):
+        if o["code"] == "000660":
+            raise kis.KisError("token limit")
+        sent.append(o)
+        return {**o, "result": "sent"}
+
+    monkeypatch.setattr(trade, "send_order", send)
+    held = [
+        {"code": "005930", "qty": 3, "avg": 10000.0, "price": 8990.0},
+        {"code": "000660", "qty": 2, "avg": 10000.0, "price": 8990.0},
+    ]
+    with pytest.raises(kis.KisError):
+        trade.run_watch({"positions": held})
+    saved = json.loads((tmp_path / "positions.json").read_text())
+    assert saved["005930"].get("selling") == 3  # A 손절을 냈다는 표시가 남는다
+    monkeypatch.setattr(
+        trade, "send_order", lambda cfg, o, live: sent.append(o) or {**o, "result": "sent"}
+    )
+    trade.run_watch({"positions": held})
+    assert [o["code"] for o in sent] == ["005930", "000660"]  # A를 또 내지 않는다
+
+
+def test_stop_key_does_not_collide_with_same_day_exit():
+    stop = {"signal_date": "2026-10-30-stop", "code": "005930", "side": "sell"}
+    exit_ = {"signal_date": "2026-10-30", "code": "005930", "side": "sell"}
+    assert trade.order_key(stop) != trade.order_key(exit_)

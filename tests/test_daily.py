@@ -255,3 +255,11 @@ def test_stale_kr_asset_signal_skipped():
 
     acts = make_actions([asset("005930.KS", "2026-10-29"), asset("000660.KS", "2026-10-28")], [])
     assert [a["symbol"] for a in acts] == ["005930.KS"]
+
+
+def test_verify_ttl_is_spread_over_days():
+    from minerva.strategy.daily import VERIFY_TTL, verify_ttl
+
+    syms = [f"{n:06d}.KS" for n in range(100, 150)]
+    assert {verify_ttl(s) // 86400 for s in syms} == {4, 5, 6, 7}
+    assert verify_ttl("005930.KS") == verify_ttl("005930.KS") <= VERIFY_TTL

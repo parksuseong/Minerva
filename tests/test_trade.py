@@ -724,3 +724,18 @@ def test_stop_key_does_not_collide_with_same_day_exit():
     stop = {"signal_date": "2026-10-30-stop", "code": "005930", "side": "sell"}
     exit_ = {"signal_date": "2026-10-30", "code": "005930", "side": "sell"}
     assert trade.order_key(stop) != trade.order_key(exit_)
+
+
+def test_preview_plan_counts_parked_cash_and_entry_block(tmp_path):
+    (tmp_path / "park.json").write_text(json.dumps({"qty": 16}))
+    daily = _daily([_act("LONG_ENTRY", "005930.KS", "A", ref=50000)])
+    account = {
+        **ACCOUNT,
+        "cash_d2": 20_000,
+        "positions": [{"code": trade.PARK_CODE, "qty": 16, "price": 58000, "value": 928_000}],
+    }
+    orders, _ = trade._plan_ahead(daily, account)
+    assert any(o["action"] == "UNPARK" for o in orders)  # 파킹 자금을 풀어 산다
+    (tmp_path / "NO_ENTRY").write_text("")
+    orders, skipped = trade._plan_ahead(daily, account)
+    assert not any(o["side"] == "buy" for o in orders) and any("중지" in s for s in skipped)

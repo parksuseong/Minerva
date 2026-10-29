@@ -5,7 +5,8 @@
 "신호대로만 사는 것"보다 나은지 비교한다 (ROADMAP 13).
 
 한계: 종목 목록·p값은 오늘 판정을 과거에 그대로 쓴다(선택 편향). 변형끼리 비교하는 용도로만 쓴다.
-실행: `python -m minerva.strategy.portfolio [--capital 1000000]`
+실행: `python -m minerva.strategy.portfolio [--capital 1000000] [--walk-forward]`
+선택 편향을 뺀 비교는 `--walk-forward` (`strategy/walkforward.py`).
 """
 
 from __future__ import annotations
@@ -327,11 +328,30 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--start", default="2010-01-01")
     parser.add_argument("--daily", default=str(Path("~/.minerva/daily/latest.json").expanduser()))
     parser.add_argument("--codes", help="쉼표로 구분한 종목 코드 (기본: 오늘 검증됨)")
+    parser.add_argument(
+        "--walk-forward",
+        action="store_true",
+        help="월초마다 그 시점 데이터로 다시 검증한 종목만 산다 (선택 편향 제거, 수 시간)",
+    )
+    parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args(argv)
     daily = json.loads(Path(args.daily).read_text())
     vix = dm.completed(fetch_yahoo("^VIX", "max"), "US")
-    codes = set(args.codes.split(",")) if args.codes else None
-    uni = load_universe(daily, vix, codes)
+    if args.walk_forward:
+        from minerva.strategy import walkforward
+
+        uni, months = walkforward.load_universe(
+            daily, vix, date.fromisoformat(args.start), workers=args.workers
+        )
+        for m, v in months.items():
+            print(
+                m,
+                f"지수 롱 {'O' if v['index_long'] else 'X'} 숏 {'O' if v['index_short'] else 'X'}",
+                f"종목 {len(v['stocks'])}개",
+            )
+    else:
+        codes = set(args.codes.split(",")) if args.codes else None
+        uni = load_universe(daily, vix, codes)
     print("종목:", ", ".join(u.name for u in uni))
     res = compare(uni, date.fromisoformat(args.start), args.capital)
     print(f"{'변형':<22}{'최종':>14}{'연수익':>8}{'최대낙폭':>9}{'거래':>6}{'투자비율':>8}")

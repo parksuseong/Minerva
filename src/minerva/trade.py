@@ -176,10 +176,9 @@ def _evidence(daily: dict) -> dict[str, tuple[float, float]]:
     """종목 코드 → (무작위 대비 p값, 비용 후 우위). 교체 매매에서 보유 종목과 비교한다."""
     out = {}
     for a in daily.get("assets", []) + daily.get("products", []):
-        if "error" in a:
+        if "error" in a or a.get("kind") == "inv":  # 예전 분석 파일의 인버스는 건너뛴다
             continue
-        side = "short" if a.get("kind") == "inv" else "long"
-        v = a.get("verify", {}).get(side, {})
+        v = a.get("verify", {}).get("long", {})
         p = v.get("p_value")
         out[code_of(a["symbol"])] = (1.0 if p is None else p, v.get("net_edge") or 0.0)
     return out

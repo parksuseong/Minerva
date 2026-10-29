@@ -663,3 +663,23 @@ def test_index_long_signal_sells_bot_inverse_first():
     # 사용자가 직접 산 인버스는 건드리지 않는다
     orders, _ = trade.plan(daily, account, {})
     assert not any(o["side"] == "sell" for o in orders)
+
+
+def test_plan_follows_exit_even_after_verification_dropped():
+    account = {**ACCOUNT, "positions": [{"code": "005930", "qty": 3}]}
+    daily = _daily([_act("LONG_EXIT", "005930.KS", "삼성전자", verified=False)])
+    orders, _ = trade.plan(daily, account, {"005930": {"kind": "long"}})
+    assert [(o["code"], o["side"], o["action"]) for o in orders] == [
+        ("005930", "sell", "LONG_EXIT")
+    ]
+
+
+def test_plan_never_orders_index_symbols():
+    daily = _daily(
+        [
+            _act("LONG_ENTRY", "^KS11", "코스피", ref=6000),
+            _act("LONG_ENTRY", "069500.KS", "KODEX 200"),
+        ]
+    )
+    orders, _ = trade.plan(daily, ACCOUNT, {})
+    assert [o["code"] for o in orders] == ["069500"]

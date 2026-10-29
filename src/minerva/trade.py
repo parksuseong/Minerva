@@ -134,6 +134,10 @@ def code_of(symbol: str) -> str:
     return symbol.split(".")[0]
 
 
+def is_krx_code(code: str) -> bool:
+    return len(code) == 6 and code.isalnum()
+
+
 def _cap(code: str) -> float:
     if code in INDEX_ETFS:
         return INDEX_ETF_WEIGHT
@@ -191,7 +195,15 @@ def plan(
     def bot_value(code: str) -> float:
         return bot_qty(code) * (held[code].get("price") or 0)
 
-    actions = [a for a in daily.get("actions", []) if a.get("market") == "KR" and a.get("verified")]
+    # "검증됨"은 새로 살 때만 따진다. 산 뒤 주간 재검증에서 판정이 바뀌어도 청산 신호는 따라야
+    # 익절·기간 만료 매도가 묻히지 않는다. 지수(^KS11)처럼 종목코드가 아닌 심볼은 주문하지 않는다.
+    actions = [
+        a
+        for a in daily.get("actions", [])
+        if a.get("market") == "KR"
+        and is_krx_code(code_of(a["symbol"]))
+        and (a.get("verified") or a["action"] in EXIT)
+    ]
     evidence = _evidence(daily)
     adv = {code_of(a["symbol"]): a["adv"] for a in daily.get("assets", []) if a.get("adv")}
     orders, skipped = [], []

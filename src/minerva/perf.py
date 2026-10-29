@@ -45,11 +45,17 @@ def closed_trade(sell: dict, fills: list[dict], used: int = 0) -> dict | None:
     `used`: 같은 날 같은 종목의 앞선 봇 매도가 이미 가져간 체결 수량 (TRIM 뒤 STOP 등).
     """
     day = str(sell.get("at", ""))[:10]
-    mine = [
-        f
-        for f in fills
-        if f["code"] == sell["code"] and "매도" in f["side"] and f["time"].startswith(day)
-    ]
+    odno = (sell.get("odno") or "").lstrip("0")
+    exact = [f for f in fills if odno and (f.get("odno") or "").lstrip("0") == odno]
+    if exact:
+        # 주문번호가 맞으면 그 주문의 체결만 쓴다 (같은 날 다른 매도·직접 매도와 섞이지 않는다)
+        mine, used = exact, 0
+    else:
+        mine = [
+            f
+            for f in fills
+            if f["code"] == sell["code"] and "매도" in f["side"] and f["time"].startswith(day)
+        ]
     filled = sum(f["qty"] for f in mine)
     # 같은 날 사용자가 직접 판 수량이 섞이지 않게 봇이 낸 수량까지만 센다
     qty = min(filled - used, sell.get("qty") or filled - used)

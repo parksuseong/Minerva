@@ -37,3 +37,15 @@ def test_pages_revalidate_so_ui_changes_show():
     assert client.get("/").headers["cache-control"] == "no-cache"
     assert client.get("/static/office.css").headers["cache-control"] == "no-cache"
     assert "cache-control" not in client.get("/api/health").headers
+
+
+def test_profile_name_comes_from_server_file(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from minerva.main import app
+
+    monkeypatch.setenv("MINERVA_PROFILE", str(tmp_path / "profile.json"))
+    client = TestClient(app)
+    assert client.get("/api/profile").json() == {"boss": "사장님"}
+    (tmp_path / "profile.json").write_text('{"boss": "테스트"}')
+    assert client.get("/api/profile").json() == {"boss": "테스트"}

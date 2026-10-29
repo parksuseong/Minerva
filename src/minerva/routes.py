@@ -90,6 +90,17 @@ def account(x_minerva_token: str = Header("")) -> dict:
     return data
 
 
+def profile_path() -> Path:
+    return Path(os.environ.get("MINERVA_PROFILE", "~/.minerva/profile.json")).expanduser()
+
+
+@router.get("/api/profile")
+def profile() -> dict:
+    """화면에 쓰는 사용자 호칭. 실명은 저장소에 넣지 않고 서버 파일에서 읽는다."""
+    data = _read(profile_path()) or {}
+    return {"boss": data.get("boss") or "사장님"}
+
+
 def trade_dir() -> Path:
     return Path(os.environ.get("MINERVA_TRADE_DIR", "~/.minerva/trade")).expanduser()
 

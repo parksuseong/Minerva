@@ -129,7 +129,7 @@ Claude Code 훅(`scripts/office_hook.py`)이 이벤트를 `~/.minerva/office/eve
 | 무슨 일이 생기면 (훅 이벤트) | 화면에서 |
 |---|---|
 | 세션 시작 (`SessionStart`) | 미네르바 책상에 "☀️ 출근 완료" |
-| 새 지시 (`UserPromptSubmit`) | 🧑‍💼 사장님이 사무실 가운데로 걸어와 서류를 건네고, 미네르바 말풍선에 "📄 새 지시 접수!" |
+| 새 지시 (`UserPromptSubmit`) | 🧑‍💼 사용자(사장님)가 사무실 가운데로 걸어와 서류를 건네고, 미네르바 말풍선에 "📄 새 지시 접수!" |
 | 도구 사용 (`PreToolUse`) | 그 요원이 들썩이며 일하고(타이핑), 모니터가 깜빡이고, 말풍선에 도구 아이콘과 작업 이름이 뜹니다. 예: ⌨️ 테스트 실행, ✏️ trade.py, 🔍 검색 |
 | 요원 투입 (`Agent` 호출 → `SubagentStart`) | "○○ 투입!" 알림과 함께 새 책상이 왼쪽에서 미끄러져 들어오고 "🚶 출근 중" → "💼 업무 시작" |
 | 실패 (`PostToolUseFailure`) | 모니터가 빨갛게 바뀌고 "❌ ○○ 실패" |
@@ -153,6 +153,8 @@ Claude Code 훅(`scripts/office_hook.py`)이 이벤트를 `~/.minerva/office/eve
 ```bash
 python3 scripts/install_office_hooks.py   # ~/.claude/settings.json 에 훅 등록
 ```
+
+사용자 호칭(기본 "사장님")은 서버의 `~/.minerva/profile.json`(`{"boss": "이름"}`)에서 바꿉니다. 실명이 저장소에 들어가지 않게 파일로 둡니다.
 
 기본은 토큰 없이 공개입니다. 잠그려면 웹 서비스에 `MINERVA_OFFICE_TOKEN` 환경변수를 설정하고 `?token=...`으로 한 번 접속합니다. 토큰은 그 기기에 저장되고 주소창에서는 지워집니다.
 

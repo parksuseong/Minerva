@@ -1,9 +1,11 @@
 // 메인 화면 하단 오피스 패널. 전역 이름 충돌을 피하려고 즉시 실행 함수로 감싼다.
 (() => {
+// 사용자 호칭은 /api/profile에서 받는다 (실명을 코드에 넣지 않으려고)
+let BOSS = "사장님";
 // [이모지, 이름, 에이전트 타입, 맡은 일]
 const CAST = {
   main: ["🦉", "미네르바", "Claude 본체",
-    "사장님 지시를 받아 일을 나누고, 요원을 투입하고, 결과를 검토해 보고해요. 코드 작성·커밋·푸시도 직접 해요."],
+    "지시를 받아 일을 나누고, 요원을 투입하고, 결과를 검토해 보고해요. 코드 작성·커밋·푸시도 직접 해요."],
   strategist: ["🦊", "전략가", "strategist",
     "플레이북(변동성 레짐 → 삼중 모멘텀 → 리스크 룰) 순서로 종목을 점검해 롱·숏·관망 결론과 진입·무효화 가격을 내요."],
   "risk-officer": ["🐻", "리스크 담당", "risk-officer",
@@ -144,7 +146,7 @@ function handle(ev, live) {
       const boss = document.getElementById("of-boss");
       if (live) { boss.classList.add("of-walk"); setTimeout(() => boss.classList.remove("of-walk"), 2500); }
       setState(d, "working", "📄 새 지시 접수!", "📄");
-      log(ev, "사장님", "📄", "새 지시");
+      log(ev, BOSS, "📄", "새 지시");
       break;
     }
     case "PreToolUse": {
@@ -180,7 +182,7 @@ function handle(ev, live) {
       else retire(key);
       break;
     case "Notification":
-      setState(d, "working", "✋ 확인이 필요해요!", "✋"); log(ev, who, "✋", "사장님 확인 요청");
+      setState(d, "working", "✋ 확인이 필요해요!", "✋"); log(ev, who, "✋", `${BOSS} 확인 요청`);
       break;
     case "SessionStart":
       setState(d, "sleeping", "☀️ 출근 완료"); log(ev, who, "☀️", "세션 시작");
@@ -209,7 +211,7 @@ async function poll(first) {
 function lock() {
   const app = document.getElementById("of-app");
   app.innerHTML = `<form class="of-locked" id="of-unlock">
-    <p>🔒 오피스는 사장님 전용이에요. 접근 토큰을 한 번만 입력하면 이 기기에서 기억해요.</p>
+    <p>🔒 오피스는 ${esc(BOSS)} 전용이에요. 접근 토큰을 한 번만 입력하면 이 기기에서 기억해요.</p>
     <input type="password" id="of-token" placeholder="접근 토큰" autocomplete="off" required>
     <button type="submit">입장</button></form>`;
   document.getElementById("of-unlock").onsubmit = (e) => {
@@ -230,6 +232,10 @@ function tick() {
 
 roster();
 desk("main", "main");
+fetch("/api/profile").then((r) => r.json()).then((p) => {
+  BOSS = p.boss || BOSS;
+  document.querySelector("#of-boss .of-name").textContent = BOSS;
+}).catch(() => { /* 호칭을 못 받아도 기본값으로 동작한다 */ });
 setInterval(tick, 1000); tick();
 poll(true);
 })();

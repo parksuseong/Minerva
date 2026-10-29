@@ -103,7 +103,7 @@
   function renderList() {
     const onlyOk = $("an-verified").checked;
     const list = rows(data).filter((a) => {
-      if (market === "inv") { if (!a.kind) return false; }
+      if (market === "etf") { if (!a.kind) return false; }
       else if (a.kind || (market !== "all" && a.market !== market)) return false;
       return !onlyOk || sides(a).some(([side]) => label(a, side) === "검증됨");
     });

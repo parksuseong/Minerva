@@ -780,3 +780,13 @@ def test_no_false_peak_between_stop_fill_and_reconcile(tmp_path):
     (tmp_path / "closed.jsonl").write_text(json.dumps({"key": "s", "pnl": -300_000}) + "\n")
     trade.check_drawdown({"equity": 2_000_000, "positions": [{"code": "A", "pnl": 500_000}]})
     assert json.loads((tmp_path / "peak.json").read_text())["pnl"] == 200_000
+
+
+def test_evidence_uses_long_only_and_skips_old_inverse():
+    daily = {
+        "assets": [{"symbol": "005930.KS", "verify": {"long": {"p_value": 0.01, "net_edge": 0.02}}}],
+        "products": [
+            {"symbol": "114800.KS", "kind": "inv", "verify": {"short": {"p_value": 0.001}}}
+        ],
+    }
+    assert trade._evidence(daily) == {"005930": (0.01, 0.02)}

@@ -178,8 +178,9 @@ def weekly_report(trade_dir: Path, daily: dict, account: dict, owned: dict, now:
     # 백테스트 기대치: 이번에 거래한 종목들의 검증 승률·비용 후 우위
     ver = {}
     for a in daily.get("assets", []) + daily.get("products", []):
-        side = "short" if a.get("kind") == "inv" else "long"  # KODEX 200(etf)은 롱 규칙
-        v = a.get("verify", {}).get(side, {})
+        if a.get("kind") == "inv":  # 숏·인버스는 하지 않는다 (2026-10-30)
+            continue
+        v = a.get("verify", {}).get("long", {})
         ver[a["symbol"].split(".")[0]] = v
     exp = [ver[r["code"]] for r in rows if ver.get(r["code"], {}).get("win_rate") is not None]
     if exp:

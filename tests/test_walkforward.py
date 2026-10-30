@@ -40,3 +40,20 @@ def test_passed_by_month_applies_cost_and_fdr():
     out = wf.passed_by_month(cache, ["A.KS", "B.KS", "C.KS", "D.KS"], [m])[m]
     assert list(out["stocks"]) == ["A.KS"]
     assert out["index_long"] is True and "index_short" not in out
+
+
+def test_hysteresis_keeps_listed_stocks_on_looser_bar():
+    ms = [date(2026, 1, 2), date(2026, 2, 2), date(2026, 3, 3), date(2026, 4, 1)]
+    cache = {}
+    for i, m in enumerate(ms):
+        k = m.isoformat()
+        cache[f"A.KS|{k}"] = {"long": _v(p=0.001 if i == 0 else 0.3)}
+        cache[f"B.KS|{k}"] = {"long": _v(p=0.3)}  # 처음부터 경계: 새로 넣지 않는다
+
+    def lists(**kw):
+        out = wf.passed_by_month(cache, ["A.KS", "B.KS"], ms, **kw)
+        return [list(v["stocks"]) for v in out.values()]
+
+    assert lists() == [["A.KS"], [], [], []]
+    assert lists(stay_q=0.4) == [["A.KS"]] * 4
+    assert lists(sticky=2) == [["A.KS"], ["A.KS"], ["A.KS"], []]

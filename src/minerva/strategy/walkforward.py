@@ -106,32 +106,56 @@ def run_verifications(
     return cache
 
 
-def passed_by_month(cache: dict, stocks: list[str], starts: list[date]) -> dict[date, dict]:
-    """월초별 통과: 종목 {심볼: (p, 비용 후 우위)}, 지수 롱 통과 여부."""
-    out = {}
-    for m in starts:
+def passed_by_month(
+    cache: dict,
+    stocks: list[str],
+    starts: list[date],
+    stay_q: float | None = None,
+    sticky: int = 0,
+) -> dict[date, dict]:
+    """월초별 통과: 종목 {심볼: (p, 비용 후 우위)}, 지수 롱 통과 여부.
+
+    히스테리시스(docs/backtests/2026-10-30-hysteresis-hypotheses.md): 이미 목록에 있는 종목은
+    비용 후 "검증됨"이면서 stay_q로 BH를 통과하거나(HY1),
+    마지막 통과 뒤 sticky달 안이면(HY2) 남긴다.
+    """
+    out: dict[date, dict] = {}
+    prev: set[str] = set()
+    last_pass: dict[str, int] = {}
+    for n, m in enumerate(starts):
         k = m.isoformat()
-        assets = [
-            {
-                "symbol": s,
-                "verify": {"long": dm.with_cost(cache[f"{s}|{k}"]["long"], dm.COST_KR_STOCK)},
-            }
+        raw = {
+            s: dm.with_cost(cache[f"{s}|{k}"]["long"], dm.COST_KR_STOCK)
             for s in stocks
             if cache.get(f"{s}|{k}")
-        ]
+        }
+        assets = [{"symbol": s, "verify": {"long": dict(v)}} for s, v in raw.items()]
         dm.apply_fdr(assets)
+        keep = {a["symbol"] for a in assets if a["verify"]["long"]["label"] == "검증됨"}
+        for s in keep:
+            last_pass[s] = n
+        if stay_q is not None:
+            loose = [{"symbol": s, "verify": {"long": dict(v)}} for s, v in raw.items()]
+            dm.apply_fdr(loose, stay_q)
+            keep |= {
+                a["symbol"]
+                for a in loose
+                if a["symbol"] in prev and a["verify"]["long"]["label"] == "검증됨"
+            }
+        if sticky:
+            keep |= {
+                s
+                for s in prev
+                if s in raw and raw[s]["label"] == "검증됨" and n - last_pass.get(s, -99) <= sticky
+            }
         idx = cache.get(f"{INDEX}|{k}") or {}
         out[m] = {
             "stocks": {
-                a["symbol"]: (
-                    a["verify"]["long"].get("p_value") or 1.0,
-                    a["verify"]["long"]["net_edge"] or 0.0,
-                )
-                for a in assets
-                if a["verify"]["long"]["label"] == "검증됨"
+                s: (raw[s].get("p_value") or 1.0, raw[s]["net_edge"] or 0.0) for s in sorted(keep)
             },
             "index_long": "long" in idx and dm.product_verdict(idx["long"])["label"] == "검증됨",
         }
+        prev = keep
     return out
 
 
@@ -143,6 +167,8 @@ def load_universe(
     workers: int = 2,
     mode: str = "tm",
     compute: bool = True,
+    stay_q: float | None = None,
+    sticky: int = 0,
 ):
     from minerva.strategy import portfolio as pf
 
@@ -154,7 +180,7 @@ def load_universe(
         if "error" not in a and a.get("market") == "KR" and not a["symbol"].startswith("^")
     }
     cache = run_verifications([INDEX, *stocks], starts, vix, path, workers, compute)
-    months = passed_by_month(cache, list(stocks), starts)
+    months = passed_by_month(cache, list(stocks), starts, stay_q, sticky)
     out = []
     for sym, name, kind, key, cap in (
         ("069500.KS", "KODEX 200", "long", "index_long", trade.INDEX_ETF_WEIGHT),

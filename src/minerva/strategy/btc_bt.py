@@ -72,7 +72,7 @@ def simulate(
     open_long, open_short = edges(long_levels, k), edges(short_levels, k)
     close_long, close_short = edges(short_levels, c), edges(long_levels, c)
     equity, peak, mdd = 1.0, 1.0, 0.0
-    pos, entry, base = 0, 0.0, 0.0  # base: 진입 직후 평가액
+    pos, entry, base, before = 0, 0.0, 0.0, 0.0  # base: 진입 직후, before: 진입 직전 평가액
     trades, wins, in_market = 0, 0, 0
     pnl = {1: 0.0, -1: 0.0}
     ruined = False
@@ -83,9 +83,9 @@ def simulate(
     def leave(px: float) -> None:
         nonlocal equity, pos, trades, wins
         after = value(px) - base * (px / entry) * cost
-        pnl[pos] += after - base
+        pnl[pos] += after - before
         trades += 1
-        wins += after > base / (1 - cost)
+        wins += after > before
         equity, pos = after, 0
 
     for i in range(start, end):
@@ -99,13 +99,14 @@ def simulate(
                 leave(b.open)
             if pos == 0 and not both and (open_long[s] or open_short[s]):
                 pos = 1 if open_long[s] else -1
-                base, entry = equity * (1 - cost), b.open
+                before, base, entry = equity, equity * (1 - cost), b.open
                 equity = base
         if pos:
             in_market += 1
             worst = value(b.low if pos == 1 else b.high)
             if worst <= 0:  # 1배 숏은 가격이 두 배면 평가액이 사라진다
-                pnl[pos] -= equity
+                pnl[pos] -= before
+                trades += 1
                 equity, pos, ruined = 0.0, 0, True
                 mdd = -1.0
                 break

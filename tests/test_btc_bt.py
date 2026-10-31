@@ -73,3 +73,16 @@ def test_hold_reports_drawdown_from_high():
     bars = _bars([100, 200, 100, 150])
     cagr, mdd, _ = bt.hold(bars, 0, 4)
     assert mdd == pytest.approx(-0.5) and cagr > 0
+
+
+def test_side_pnl_adds_up_to_total_after_costs():
+    bars = _bars([100, 100, 100, 200, 200, 100, 100])
+    lo, sh = [0, 1, 0, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 0]
+    r = bt.simulate(bars, lo, sh, 1, 1, cost=0.01)
+    assert r.long_pnl + r.short_pnl == pytest.approx(r.final - 1)
+
+
+def test_ruin_counts_as_a_losing_trade():
+    bars = _bars([100, 100, 100, 250, 250])
+    r = bt.simulate(bars, [0] * 5, [0, 1, 0, 0, 0], 1, 1, cost=0)
+    assert r.trades == 1 and r.win_rate == 0 and r.short_pnl == pytest.approx(-1.0)

@@ -149,3 +149,29 @@ def test_fail_ma50_needs_close_above_first():
     up, down = {days[2]: True}, {days[4]: True}
     assert _fail_run(days, [100] * 6, "ma50", below50=down) == 1
     assert _fail_run(days, [100] * 6, "ma50", below50=down, above50=up) == 2
+
+
+def test_size_factor_scales_or_skips_by_score():
+    days = _days(4)
+    p = _plan(days, [100] * 4, score={days[0]: 2})
+    assert scr.size_factor(p, days[0], "prop") == 2 / 3
+    assert scr.size_factor(p, days[0], "all3") == 0
+    assert scr.size_factor(p, days[0], None) == 1
+
+
+def test_all3_tilt_skips_entry_below_full_score():
+    days = _days(4)
+    p = _plan(days, [100] * 4, entry={days[0]: True}, score={days[0]: 2})
+    res = scr.simulate([p], days, {d: "R1" for d in days}, 10_000, {}, tilt="all3")[0]
+    assert res.trades == 0
+
+
+def test_frame_up_accepts_positive_values_or_rising_indicators():
+    from minerva.strategy.indicators import TMState
+
+    d0, d1 = _days(2)
+    prev = TMState(d0, 100, 10, -50, 40, 0, 0)
+    up = TMState(d1, 100, 20, -40, 45, 0, 0)
+    flat = TMState(d1, 100, 5, -40, 45, 0, 0)
+    assert scr.frame_up([prev, up], d1)
+    assert not scr.frame_up([prev, flat], d1)

@@ -34,6 +34,7 @@ Minerva/
 - 검증(테스트·린트·리뷰) → 개선 → 커밋 루프를 스스로 반복한다. 코드뿐 아니라 지시문(CLAUDE.md, rules, skills)과 docs도 계속 다듬는다.
 - 커밋은 요청 없이 해도 된다 (작은 단위, `/commit` 스킬 절차). 푸시·파괴적 git 작업은 확인 후.
 - 전용 서브에이전트가 있으면 좋을 상황이면 사용자에게 먼저 제안한다.
+- 레드팀은 항상 거친다(사용자 결정 2026-10-31): 실전 규칙·주문 코드 변경, 백테스트 결론 보고, 매매 결론 전에 `red-team`에게 내 결론 없이 코드·문서·수치를 주고 반박받는다. 결과는 빼지 않고 사용자에게 전하고, 반영하지 않은 지적은 이유를 적는다. 조회·단순 질문·문서 오타는 제외한다.
 - 모르는 요구사항은 추측하지 말고 질문한다.
 - 세부 규칙은 `.claude/rules/` 참고:
   - `code-style.md` — 코딩 스타일
@@ -48,7 +49,7 @@ Minerva/
 - `risk-rules` — 비중·손절·레버리지 한도 (모든 신호보다 우선)
 - `backtest-guard` — 패턴·승률 검증 규칙 (사후 맞춤 금지)
 - 검증 현황: `docs/backtests/2026-10-28-results.md` (가설 A~N 판정, 다음 후보 P1~P4)
-- 에이전트: `strategist`(분석), `risk-officer`(반박·검증), `backtester`(규칙 검증), `trade-auditor`(실전 주문·보유 점검)
+- 에이전트: `strategist`(분석), `red-team`(레드팀, 반박·검증), `backtester`(규칙 검증), `trade-auditor`(실전 주문·보유 점검)
 - 지표 값은 `.venv/bin/python -m minerva.strategy.report <심볼...>`로 계산한다.
 - 규칙 검증은 `.venv/bin/python -m minerva.strategy.backtest <심볼...> --help` 참고.
 

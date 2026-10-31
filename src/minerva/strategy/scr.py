@@ -163,6 +163,8 @@ class Pos:
     tranches: int
     failed: bool = False  # 1단 실패(20일선 이탈)를 겪었는가
     was_strong: bool = False  # 강세로 홀딩하던 종목만 주·월봉 이탈에 판다
+    opened: date | None = None
+    spent: float = 0.0  # 비용 포함 총 매수액
 
 
 def simulate(
@@ -171,24 +173,46 @@ def simulate(
     regime: dict[date, str],
     capital: float,
     park: dict[date, float],
+    log: list[dict] | None = None,
 ) -> tuple[pf.Result, list[float]]:
+    """log를 주면 청산마다 종목·기간·사유·원화 손익을 쌓는다."""
     by = {p.code: p for p in plans}
     cash = capital
     pos: dict[str, Pos] = {}
-    sells: set[str] = set()
+    sells: dict[str, str] = {}
     buys: list[tuple[str, int, float]] = []
     curve, invested, trades, closed = [], [], 0, []
     last: dict[str, float] = {}
+
+    def close(code: str, p: Pos, px: float, day: date, reason: str) -> float:
+        fee = pf._cost(code, "sell")
+        got = p.qty * px * (1 - fee)
+        closed.append(px / p.cost - 1 - pf._cost(code, "buy") - fee)
+        if log is not None:
+            log.append(
+                {
+                    "code": code,
+                    "name": by[code].name,
+                    "opened": p.opened,
+                    "closed": day,
+                    "reason": reason,
+                    "tranches": p.tranches,
+                    "strong": p.was_strong,
+                    "failed": p.failed,
+                    "spent": p.spent,
+                    "pnl": got - p.spent,
+                    "ret": closed[-1],
+                }
+            )
+        return got
+
     for day in days:
         cash0 = cash
         for code in list(sells):
             bar = by[code].bars.get(day)
             if bar is None or code not in pos:
                 continue
-            p = pos.pop(code)
-            cash += p.qty * bar.open * (1 - pf._cost(code, "sell"))
-            closed.append(bar.open / p.cost - 1 - pf._cost(code, "buy") - pf._cost(code, "sell"))
-            sells.discard(code)
+            cash += close(code, pos.pop(code), bar.open, day, sells.pop(code))
             trades += 1
         for code, qty, ref in buys:
             bar = by[code].bars.get(day)
@@ -199,14 +223,16 @@ def simulate(
             qty = min(qty, math.floor(cash / (px * (1 + pf._cost(code, "buy")))))
             if qty < 1:
                 continue
-            cash -= qty * px * (1 + pf._cost(code, "buy"))
+            paid = qty * px * (1 + pf._cost(code, "buy"))
+            cash -= paid
             p = pos.get(code)
             if p is None:
-                pos[code] = Pos(qty, px, 1)
+                pos[code] = Pos(qty, px, 1, opened=day, spent=paid)
             else:
                 p.cost = (p.cost * p.qty + px * qty) / (p.qty + qty)
                 p.qty += qty
                 p.tranches += 1
+                p.spent += paid
             trades += 1
         buys = []
         for code in list(pos):
@@ -215,13 +241,8 @@ def simulate(
                 continue
             stop = pos[code].cost * (1 - STOP)
             if bar.low <= stop:
-                px = min(stop, bar.open)
-                cash += pos[code].qty * px * (1 - pf._cost(code, "sell"))
-                closed.append(
-                    px / pos[code].cost - 1 - pf._cost(code, "buy") - pf._cost(code, "sell")
-                )
-                del pos[code]
-                sells.discard(code)
+                cash += close(code, pos.pop(code), min(stop, bar.open), day, "stop")
+                sells.pop(code, None)
                 trades += 1
         cash -= abs(cash - cash0) * pf._cost(pf.PARK_CODE, "buy")
         cash *= 1 + park.get(day, 0.0) * (1 - pf.PARK_RESERVE)
@@ -240,8 +261,11 @@ def simulate(
             strong = bool(plan.strong.get(day))
             p.was_strong = p.was_strong or strong
             hold = strong and not plan.htf_exit.get(day)
-            if (p.was_strong and plan.htf_exit.get(day)) or (plan.take.get(day) and not hold):
-                sells.add(code)
+            if p.was_strong and plan.htf_exit.get(day):
+                sells[code] = "htf"
+                continue
+            if plan.take.get(day) and not hold:
+                sells[code] = "take"
                 continue
             p.failed = p.failed or bool(plan.below20.get(day))
             nxt = None

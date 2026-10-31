@@ -395,6 +395,97 @@ def compare_rules(daily: dict, vix: list[Bar], start: date, capital: float, work
     return out
 
 
+def trend_curve(
+    bars: list[Bar], days: list[date], park: dict[date, float], window: int = 10
+) -> list[tuple[date, float]]:
+    """월말 종가가 최근 window개월 평균 위면 다음 거래일 시가에 사고, 아래면 팔고 파킹한다."""
+    by = {b.day: b for b in bars}
+    month_ends = [a.close for a, b in zip(bars, bars[1:]) if a.day.month != b.day.month]
+    month_end_days = {a.day for a, b in zip(bars, bars[1:]) if a.day.month != b.day.month}
+    value, held, want, prev = 1.0, False, False, None
+    curve = []
+    seen = sum(1 for d in month_end_days if days and d < days[0])
+    for day in days:
+        bar = by.get(day)
+        if bar is None:
+            value *= 1 + (0 if held else park.get(day, 0.0))
+            curve.append((day, value))
+            continue
+        cost = _cost("069500", "buy")
+        if want and not held:
+            value *= (1 - cost) * bar.close / bar.open
+            held = True
+        elif held and not want:
+            value *= (1 - cost) * bar.open / prev
+            value *= 1 + park.get(day, 0.0)
+            held = False
+        elif held:
+            value *= bar.close / prev
+        else:
+            value *= 1 + park.get(day, 0.0)
+        prev = bar.close
+        curve.append((day, value))
+        if day in month_end_days:
+            seen += 1
+            if seen >= window:
+                want = bar.close > sum(month_ends[seen - window : seen]) / window
+    return curve
+
+
+def blend(curves: list[list[tuple[date, float]]], weights: list[float]) -> list[tuple[date, float]]:
+    """슬리브를 합친다. 매년 첫 거래일에 비중을 되돌린다 (리밸런싱 비용은 뺀다)."""
+    series = [dict(c) for c in curves]
+    days = sorted(set.intersection(*(set(s) for s in series)))
+    out, sleeves, last = [], list(weights), [s[days[0]] for s in series]
+    for i, day in enumerate(days):
+        sleeves = [v * s[day] / p for v, s, p in zip(sleeves, series, last)]
+        last = [s[day] for s in series]
+        total = sum(sleeves)
+        out.append((day, total))
+        if i + 1 < len(days) and days[i + 1].year != day.year:
+            sleeves = [total * w for w in weights]
+    return out
+
+
+def stats(curve: list[tuple[date, float]]) -> tuple[float, float]:
+    """연수익, 최대낙폭."""
+    years = max((curve[-1][0] - curve[0][0]).days / 365.25, 1e-9)
+    peak, mdd = 0.0, 0.0
+    for _, e in curve:
+        peak = max(peak, e)
+        mdd = min(mdd, e / peak - 1)
+    return (curve[-1][1] / curve[0][1]) ** (1 / years) - 1, mdd
+
+
+def compare_core(daily: dict, vix: list[Bar], split: date, capital: float, workers: int = 2):
+    """ROADMAP 27: 코어-위성을 앞 구간(오늘 목록)과 뒤 구간(워크포워드)으로 나눠 비교한다."""
+    from minerva.strategy import walkforward
+
+    idx = dm.completed(fetch_yahoo("^KS11", "max"), "KR")
+    regime = dm._regime_by_day(vix, idx)
+    park = park_returns()
+    kodex = dm.completed(fetch_yahoo("069500.KS", "max"), "KR")
+    closes = {b.day: b.close for b in kodex}
+    cfg = Config(capital=capital, limit=trade.GAP_BUFFER, park=park)
+
+    def sleeves(uni: list[Instrument], days: list[date]) -> dict:
+        now = simulate(uni, days, regime, cfg).equity
+        on_days = [d for d, _ in now]
+        hold = [(d, closes[d]) for d in on_days if d in closes]
+        trend = trend_curve(kodex, on_days, park)
+        return {
+            "기준": now,
+            "CS1 상시 30%": blend([hold, now], [0.3, 0.7]),
+            "CS2 추세 30%": blend([trend, now], [0.3, 0.7]),
+            "CS3 추세 50%": blend([trend, now], [0.5, 0.5]),
+        }
+
+    front = [b.day for b in idx if date(2010, 1, 1) <= b.day < split]
+    back = [b.day for b in idx if b.day >= split]
+    uni, _ = walkforward.load_universe(daily, vix, split, workers=workers, compute=False)
+    return {"앞": sleeves(load_universe(daily, vix), front), "뒤": sleeves(uni, back)}
+
+
 def compare_execution(daily: dict, vix: list[Bar], start: date, capital: float, workers: int = 2):
     """ROADMAP 20②: 워크포워드에 매수 지정가와 CD 파킹을 넣어 실전 집행과 맞춘다."""
     from minerva.strategy import walkforward
@@ -441,10 +532,22 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="워크포워드로 매수 지정가·CD 파킹 반영 전후 비교 (ROADMAP 20②, 워크포워드 캐시 사용)",
     )
+    parser.add_argument(
+        "--core",
+        action="store_true",
+        help="코어-위성 비교, --start는 앞뒤 구간 경계 (ROADMAP 27, 워크포워드 캐시 사용)",
+    )
     parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args(argv)
     daily = json.loads(Path(args.daily).read_text())
     vix = dm.completed(fetch_yahoo("^VIX", "max"), "US")
+    if args.core:
+        split = date.fromisoformat(args.start)
+        for part, curves in compare_core(daily, vix, split, args.capital, args.workers).items():
+            for name, curve in curves.items():
+                cagr, mdd = stats(curve)
+                print(f"{part} {name:<14}{cagr:>7.1%}{mdd:>8.1%}{cagr / abs(mdd):>6.2f}")
+        return
     if args.execution:
         start = date.fromisoformat(args.start)
         _print(compare_execution(daily, vix, start, args.capital, args.workers))

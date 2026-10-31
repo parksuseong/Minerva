@@ -50,6 +50,21 @@ def is_up(s: TMState | None) -> bool:
     return s is not None and (s.cci or 0) > 0 and (s.rsi or 0) > 50
 
 
+def rising(cur: TMState | None, prev: TMState | None) -> bool:
+    if cur is None or prev is None:
+        return False
+    pairs = ((cur.stoch, prev.stoch), (cur.cci, prev.cci), (cur.rsi, prev.rsi))
+    return all(a is not None and b is not None and a > b for a, b in pairs)
+
+
+def frame_up(states: Sequence[TMState], day: date) -> bool:
+    """원문 \"우상향하거나 SCR 지표가 양수\" (224241271674)."""
+    i = bisect.bisect_right([s.day for s in states], day) - 1
+    if i < 0:
+        return False
+    return is_up(states[i]) or (i > 0 and rising(states[i], states[i - 1]))
+
+
 def is_down(s: TMState | None) -> bool:
     return s is not None and (s.cci or 0) < 0 and (s.rsi or 100) < 50
 
@@ -100,6 +115,8 @@ class Plan:
     overbought: dict[date, bool] = field(default_factory=dict)  # 스토캐 80 이상
     above50: dict[date, bool] = field(default_factory=dict)  # 종가가 50일선 위
     below50: dict[date, bool] = field(default_factory=dict)  # 종가가 50일선 아래
+    score: dict[date, int] = field(default_factory=dict)  # 월·주·일 상방 프레임 수
+    topdown: dict[date, bool] = field(default_factory=dict)  # 월봉 돌파 + 주봉 상방
 
 
 def plan_for(code: str, name: str, weight: float, bars: list[Bar]) -> Plan | None:
@@ -113,7 +130,7 @@ def plan_for(code: str, name: str, weight: float, bars: list[Bar]) -> Plan | Non
     week = tm_states(resample(bars, "W"))
     month = tm_states(resample(bars, "M"))
     entry, add2, add3, strong, htf_exit, take, below = {}, {}, {}, {}, {}, {}, {}
-    oversold, overbought, above50, below50 = {}, {}, {}, {}
+    oversold, overbought, above50, below50, score, topdown = {}, {}, {}, {}, {}, {}
     for i, b in enumerate(bars):
         d = b.day
         w, m = confirmed(week, d), confirmed(month, d)
@@ -128,6 +145,10 @@ def plan_for(code: str, name: str, weight: float, bars: list[Bar]) -> Plan | Non
         add2[d] = i > 0 and crossed_up(cc, i, -100.0)
         add3[d] = i > 0 and crossed_up(rs, i, 30.0)
         below[d] = ma[20][i] is not None and b.close < ma[20][i]
+        week_up, month_up = frame_up(week, d), frame_up(month, d)
+        day_up = is_up(daily[i]) or (i > 0 and rising(daily[i], daily[i - 1]))
+        score[d] = week_up + month_up + day_up
+        topdown[d] = week_up and m is not None and m.long_level >= 1
         oversold[d] = st[i] is not None and st[i] <= 20
         overbought[d] = st[i] is not None and st[i] >= 80
         above50[d] = ma[50][i] is not None and b.close > ma[50][i]
@@ -166,6 +187,8 @@ def plan_for(code: str, name: str, weight: float, bars: list[Bar]) -> Plan | Non
         overbought,
         above50,
         below50,
+        score,
+        topdown,
     )
 
 
@@ -180,6 +203,17 @@ class Pos:
     spent: float = 0.0  # 비용 포함 총 매수액
     peaked: bool = False  # 보유 중 스토캐 80 이상을 찍었는가
     armed: bool = False  # 보유 중 종가가 50일선 위에 있었는가
+
+
+def size_factor(plan: Plan, day: date, tilt: str | None) -> float:
+    """일치 점수 변형 (`docs/backtests/2026-10-31-scr-frame-score-hypotheses.md`). 0이면 안 산다."""
+    if tilt == "prop":
+        return plan.score.get(day, 0) / 3
+    if tilt == "all3":
+        return float(plan.score.get(day, 0) == 3)
+    if tilt == "topdown":
+        return float(bool(plan.topdown.get(day)))
+    return 1.0
 
 
 def failed_breakout(p: Pos, plan: Plan, day: date, fail: str | None) -> bool:
@@ -203,6 +237,7 @@ def simulate(
     park: dict[date, float],
     log: list[dict] | None = None,
     fail: str | None = None,
+    tilt: str | None = None,
 ) -> tuple[pf.Result, list[float]]:
     """log를 주면 청산마다 종목·기간·사유·원화 손익을 쌓는다."""
     by = {p.code: p for p in plans}
@@ -212,6 +247,7 @@ def simulate(
     buys: list[tuple[str, int, float]] = []
     curve, invested, trades, closed = [], [], 0, []
     last: dict[str, float] = {}
+    factor: dict[str, float] = {}
 
     def close(code: str, p: Pos, px: float, day: date, reason: str) -> float:
         fee = pf._cost(code, "sell")
@@ -229,6 +265,7 @@ def simulate(
                     "cost": p.cost,
                     "strong": p.was_strong,
                     "failed": p.failed,
+                    "score": by[code].score.get(p.opened),
                     "spent": p.spent,
                     "pnl": got - p.spent,
                     "ret": closed[-1],
@@ -307,7 +344,8 @@ def simulate(
             elif p.tranches == 2 and plan.add3.get(day):
                 nxt = TRANCHES[2]
             if gate and nxt:
-                qty = math.floor(min(equity * plan.weight * nxt, budget) / (last[code] * 1.03))
+                size = equity * plan.weight * nxt * factor.get(code, 1.0)
+                qty = math.floor(min(size, budget) / (last[code] * 1.03))
                 if qty >= 1:
                     buys.append((code, qty, last[code]))
                     budget -= qty * last[code] * 1.03
@@ -319,8 +357,11 @@ def simulate(
                 if plan.code in pos or day not in plan.bars or not plan.entry.get(day):
                     continue
                 price = last[plan.code] * 1.03
-                qty = math.floor(min(equity * plan.weight * TRANCHES[0], budget) / price)
+                scale = size_factor(plan, day, tilt)
+                size = equity * plan.weight * TRANCHES[0] * scale
+                qty = math.floor(min(size, budget) / price)
                 if qty >= 1:
+                    factor[plan.code] = scale
                     buys.append((plan.code, qty, last[plan.code]))
                     budget -= qty * price
                     slots -= 1
@@ -380,6 +421,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--capital", type=float, default=10_002_669)
     parser.add_argument("--verified", action="store_true", help="SCR-V: 검증 종목만 신규 매수")
     parser.add_argument("--fail", choices=("any", "before80", "ma50"), help="돌파 실패 매도 변형")
+    parser.add_argument("--tilt", choices=("prop", "all3", "topdown"), help="일치 점수 변형")
     args = parser.parse_args(argv)
     daily = json.loads(Path(args.daily).read_text())
     rows, vix = load(daily)
@@ -407,7 +449,9 @@ def main(argv: list[str] | None = None) -> None:
         ("앞", [b.day for b in idx if date(2010, 1, 1) <= b.day < SPLIT]),
         ("뒤", [b.day for b in idx if b.day >= SPLIT]),
     ):
-        res, closed = simulate(plans, days, regime, args.capital, park, fail=args.fail)
+        res, closed = simulate(
+            plans, days, regime, args.capital, park, fail=args.fail, tilt=args.tilt
+        )
         was = pf.simulate(base, days, regime, cfg)
         hold = pf.index_hold(days[0], args.capital, 1.0, park)
         window = set(days)

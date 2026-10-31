@@ -14,9 +14,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
+import time
 from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 from minerva import trade
 from minerva.strategy import daily as dm
@@ -29,6 +32,13 @@ SELL_TAX = 0.002
 SLIP = 0.0005
 ETFS = {"069500"}
 REGIME_FACTOR = trade.REGIME_FACTOR
+PARK_CODE = "357870"
+PARK_RESERVE = 0.02  # 실전도 평가액 2%는 현금으로 남긴다
+PARK_URL = (
+    f"https://fchart.stock.naver.com/sise.nhn?symbol={PARK_CODE}"
+    "&timeframe=day&count=3000&requestType=0"
+)
+PARK_CACHE = Path("~/.minerva/data/357870_naver.xml").expanduser()
 
 
 @dataclass
@@ -56,6 +66,8 @@ class Config:
     trim_at: float = 1.5
     rotate_ratio: float = 0.5
     rotate_min_days: int = 5
+    limit: float | None = None  # 매수 지정가 = 전일 종가 × limit. None이면 시가에 무조건 체결
+    park: dict[date, float] | None = None  # 날짜별 파킹 ETF 수익률. None이면 현금 이자 0
 
 
 @dataclass
@@ -74,6 +86,7 @@ class Result:
     trades: int
     exposure: float
     equity: list[tuple[date, float]] = field(default_factory=list)
+    unfilled: list[tuple[date, str, float]] = field(default_factory=list)  # 날짜, 코드, 시가/지정가
 
 
 def _signals_for(src: list[Bar], kind: str, vix: list[Bar], mode: str = "tm") -> tuple[dict, dict]:
@@ -168,14 +181,16 @@ def simulate(
     cash = cfg.capital
     pos: dict[str, Pos] = {}
     pending_sell: dict[str, tuple[int, str]] = {}
-    pending_buy: list[tuple[str, int]] = []
+    pending_buy: list[tuple[str, int, float]] = []
     curve, invested, trades = [], [], 0
+    unfilled: list[tuple[date, str, float]] = []
     last_px: dict[str, float] = {}
 
     def value(code: str) -> float:
         return pos[code].qty * last_px.get(code, pos[code].entry)
 
     for t, day in enumerate(days):
+        cash0 = cash
         # 1) 시가: 전날 정한 매도 → 매수
         for code, (qty, _why) in list(pending_sell.items()):
             bar = by[code].prices.get(day)
@@ -188,15 +203,22 @@ def simulate(
                 del pos[code]
             del pending_sell[code]
             trades += 1
-        for code, qty in pending_buy:
+        for code, qty, ref in pending_buy:
             bar = by[code].prices.get(day)
             if bar is None or code in pos:
                 continue
-            qty = min(qty, math.floor(cash / (bar.open * (1 + _cost(code, "buy")))))
+            px = bar.open
+            if cfg.limit is not None:
+                limit = ref * cfg.limit
+                if bar.low > limit:  # 하루 종일 지정가 위 → 미체결, 당일 만료
+                    unfilled.append((day, code, bar.open / limit))
+                    continue
+                px = min(bar.open, limit)
+            qty = min(qty, math.floor(cash / (px * (1 + _cost(code, "buy")))))
             if qty < 1:
                 continue
-            cash -= qty * bar.open * (1 + _cost(code, "buy"))
-            pos[code] = Pos(qty, bar.open, t)
+            cash -= qty * px * (1 + _cost(code, "buy"))
+            pos[code] = Pos(qty, px, t)
             trades += 1
         pending_buy = []
         # 2) 장중 손절
@@ -211,6 +233,10 @@ def simulate(
                 del pos[code]
                 pending_sell.pop(code, None)
                 trades += 1
+        if cfg.park is not None:
+            # 파킹 이자, 그리고 매매 때마다 ETF를 사고파는 비용
+            cash -= abs(cash - cash0) * _cost(PARK_CODE, "buy")
+            cash *= 1 + cfg.park.get(day, 0.0) * (1 - PARK_RESERVE)
         # 3) 종가: 평가
         for code, u in by.items():
             if day in u.prices:
@@ -272,7 +298,7 @@ def simulate(
                     qty = math.floor(min(alloc, budget) / price)
             if slots <= 0 or qty < 1:
                 continue
-            pending_buy.append((u.code, qty))
+            pending_buy.append((u.code, qty, last_px[u.code]))
             budget -= qty * price
             slots -= 1
     final = curve[-1][1] if curve else cfg.capital
@@ -288,6 +314,7 @@ def simulate(
         trades,
         sum(invested) / len(invested) if invested else 0,
         curve,
+        unfilled,
     )
 
 
@@ -311,7 +338,26 @@ def compare(universe: list[Instrument], start: date, capital: float) -> dict[str
     }
 
 
-def index_hold(start: date, capital: float, weight: float) -> Result:
+def parse_naver_closes(xml: str) -> list[tuple[date, float]]:
+    rows = re.findall(r'data="(\d{8})\|[^|]*\|[^|]*\|[^|]*\|(\d+)\|', xml)
+    return [(date(int(d[:4]), int(d[4:6]), int(d[6:])), float(c)) for d, c in rows]
+
+
+def park_returns() -> dict[date, float]:
+    """파킹 ETF의 날짜별 수익률. 상장(2020-07) 전은 비어 있다.
+    야후는 2024-06 이전 봉이 거의 없어(2026-10-31 확인) 네이버 일봉을 쓴다."""
+    if not PARK_CACHE.exists() or time.time() - PARK_CACHE.stat().st_mtime > 86400:
+        with urlopen(Request(PARK_URL, headers={"User-Agent": "Mozilla/5.0"}), timeout=20) as r:
+            PARK_CACHE.write_bytes(r.read())
+    closes = parse_naver_closes(PARK_CACHE.read_text(encoding="euc-kr", errors="replace"))
+    if len(closes) < 1000:
+        raise RuntimeError(f"파킹 ETF 일봉이 {len(closes)}개뿐이다")
+    return {d: c / p - 1 for (_, p), (d, c) in zip(closes, closes[1:])}
+
+
+def index_hold(
+    start: date, capital: float, weight: float, park: dict[date, float] | None = None
+) -> Result:
     """KODEX 200을 첫날 weight만큼 사서 끝까지 들고 있는다 (나머지는 현금). 같은 비용 모델."""
     bars = dm.completed(fetch_yahoo("069500.KS", "max"), "KR")
     days = [b.day for b in bars if b.day >= start]
@@ -324,7 +370,7 @@ def index_hold(start: date, capital: float, weight: float) -> Result:
         {days[0]: True} if days else {},
         {},
     )
-    cfg = Config(capital=capital, trim=False, rotate=False, hold=10**9, long_stop=1.0)
+    cfg = Config(capital=capital, trim=False, rotate=False, hold=10**9, long_stop=1.0, park=park)
     return simulate([u], days, {}, cfg, factor_of=lambda _r: 1.0)
 
 
@@ -349,6 +395,31 @@ def compare_rules(daily: dict, vix: list[Bar], start: date, capital: float, work
     return out
 
 
+def compare_execution(daily: dict, vix: list[Bar], start: date, capital: float, workers: int = 2):
+    """ROADMAP 20②: 워크포워드에 매수 지정가와 CD 파킹을 넣어 실전 집행과 맞춘다."""
+    from minerva.strategy import walkforward
+
+    uni, _ = walkforward.load_universe(daily, vix, start, workers=workers, compute=False)
+    idx = dm.completed(fetch_yahoo("^KS11", "max"), "KR")
+    days = [b.day for b in idx if b.day >= start]
+    regime = dm._regime_by_day(vix, idx)
+    park = park_returns()
+    base = Config(capital=capital)
+    limit = trade.GAP_BUFFER
+    out = {
+        name: simulate(uni, days, regime, replace(base, **kw))
+        for name, kw in (
+            ("기존(시가 체결·이자 0)", {}),
+            ("+지정가", dict(limit=limit)),
+            ("+파킹", dict(park=park)),
+            ("실전 집행(지정가+파킹)", dict(limit=limit, park=park)),
+        )
+    }
+    for w in (trade.INDEX_ETF_WEIGHT, 1.0):
+        out[f"지수 보유 {w:.0%}+파킹"] = index_hold(start, capital, w, park)
+    return out
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="실전 운용 규칙 포트폴리오 백테스트")
     parser.add_argument("--capital", type=float, default=1_000_000)
@@ -365,10 +436,19 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="워크포워드로 현행·필터만·지수 보유 비교 (ROADMAP 23, 워크포워드 캐시 사용)",
     )
+    parser.add_argument(
+        "--execution",
+        action="store_true",
+        help="워크포워드로 매수 지정가·CD 파킹 반영 전후 비교 (ROADMAP 20②, 워크포워드 캐시 사용)",
+    )
     parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args(argv)
     daily = json.loads(Path(args.daily).read_text())
     vix = dm.completed(fetch_yahoo("^VIX", "max"), "US")
+    if args.execution:
+        start = date.fromisoformat(args.start)
+        _print(compare_execution(daily, vix, start, args.capital, args.workers))
+        return
     if args.rules:
         res = compare_rules(daily, vix, date.fromisoformat(args.start), args.capital, args.workers)
         _print(res)

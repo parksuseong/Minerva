@@ -45,6 +45,52 @@ def test_stop_loss_and_cash_limit():
     assert r.trades == 2 and 9_700 < r.final < 9_850
 
 
+def _gap(open_, low):
+    days = [date(2024, 1, 1) + timedelta(days=i) for i in range(3)]
+    u = _inst("A", [(d, 100) for d in days], [days[0]])
+    u.prices[days[1]] = Bar(days[1], open_, open_ + 1, low, open_, 0)
+    return u, days
+
+
+def _run_limit(open_, low):
+    u, days = _gap(open_, low)
+    cfg = pf.Config(capital=10_000, limit=1.03, hold=100)
+    return pf.simulate([u], days, {d: "R1" for d in days}, cfg)
+
+
+def test_limit_skips_when_price_stays_above_limit():
+    assert _run_limit(110, 105).trades == 0
+
+
+def test_limit_fills_at_limit_when_gap_comes_back():
+    r = _run_limit(110, 101)
+    assert r.trades == 1
+    assert r.equity[-1][1] < 10_000  # 103에 사서 100으로 평가
+
+
+def test_limit_fills_at_open_when_below_limit():
+    r = _run_limit(101, 100)
+    r2 = pf.simulate(
+        *(lambda u, d: ([u], d, {x: "R1" for x in d}))(*_gap(101, 100)),
+        pf.Config(capital=10_000, hold=100),
+    )
+    assert r.final == r2.final
+
+
+def test_park_earns_on_idle_cash_only():
+    days = [date(2024, 1, 1) + timedelta(days=i) for i in range(3)]
+    u = _inst("A", [(d, 100) for d in days], [])
+    park = {days[1]: 0.01}
+    r = pf.simulate([u], days, {d: "R1" for d in days}, pf.Config(capital=10_000, park=park))
+    assert r.final == pytest.approx(10_000 * (1 + 0.01 * 0.98))
+    assert r.exposure == 0  # 파킹은 투자 비율에 넣지 않는다
+
+
+def test_parse_naver_closes():
+    xml = '<item data="20200707|49947|49950|49942|49948|11266" />'
+    assert pf.parse_naver_closes(xml) == [(date(2020, 7, 7), 49948.0)]
+
+
 def test_filter_mode_holds_while_filter_is_on(monkeypatch):
     days = [date(2024, 1, 1) + timedelta(days=i) for i in range(4)]
     bars = [Bar(d, 100, 101, 99, 100, 0) for d in days]

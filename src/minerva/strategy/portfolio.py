@@ -17,15 +17,16 @@ import math
 import re
 import time
 from dataclasses import dataclass, field, replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from minerva import trade
 from minerva.strategy import daily as dm
 from minerva.strategy.backtest import filter_mask, signals
 from minerva.strategy.indicators import Bar, crossed_down, stoch_fast_k
-from minerva.strategy.report import fetch_yahoo
+from minerva.strategy.report import _cache_file, fetch_yahoo
 
 FEE = 0.00015
 SELL_TAX = 0.002
@@ -338,6 +339,18 @@ def compare(universe: list[Instrument], start: date, capital: float) -> dict[str
     }
 
 
+def adjusted_closes(symbol: str) -> dict[date, float]:
+    """분배금을 반영한 야후 수정 종가."""
+    fetch_yahoo(symbol, "max")
+    result = json.loads(_cache_file(symbol, "max").read_text())["chart"]["result"][0]
+    closes = result["indicators"]["adjclose"][0]["adjclose"]
+    return {
+        datetime.fromtimestamp(t, ZoneInfo("Asia/Seoul")).date(): c
+        for t, c in zip(result["timestamp"], closes)
+        if c
+    }
+
+
 def parse_naver_closes(xml: str) -> list[tuple[date, float]]:
     rows = re.findall(r'data="(\d{8})\|[^|]*\|[^|]*\|[^|]*\|(\d+)\|', xml)
     return [(date(int(d[:4]), int(d[4:6]), int(d[6:])), float(c)) for d, c in rows]
@@ -466,16 +479,19 @@ def compare_core(daily: dict, vix: list[Bar], split: date, capital: float, worke
     park = park_returns()
     kodex = dm.completed(fetch_yahoo("069500.KS", "max"), "KR")
     closes = {b.day: b.close for b in kodex}
+    adjusted = adjusted_closes("069500.KS")
     cfg = Config(capital=capital, limit=trade.GAP_BUFFER, park=park)
 
     def sleeves(uni: list[Instrument], days: list[date]) -> dict:
         now = simulate(uni, days, regime, cfg).equity
         on_days = [d for d, _ in now]
         hold = [(d, closes[d]) for d in on_days if d in closes]
+        hold_adj = [(d, adjusted[d]) for d in on_days if d in adjusted]
         trend = trend_curve(kodex, on_days, park)
         return {
             "기준": now,
             "CS1 상시 30%": blend([hold, now], [0.3, 0.7]),
+            "CS1b 분배금": blend([hold_adj, now], [0.3, 0.7]),
             "CS2 추세 30%": blend([trend, now], [0.3, 0.7]),
             "CS3 추세 50%": blend([trend, now], [0.5, 0.5]),
         }

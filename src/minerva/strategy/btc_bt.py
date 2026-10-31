@@ -186,6 +186,21 @@ def run_frame(frame: str, root: Path = OUT, stop: float | None = None) -> list[d
     return out
 
 
+def marked_levels(states: Sequence[TMState], window: int = 3) -> tuple[list[int], list[int]]:
+    """과열 후 1단 반전 (2026-11-01 사전 등록). Stoch 돌파·이탈 봉에 최근 CCI 과열을 요구한다."""
+    long_lv, short_lv = [0] * len(states), [0] * len(states)
+    for i in range(1, len(states)):
+        prev, cur = states[i - 1].stoch, states[i].stoch
+        if prev is None or cur is None:
+            continue
+        recent = [s.cci for s in states[max(0, i - window + 1) : i + 1] if s.cci is not None]
+        if prev <= 20 < cur and any(c <= -100 for c in recent):
+            long_lv[i] = 1
+        if prev >= 80 > cur and any(c >= 100 for c in recent):
+            short_lv[i] = 1
+    return long_lv, short_lv
+
+
 def close_times(frame: str, root: Path = OUT) -> list[int]:
     with (root / f"{frame}.csv").open() as f:
         return [int(r["close_time"]) for r in csv.DictReader(f)]

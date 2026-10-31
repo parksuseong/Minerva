@@ -171,3 +171,27 @@ def test_log_records_each_trade_return():
     rets = []
     bt.simulate(bars, [0, 1, 0, 0, 0], [0] * 5, 1, 1, cost=0, log=rets)
     assert rets == pytest.approx([1.0])
+
+
+def _state(stoch, cci):
+    from minerva.strategy.indicators import TMState
+
+    return TMState(date(2024, 1, 1), 1, stoch, cci, 50, 0, 0)
+
+
+def test_marked_needs_recent_cci_extreme():
+    states = [_state(10, -150), _state(15, -90), _state(30, -80), _state(10, -50), _state(30, -50)]
+    lo, sh = bt.marked_levels(states)
+    assert lo == [0, 0, 1, 0, 0] and sh == [0] * 5  # 마지막 돌파는 CCI 과열이 없다
+
+
+def test_marked_short_mirrors_long():
+    states = [_state(90, 300), _state(85, 150), _state(70, 120), _state(60, 90)]
+    states += [_state(90, 50), _state(70, 50)]
+    lo, sh = bt.marked_levels(states)
+    assert sh == [0, 0, 1, 0, 0, 0] and lo == [0] * 6
+
+
+def test_marked_ignores_cci_older_than_window():
+    states = [_state(10, -150), _state(10, -50), _state(10, -50), _state(30, -50)]
+    assert bt.marked_levels(states)[0] == [0, 0, 0, 0]

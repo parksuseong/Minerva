@@ -71,7 +71,8 @@ class Asset:
 
 
 KOSPI_TOP = 200  # 사용자 결정 2026-10-28: 50 → 200 (장기 백테스트 수익↑·낙폭↓)
-# 사용자 결정 2026-10-31: 신규 매수는 시총 상위 100까지. 분석·검증(BH 다중 검정)은 200 그대로다
+# 사용자 결정 2026-10-31: 신규 매수는 시총 상위 100까지. 분석·검증은 200 그대로이고,
+# 다중 검정은 살 수 있는 상위 100 안에서 따로 건다 (`apply_fdr_by_family`)
 TRADE_TOP = 100
 
 CORE = [
@@ -228,6 +229,22 @@ def apply_fdr(assets: list[dict], q: float | None = None) -> set[str]:
             v["label"] = "미검증"
             v["why"] = f"다중 검정 미통과 (p={v.get('p_value')}, q={q})"
     return passed
+
+
+def trade_family(assets: list[dict]) -> list[dict]:
+    """신규 매수가 가능한 시총 상위 종목. 분석 실패 종목도 순위에 넣어 `make_actions`와 맞춘다."""
+    return [a for a in assets if a["symbol"].endswith(".KS")][:TRADE_TOP]
+
+
+def apply_fdr_by_family(assets: list[dict], q: float | None = None) -> None:
+    """검정 묶음을 매수 범위와 맞춘다. 사지 않을 종목이 기준선을 올리지 않게 나머지는 따로 건다.
+
+    사용자 재량 결정 2026-10-31: `docs/backtests/2026-10-31-bh-scope-hypotheses.md`의 E1.
+    사전 등록은 통과하지 못했고, 수익 차이는 잡음 수준이다.
+    """
+    family = {a["symbol"] for a in trade_family(assets)}
+    apply_fdr([a for a in assets if a["symbol"] in family], q)
+    apply_fdr([a for a in assets if a["symbol"] not in family], q)
 
 
 MARKET_CLOSE = {
@@ -608,7 +625,7 @@ def build() -> dict:
             assets.append(futures[a.symbol].result())
         except Exception as exc:  # noqa: BLE001 — 한 종목 실패가 전체를 막지 않게
             assets.append({"symbol": a.symbol, "name": a.name, "error": type(exc).__name__})
-    apply_fdr(assets)
+    apply_fdr_by_family(assets)
     names = {a["symbol"]: a["name"] for a in assets} | {"QQQ": "나스닥100", "SOXX": "반도체"}
     with ThreadPoolExecutor(max_workers=4) as pool:
         pfut = {p.symbol: pool.submit(product_status, p, vix, names) for p in PRODUCTS}

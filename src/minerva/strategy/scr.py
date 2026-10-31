@@ -508,9 +508,10 @@ def monthly_report(daily: dict, vix: list[Bar], start: date, capital: float) -> 
     idx = dm.completed(fetch_yahoo("^KS11", "max", ttl=10**9), "KR")
     regime = dm._regime_by_day(vix, idx)
     park = pf.park_returns()
-    uni, _ = wf.load_universe(daily, vix, start)
-    ranked = [a["symbol"].split(".")[0] for a in daily["assets"] if a["symbol"].endswith(".KS")]
-    top = {"069500", *ranked[: dm.TRADE_TOP]}
+    family = dm.trade_family(daily["assets"])
+    pool = {**daily, "assets": family}  # 다중 검정 묶음을 실전과 같은 상위 100으로 맞춘다
+    uni, _ = wf.load_universe(pool, vix, start)
+    top = {"069500", *(a["symbol"].split(".")[0] for a in family)}
     spans = dm.block_spans(tm_states(resample(idx, "M")), dm.monthly_touches(idx))
     now = [block_entries(u, spans) for u in uni if u.code in top]
     days = [b.day for b in idx if b.day >= start]

@@ -549,3 +549,27 @@ def test_add_memo_failure_does_not_stop_analysis(monkeypatch):
     data = _plan_data()
     daily.add_memo(data, date(2026, 11, 2))
     assert data["memo"] == ["요약을 만들지 못했어요 (ZeroDivisionError)."] and data["plan"] == []
+
+
+def test_fdr_by_family_tests_top_100_apart_from_the_rest():
+    def asset(sym, p):
+        return {"symbol": sym, "verify": {"long": {"label": "검증됨", "trades": 40, "p_value": p}}}
+
+    stocks = [asset(f"{i:03d}.KS", 0.9) for i in range(150)]
+    stocks[50] = asset("050.KS", 0.0012)
+    us = asset("AAPL", 0.002)
+    assets = [*stocks, us]
+    # 151개를 한 번에 걸면 둘 다 떨어진다 (1위 기준 0.15/151 ≈ 0.00099, 2위 ≈ 0.00199)
+    daily.apply_fdr_by_family(assets, q=0.15)
+    label = lambda a: a["verify"]["long"]["label"]  # noqa: E731
+    assert label(stocks[50]) == "검증됨"
+    assert label(us) == "검증됨"  # 나머지 묶음은 참고용이고 따로 건다
+    assert label(stocks[0]) == "미검증"
+    assert [a["symbol"] for a in daily.trade_family(assets)][:2] == ["000.KS", "001.KS"]
+    assert len(daily.trade_family(assets)) == 100
+
+
+def test_trade_family_keeps_error_rows_in_rank_count():
+    rows = [{"symbol": f"{i:03d}.KS", "error": "x"} for i in range(100)]
+    rows.append({"symbol": "100.KS"})
+    assert "100.KS" not in {a["symbol"] for a in daily.trade_family(rows)}

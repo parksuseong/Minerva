@@ -69,6 +69,7 @@ class Asset:
     kind: str = "base"  # base / etf(지수 ETF)
     underlying: str = ""
     mult: int = 1
+    held_only: bool = False  # 순위 밖 봇 보유 종목: 청산 신호만 받고 새로 사지 않는다
 
 
 # 사용자 결정 2026-10-31: 분석·검증·신규 매수 모두 시총 상위 100 (200 → 100).
@@ -87,7 +88,7 @@ def held_outside(top: list[tuple[str, str]], owned: dict) -> list[Asset]:
     """순위 밖으로 밀린 봇 보유 종목. 빠뜨리면 청산 신호가 끊긴다."""
     known = {s for s, _ in top} | {p.symbol for p in PRODUCTS}
     held = [(f"{code}.KS", p.get("name", code)) for code, p in owned.items()]
-    return [Asset(s, n, "KR") for s, n in held if s not in known]
+    return [Asset(s, n, "KR", held_only=True) for s, n in held if s not in known]
 
 
 def watchlist() -> list[Asset]:
@@ -95,11 +96,14 @@ def watchlist() -> list[Asset]:
     kr = [Asset(s, n, "KR") for s, n in top]
     us = [Asset(s, n, "US") for s, n in nasdaq_top(10)]
     try:
-        owned = read_owned()
-    except (OSError, ValueError) as exc:  # 보유 파일이 깨져도 상위 종목의 청산 신호는 나가야 한다
+        held = held_outside(top, read_owned())
+    except Exception as exc:  # noqa: BLE001 — 보유 파일이 깨져도 상위 종목의 청산 신호는 나가야 한다
         print(f"보유 목록을 못 읽음: {exc}", file=sys.stderr)
-        owned = {}
-    return CORE + kr + held_outside(top, owned) + us
+        from minerva import notify
+
+        notify.send(f"⚠️ 봇 보유 목록을 못 읽었어요 ({type(exc).__name__}). 순위 밖 청산 확인 필요")
+        held = []
+    return CORE + kr + held + us
 
 
 # 사용자 방침: 숏·인버스·레버리지는 매매도 화면도 계산도 하지 않는다 (2026-10-30).
@@ -246,7 +250,8 @@ def apply_fdr(assets: list[dict], q: float | None = None) -> set[str]:
 
 def trade_family(assets: list[dict]) -> list[dict]:
     """신규 매수가 가능한 시총 상위 종목. 분석 실패 종목도 순위에 넣어 `make_actions`와 맞춘다."""
-    return [a for a in assets if a["symbol"].endswith(".KS")][:KOSPI_TOP]
+    stocks = [a for a in assets if a["symbol"].endswith(".KS") and not a.get("held_only")]
+    return stocks[:KOSPI_TOP]
 
 
 def apply_fdr_by_family(assets: list[dict], q: float | None = None) -> None:
@@ -638,6 +643,10 @@ def build() -> dict:
             assets.append(futures[a.symbol].result())
         except Exception as exc:  # noqa: BLE001 — 한 종목 실패가 전체를 막지 않게
             assets.append({"symbol": a.symbol, "name": a.name, "error": type(exc).__name__})
+    held = {a.symbol for a in universe if a.held_only}
+    for a in assets:
+        if a["symbol"] in held:
+            a["held_only"] = True
     apply_fdr_by_family(assets)
     names = {a["symbol"]: a["name"] for a in assets} | {"QQQ": "나스닥100", "SOXX": "반도체"}
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -720,7 +729,7 @@ def make_actions(assets: list[dict], products: list[dict], blocked: bool = False
     kr_days = [x["date"] for x in assets + products if x.get("market") == "KR" and "date" in x]
     latest = max(kr_days) if kr_days else ""
     # 분석 실패 종목은 market이 없어서 심볼로 센다. 봇 보유분의 청산은 순위와 무관하게 따른다
-    ranks = {x["symbol"]: i for i, x in enumerate(y for y in assets if y["symbol"].endswith(".KS"))}
+    ranks = {x["symbol"]: i for i, x in enumerate(trade_family(assets))}
     for a in assets:
         # 지수는 직접 살 수 없다. 코스피 신호는 KODEX 200(상품)으로만 주문한다
         if "error" in a or a["symbol"].startswith("^"):
@@ -728,7 +737,7 @@ def make_actions(assets: list[dict], products: list[dict], blocked: bool = False
         if a.get("market") == "KR" and a.get("date", latest) < latest:
             continue
         if a["tm"]["state"] == "진입 신호":
-            if not blocked and ranks.get(a["symbol"], 0) < KOSPI_TOP:
+            if not blocked and not a.get("held_only") and ranks.get(a["symbol"], 0) < KOSPI_TOP:
                 out.append(_action(a, "long", a["tm"], "LONG_ENTRY"))
         elif a["tm"]["state"] == "청산 신호":
             out.append(_action(a, "long", a["tm"], "LONG_EXIT"))

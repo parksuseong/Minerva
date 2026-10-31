@@ -4,7 +4,7 @@
 d 전날까지의 봉으로 `daily.verify`와 같은 판정(비용 차감 + BH 다중 검정)을 내고, 그달에는
 통과한 종목만 새로 산다. 이미 산 종목은 판정에서 빠져도 원래 청산 규칙(익절·기간·손절)대로 판다.
 
-한계: 후보는 오늘의 코스피 시총 상위 200이다(생존 편향). 실전은 주 1회 재검증이지만 연산량
+한계: 후보는 오늘의 코스피 시총 상위 100이다(생존 편향). 실전은 주 1회 재검증이지만 연산량
 때문에 월 1회로 한다. 우선순위용 p값·우위는 종목마다 마지막 통과 시점 값 하나만 쓴다.
 검증은 종목·날짜마다 수 초 걸려서 결과를 캐시에 쌓고, 끊기면 이어서 돈다.
 실행: `python -m minerva.strategy.portfolio --walk-forward --start 2021-10-29`
@@ -176,8 +176,8 @@ def load_universe(
     starts = month_starts([b.day for b in idx if b.day >= start])
     stocks = {
         a["symbol"]: a["name"]
-        for a in daily.get("assets", [])
-        if "error" not in a and a.get("market") == "KR" and not a["symbol"].startswith("^")
+        for a in dm.trade_family(daily.get("assets", []))
+        if "error" not in a and a.get("market") == "KR"
     }
     cache = run_verifications([INDEX, *stocks], starts, vix, path, workers, compute)
     months = passed_by_month(cache, list(stocks), starts, stay_q, sticky)

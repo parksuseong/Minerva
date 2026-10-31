@@ -1,4 +1,4 @@
-"""분석 대상 종목군: 코스피 시총 상위 200, 나스닥 시총 상위 10.
+"""분석 대상 종목군: 코스피 시총 상위 100, 나스닥 시총 상위 10.
 
 순위는 네이버 증권 공개 API에서 받아 하루 동안 캐시한다. 받기에 실패하면
 마지막 캐시를, 그것도 없으면 아래 고정 목록을 쓴다.
@@ -106,7 +106,7 @@ def _kospi_stocks(n: int) -> list[dict]:
     return stocks
 
 
-def kospi_top(n: int = 200) -> list[tuple[str, str]]:
+def kospi_top(n: int = 100) -> list[tuple[str, str]]:
     return _cached(f"kospi{n}", lambda: pick_kospi(_kospi_stocks(n), n), FALLBACK_KOSPI)
 
 

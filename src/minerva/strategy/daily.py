@@ -4,7 +4,7 @@
 - 확정된 일봉만 쓴다 (장중·당일 미마감 봉은 버림).
 - 규칙: momentum-tm §2 TM 눌림 롱, vol-regime §2-1 공포 초입 매수,
   §2 레짐 비중 한도.
-- 대상: 코스피 지수·시총 상위 200, S&P500·나스닥100 선물·나스닥 시총 상위 10, 비트코인,
+- 대상: 코스피 지수·시총 상위 100, S&P500·나스닥100 선물·나스닥 시총 상위 10, 비트코인,
   KODEX 200. 종목별 검증 여부는 자기 차트 백테스트로 자동 판정한다(`verify`).
 - `actions`: 오늘 낼 주문(롱 진입·롱 청산). 자동매매가 읽는 목록이다. 숏은 하지 않는다.
 """
@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import threading
 import zlib
 from concurrent.futures import ThreadPoolExecutor
@@ -70,10 +71,9 @@ class Asset:
     mult: int = 1
 
 
-KOSPI_TOP = 200  # 사용자 결정 2026-10-28: 50 → 200 (장기 백테스트 수익↑·낙폭↓)
-# 사용자 결정 2026-10-31: 신규 매수는 시총 상위 100까지. 분석·검증은 200 그대로이고,
-# 다중 검정은 살 수 있는 상위 100 안에서 따로 건다 (`apply_fdr_by_family`)
-TRADE_TOP = 100
+# 사용자 결정 2026-10-31: 분석·검증·신규 매수 모두 시총 상위 100 (200 → 100).
+# 밖으로 밀린 봇 보유 종목은 청산 신호를 받도록 분석에만 남긴다 (`watchlist`)
+KOSPI_TOP = 100
 
 CORE = [
     Asset("^KS11", "코스피", "KR"),
@@ -83,10 +83,23 @@ CORE = [
 ]
 
 
+def held_outside(top: list[tuple[str, str]], owned: dict) -> list[Asset]:
+    """순위 밖으로 밀린 봇 보유 종목. 빠뜨리면 청산 신호가 끊긴다."""
+    known = {s for s, _ in top} | {p.symbol for p in PRODUCTS}
+    held = [(f"{code}.KS", p.get("name", code)) for code, p in owned.items()]
+    return [Asset(s, n, "KR") for s, n in held if s not in known]
+
+
 def watchlist() -> list[Asset]:
-    kr = [Asset(s, n, "KR") for s, n in kospi_top(KOSPI_TOP)]
+    top = kospi_top(KOSPI_TOP)
+    kr = [Asset(s, n, "KR") for s, n in top]
     us = [Asset(s, n, "US") for s, n in nasdaq_top(10)]
-    return CORE + kr + us
+    try:
+        owned = read_owned()
+    except (OSError, ValueError) as exc:  # 보유 파일이 깨져도 상위 종목의 청산 신호는 나가야 한다
+        print(f"보유 목록을 못 읽음: {exc}", file=sys.stderr)
+        owned = {}
+    return CORE + kr + held_outside(top, owned) + us
 
 
 # 사용자 방침: 숏·인버스·레버리지는 매매도 화면도 계산도 하지 않는다 (2026-10-30).
@@ -233,11 +246,11 @@ def apply_fdr(assets: list[dict], q: float | None = None) -> set[str]:
 
 def trade_family(assets: list[dict]) -> list[dict]:
     """신규 매수가 가능한 시총 상위 종목. 분석 실패 종목도 순위에 넣어 `make_actions`와 맞춘다."""
-    return [a for a in assets if a["symbol"].endswith(".KS")][:TRADE_TOP]
+    return [a for a in assets if a["symbol"].endswith(".KS")][:KOSPI_TOP]
 
 
 def apply_fdr_by_family(assets: list[dict], q: float | None = None) -> None:
-    """검정 묶음을 매수 범위와 맞춘다. 사지 않을 종목이 기준선을 올리지 않게 나머지는 따로 건다.
+    """검정 묶음을 매수 범위와 맞춘다. 미국 종목 등이 기준선을 올리지 않게 나머지는 따로 건다.
 
     사용자 재량 결정 2026-10-31: `docs/backtests/2026-10-31-bh-scope-hypotheses.md`의 E1.
     사전 등록은 통과하지 못했고, 수익 차이는 잡음 수준이다.
@@ -715,7 +728,7 @@ def make_actions(assets: list[dict], products: list[dict], blocked: bool = False
         if a.get("market") == "KR" and a.get("date", latest) < latest:
             continue
         if a["tm"]["state"] == "진입 신호":
-            if not blocked and ranks.get(a["symbol"], 0) < TRADE_TOP:
+            if not blocked and ranks.get(a["symbol"], 0) < KOSPI_TOP:
                 out.append(_action(a, "long", a["tm"], "LONG_ENTRY"))
         elif a["tm"]["state"] == "청산 신호":
             out.append(_action(a, "long", a["tm"], "LONG_EXIT"))
@@ -853,7 +866,7 @@ def trade_memo(data: dict, today: date) -> list[str]:
 def buy_candidates(data: dict) -> list[str]:
     """지금 검증을 통과해 신호가 나면 살 수 있는 종목. KODEX 200이 맨 앞이다."""
     ok = lambda x: (x.get("verify", {}).get("long") or {}).get("label") == "검증됨"  # noqa: E731
-    stocks = [a for a in data["assets"] if a["symbol"].endswith(".KS")][:TRADE_TOP]
+    stocks = trade_family(data["assets"])
     return [x["name"] for x in data.get("products", []) + stocks if "error" not in x and ok(x)]
 
 

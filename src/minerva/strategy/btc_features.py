@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
 
@@ -170,9 +171,71 @@ def run(root=OUT) -> dict:
     return report
 
 
+def ols(xs: Sequence[Sequence[float]], ys: Sequence[float]) -> list[float]:
+    """절편 포함 최소제곱. 가우스 소거로 푼다."""
+    rows = [[1.0, *x] for x in xs]
+    n = len(rows[0])
+    m = [[sum(r[a] * r[b] for r in rows) for b in range(n)] for a in range(n)]
+    v = [sum(r[a] * y for r, y in zip(rows, ys)) for a in range(n)]
+    for i in range(n):
+        p = max(range(i, n), key=lambda r: abs(m[r][i]))
+        m[i], m[p], v[i], v[p] = m[p], m[i], v[p], v[i]
+        for r in range(n):
+            if r != i:
+                f = m[r][i] / m[i][i]
+                m[r] = [a - f * b for a, b in zip(m[r], m[i])]
+                v[r] -= f * v[i]
+    return [v[i] / m[i][i] for i in range(n)]
+
+
+def standardize(values: Sequence[float], ref: Sequence[float]) -> list[float]:
+    mean = sum(ref) / len(ref)
+    sd = (sum((x - mean) ** 2 for x in ref) / len(ref)) ** 0.5
+    return [(x - mean) / sd for x in values]
+
+
+def weights(root=OUT) -> dict:
+    """앞 구간에서 Stoch·CCI·RSI 가중치를 맞추고 뒤 구간에 적용한다 (2026-11-01 사전 등록)."""
+    bars = bt.load("15m", root)
+    states = tm_states(bars)
+    cut = bt.split_at(bars)
+    report = {}
+    for name, side, levels in (
+        ("롱", 1, [s.long_level for s in states]),
+        ("숏", -1, [s.short_level for s in states]),
+    ):
+        edge = bt.edges(levels, 1)
+        pts = []
+        for i in range(len(bars) - 1):
+            s = states[i]
+            if edge[i] and None not in (s.stoch, s.cci, s.rsi):
+                hit, end = first_touch(bars, i, side)
+                if hit is not None:
+                    pts.append((i, (s.stoch, s.cci, s.rsi), hit, end))
+        front = [p for p in pts if p[0] < cut]
+        cols = [[p[1][k] for p in pts] for k in range(3)]
+        refs = [[p[1][k] for p in front] for k in range(3)]
+        z = list(zip(*(standardize(c, r) for c, r in zip(cols, refs))))
+        n_front = len(front)
+        beta = ols(z[:n_front], [float(p[2]) for p in front])
+        score = [beta[0] + sum(b * x for b, x in zip(beta[1:], row)) for row in z]
+        cuts = quintiles(score[:n_front])
+        rows = [(p[0], bucket(sc, cuts), p[2], p[3]) for p, sc in zip(pts, score)]
+        report[name] = {
+            "weights": dict(zip(("절편", "Stoch", "CCI", "RSI"), beta)),
+            "front": summarize([r for r in rows if r[0] < cut], 5),
+            "back": summarize([r for r in rows if r[0] >= cut], 5),
+        }
+    return report
+
+
 def main() -> None:
-    path = OUT / "scr-features.json"
-    path.write_text(json.dumps(run(), ensure_ascii=False, indent=1))
+    if "--weights" in sys.argv:
+        path = OUT / "scr-weights.json"
+        path.write_text(json.dumps(weights(), ensure_ascii=False, indent=1))
+    else:
+        path = OUT / "scr-features.json"
+        path.write_text(json.dumps(run(), ensure_ascii=False, indent=1))
     print("wrote", path)
 
 

@@ -56,3 +56,13 @@ def test_summarize_drops_overlapping_signals():
     got = bf.summarize(events, 2)
     assert got[0] == {"bin": 0, "n": 2, "rate": 0.5}
     assert got[1]["n"] == 1
+
+
+def test_ols_recovers_known_line():
+    xs = [(1.0, 0.0), (2.0, 1.0), (3.0, 5.0), (4.0, 2.0)]
+    ys = [1 + 2 * a - 3 * b for a, b in xs]
+    assert bf.ols(xs, ys) == pytest.approx([1, 2, -3])
+
+
+def test_standardize_uses_reference_sample():
+    assert bf.standardize([3.0], [1.0, 3.0]) == pytest.approx([1.0])

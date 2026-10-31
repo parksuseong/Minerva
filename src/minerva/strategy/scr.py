@@ -428,6 +428,15 @@ def live_variant(u: pf.Instrument, plan: Plan, name: str) -> pf.Instrument:
     return u
 
 
+def block_entries(u: pf.Instrument, spans: list[tuple[date, date | None]]) -> pf.Instrument:
+    """월봉 제한 구간의 신규 매수를 뺀다. 신호 달 다음 날부터 해제 달 마감일까지다."""
+
+    def blocked(d: date) -> bool:
+        return any(a < d and (b is None or d <= b) for a, b in spans)
+
+    return replace(u, entry={d: v and not blocked(d) for d, v in u.entry.items()})
+
+
 def compare_live(daily: dict, vix: list[Bar], capital: float) -> None:
     from minerva.strategy import walkforward as wf
 
@@ -454,9 +463,16 @@ def compare_live(daily: dict, vix: list[Bar], capital: float) -> None:
     for name, uni, days in segments:
         kept = [u for u in uni if u.code in plans]
         print(name, "종목", len(uni), "사용", len(kept), flush=True)
-        for label in ("현행", "L1", "L2", "L3"):
+        spans = dm.block_spans(tm_states(resample(idx, "M")))
+        ranked = [a["symbol"].split(".")[0] for a in daily["assets"] if a["symbol"].endswith(".KS")]
+        top = {"069500", *ranked[: dm.TRADE_TOP]}
+        for label in ("현행", "L1", "L2", "L3", "M1", "M1-100"):
             hold = 10**6 if label in ("L1", "L2") else 20
             cooked = [live_variant(u, plans[u.code], label) for u in kept]
+            if label.startswith("M1"):
+                cooked = [block_entries(u, spans) for u in cooked]
+            if label == "M1-100":
+                cooked = [u for u in cooked if u.code in top]
             for limit in (trade.GAP_BUFFER, None):
                 cfg = pf.Config(capital=capital, limit=limit, park=park, hold=hold)
                 r = pf.simulate(cooked, days, regime, cfg)

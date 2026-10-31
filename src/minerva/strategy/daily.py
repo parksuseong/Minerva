@@ -32,6 +32,7 @@ from minerva.strategy.backtest import (
 )
 from minerva.strategy.indicators import (
     Bar,
+    TMState,
     ma_snapshot,
     resample,
     sma,
@@ -517,17 +518,13 @@ def _vix_tables(vix: list[Bar]) -> tuple:
     return hit
 
 
-def monthly_block(bars: list[Bar], today: date) -> dict:
-    """코스피 월봉 3단 과매수 이탈 뒤 신규 매수 제한 (사용자 결정 2026-10-31).
+MONTHLY_MIN = 60  # 이보다 짧으면 이전 신호를 놓쳐 제한 상태를 알 수 없다
+MONTHLY_GAP = 7  # 달력일. 긴 연휴보다 길게 비면 자료가 끊긴 것으로 본다
 
-    CCI<0 또는 RSI<50을 거쳐 CCI>0·RSI>50으로 돌아온 달에 풀린다. 진행 중인 달은 쓰지 않는다.
-    근거: `docs/backtests/2026-10-31-monthly-block-hypotheses.md`.
-    """
-    months = [
-        s
-        for s in tm_states(resample(bars, "M"))
-        if (s.day.year, s.day.month) != (today.year, today.month)
-    ]
+
+def block_spans(months: list[TMState]) -> list[tuple[date, date | None]]:
+    """코스피 월봉 3단 과매수 이탈부터 CCI<0 또는 RSI<50을 거쳐 회복한 달까지. None은 진행 중."""
+    spans: list[tuple[date, date | None]] = []
     since, dipped = None, False
     for prev, cur in zip(months, months[1:]):
         if since is None:
@@ -536,7 +533,33 @@ def monthly_block(bars: list[Bar], today: date) -> dict:
         elif (cur.cci or 0) < 0 or (cur.rsi or 100) < 50:
             dipped = True
         elif dipped:
+            spans.append((since, cur.day))
             since = None
+    return spans + [(since, None)] if since else spans
+
+
+def closed_block(why: str) -> dict:
+    """상태를 모르면 신규 매수를 막는다. 청산은 계속 나간다."""
+    return {"blocked": True, "since": None, "error": why}
+
+
+def monthly_block(bars: list[Bar], today: date) -> dict:
+    """사용자 결정 2026-10-31. 근거: `docs/backtests/2026-10-31-monthly-block-hypotheses.md`."""
+    if not bars:
+        return closed_block("자료 없음")
+    last = bars[-1].day
+    month_end = (last.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    if (min(today, month_end) - last).days > MONTHLY_GAP:
+        return closed_block(f"자료 끊김 {last}")  # 끊긴 달을 마감된 달로 오해하지 않게
+    months = [
+        s
+        for s in tm_states(resample(bars, "M"))
+        if (s.day.year, s.day.month) != (today.year, today.month)
+    ]
+    if len(months) < MONTHLY_MIN:
+        return closed_block(f"자료 부족 {len(months)}개월")
+    spans = block_spans(months)
+    since = spans[-1][0] if spans and spans[-1][1] is None else None
     return {"blocked": since is not None, "since": since.isoformat() if since else None}
 
 
@@ -549,7 +572,10 @@ def build() -> dict:
     w5, w10, calm = weekly_gate_at(vix_weekly(vix), today)
     regime = gated_regime(raw, calm)
     gate = {"w5": _r(w5), "w10": _r(w10), "open": calm}
-    block = monthly_block(completed(fetch_yahoo("^KS11", "max"), "KR"), today)
+    try:
+        block = monthly_block(completed(fetch_yahoo("^KS11", "max"), "KR"), today)
+    except Exception as exc:  # noqa: BLE001 — 지수 조회 실패가 청산 신호까지 막지 않게
+        block = closed_block(type(exc).__name__)
     universe = watchlist()
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {a.symbol: pool.submit(analyze, a, vix, gate) for a in universe}
@@ -719,7 +745,10 @@ def write_summary(data: dict) -> list[str]:
         out.append(f"공포 초입 매수: {f['state']}.")
     block = data.get("market_block") or {}
     if block.get("blocked"):
-        out.append(f"코스피 월봉 3단 이탈({block['since'][:7]})로 신규 매수 제한 중이에요.")
+        if block.get("since"):
+            out.append(f"코스피 월봉 3단 이탈({block['since'][:7]})로 신규 매수 제한 중이에요.")
+        else:
+            out.append(f"코스피 자료 문제로 신규 매수를 막았어요 ({block.get('error')}).")
     acts = data.get("actions", [])
     if acts:
         ok = [x for x in acts if x["verified"]]

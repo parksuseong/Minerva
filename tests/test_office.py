@@ -106,6 +106,18 @@ def test_office_panel_is_on_main_page():
     assert client.get("/office").status_code == 404
 
 
+def test_btc_endpoint_pending_then_data(tmp_path, monkeypatch):
+    out = tmp_path / "latest.json"
+    monkeypatch.setenv("MINERVA_BTC_OUT", str(out))
+    client = TestClient(app)
+    assert client.get("/api/btc").json()["status"] == "pending"
+    out.write_text(json.dumps({"symbol": "BTCUSDT", "frames": []}))
+    assert client.get("/api/btc").json()["symbol"] == "BTCUSDT"
+    page = client.get("/").text
+    assert 'id="tab-btc"' in page and "/static/btc.js" in page
+    assert client.get("/static/btc.js").status_code == 200
+
+
 def test_daily_endpoint_pending_then_data(tmp_path, monkeypatch):
     out = tmp_path / "latest.json"
     monkeypatch.setenv("MINERVA_DAILY_OUT", str(out))

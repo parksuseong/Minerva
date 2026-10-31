@@ -23,6 +23,10 @@ from minerva import perf
 router = APIRouter()
 
 
+def btc_path() -> Path:
+    return Path(os.environ.get("MINERVA_BTC_OUT", "~/.minerva/btc/latest.json")).expanduser()
+
+
 def daily_path() -> Path:
     return Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
 
@@ -52,6 +56,14 @@ def daily_analysis() -> dict:
     data = _read(daily_path())
     if data is None:
         return {"status": "pending", "message": "아직 오늘 분석이 없어요 (09:10·16:30 자동 실행)"}
+    return data
+
+
+@router.get("/api/btc")
+def btc_analysis() -> dict:
+    data = _read(btc_path())
+    if data is None:
+        return {"status": "pending", "message": "아직 비트코인 분석이 없어요 (15분마다 자동 실행)"}
     return data
 
 

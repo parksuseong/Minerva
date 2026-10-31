@@ -1,0 +1,12 @@
+# BTCUSDT 롱/숏 분석을 갱신한다. 표시 전용이다. minerva-btc.timer가 실행한다.
+# 설치: sudo cp deploy/minerva-btc.* /etc/systemd/system/ && sudo systemctl enable --now minerva-btc.timer
+[Unit]
+Description=Minerva BTCUSDT analysis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.strategy.btc

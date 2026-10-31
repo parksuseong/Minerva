@@ -114,9 +114,26 @@
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="today" aria-selected="true">🎯 오늘 할 일</button>
     <button role="tab" data-tab="analysis" aria-selected="false">📈 종목 분석</button>
+    <button role="tab" data-tab="btc" aria-selected="false">₿ 비트코인</button>
     <button role="tab" data-tab="account" aria-selected="false">💼 계좌</button>
     <button role="tab" data-tab="office" aria-selected="false">🏢 오피스</button>
   </nav>
+
+  <div class="panel" id="tab-btc" hidden>
+    <section class="card">
+      <h2>₿ BTCUSDT 롱/숏 분석</h2>
+      <div id="btc-meta" class="placeholder">불러오는 중…</div>
+    </section>
+    <section class="card">
+      <h2>봉별 상태</h2>
+      <div id="btc-frames" class="placeholder">-</div>
+    </section>
+    <section class="card">
+      <h2>최근 신호</h2>
+      <div id="btc-last" class="placeholder">-</div>
+      <p class="mini">분석 전용이에요. 자동매매와 연결되지 않고 주문은 나가지 않아요.</p>
+    </section>
+  </div>
 
   <div class="panel" id="tab-today">
     <section class="card" id="trade-memo" hidden>
@@ -261,6 +278,7 @@
     })();
   </script>
   <script src="/static/daily.js?v=20261031b"></script>
+  <script src="/static/btc.js?v=20261031"></script>
   <script src="/static/account.js?v=20261029b"></script>
   <script src="/static/trade.js?v=20261029"></script>
   <script src="/static/office.js?v=20261029b"></script>

@@ -1,0 +1,130 @@
+"""비트코인 탭: BTCUSDT 롱/숏 분석. 표시 전용이고 주문과 연결되지 않는다 (사용자 요청 2026-10-31).
+
+봉마다 마감된 봉으로 삼중 모멘텀을 계산한다. 방향은 CCI·RSI가 기준선 위아래에 있는지로 본다.
+자료는 바이낸스 공개 시세다. api.binance.com은 미국 서버를 막아서 시세 전용 주소를 쓴다.
+실행: `python -m minerva.strategy.btc`
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from minerva.strategy.indicators import Bar, TMState, tm_states
+
+SYMBOL = "BTCUSDT"
+URL = "https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval={iv}&limit={n}"
+LIMIT = 1000
+FRAMES = (("4h", "4시간봉"), ("1d", "일봉"), ("1w", "주봉"), ("1M", "월봉"))
+OUT = Path(os.environ.get("MINERVA_BTC_OUT", "~/.minerva/btc/latest.json")).expanduser()
+KST = timezone(timedelta(hours=9))
+
+
+def fetch(interval: str) -> list[list]:
+    url = URL.format(sym=SYMBOL, iv=interval, n=LIMIT)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.load(r)
+
+
+def parse(rows: list[list], now_ms: int) -> tuple[list[Bar], list[datetime]]:
+    """마감된 봉과 그 시작 시각(KST). 진행 중인 봉은 뺀다."""
+    bars, opened = [], []
+    for r in rows:
+        if r[6] >= now_ms:
+            continue
+        t = datetime.fromtimestamp(r[0] / 1000, KST)
+        bars.append(Bar(t.date(), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])))
+        opened.append(t)
+    return bars, opened
+
+
+def direction(s: TMState) -> str:
+    if s.cci is None or s.rsi is None:
+        return "중립"
+    if s.cci > 0 and s.rsi > 50:
+        return "상방"
+    if s.cci < 0 and s.rsi < 50:
+        return "하방"
+    return "중립"
+
+
+def _r(v: float | None, n: int = 1) -> float | None:
+    return None if v is None else round(v, n)
+
+
+def last_signal(states: list[TMState], opened: list[datetime], side: str) -> dict | None:
+    for s, t in zip(reversed(states), reversed(opened)):
+        level = getattr(s, f"{side}_level")
+        if level:
+            return {"level": level, "at": t.strftime("%Y-%m-%d %H:%M"), "close": _r(s.close, 2)}
+    return None
+
+
+def frame_status(key: str, name: str, bars: list[Bar], opened: list[datetime]) -> dict:
+    states = tm_states(bars)
+    s = states[-1]
+    return {
+        "frame": key,
+        "name": name,
+        "at": opened[-1].strftime("%Y-%m-%d %H:%M"),
+        "close": _r(s.close, 2),
+        "stoch": _r(s.stoch),
+        "cci": _r(s.cci),
+        "rsi": _r(s.rsi),
+        "long_level": s.long_level,
+        "short_level": s.short_level,
+        "direction": direction(s),
+        "last_long": last_signal(states, opened, "long"),
+        "last_short": last_signal(states, opened, "short"),
+    }
+
+
+def summary(frames: list[dict]) -> list[str]:
+    def names(way: str) -> tuple[int, str]:
+        hit = [f["name"] for f in frames if f["direction"] == way]
+        return len(hit), ", ".join(hit) or "없음"
+
+    out = ["상방 {}개({}), ".format(*names("상방")) + "하방 {}개({})예요.".format(*names("하방"))]
+    for side, label in (("long", "롱"), ("short", "숏")):
+        now = [f"{f['name']} {f[side + '_level']}단" for f in frames if f[side + "_level"]]
+        out.append(f"{label} 신호: {', '.join(now)}." if now else f"{label} 신호는 지금 없어요.")
+    return out
+
+
+def build(now: datetime | None = None) -> dict:
+    now = now or datetime.now(KST)
+    now_ms = int(now.timestamp() * 1000)
+    frames = []
+    for key, name in FRAMES:
+        bars, opened = parse(fetch(key), now_ms)
+        if len(bars) < 30:
+            raise ValueError(f"{key} 봉이 {len(bars)}개뿐이다")
+        frames.append(frame_status(key, name, bars, opened))
+    return {
+        "generated_at": now.isoformat(timespec="seconds"),
+        "symbol": SYMBOL,
+        "frames": frames,
+        "summary": summary(frames),
+    }
+
+
+def main(argv: list[str] | None = None) -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--out", default=str(OUT))
+    args = p.parse_args(argv)
+    data = build()
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+    tmp.replace(out)
+    print(f"wrote {out}")
+
+
+if __name__ == "__main__":
+    main()

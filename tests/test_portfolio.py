@@ -27,6 +27,7 @@ def test_buys_next_open_and_exits_on_take():
     u = _inst("A", prices, [days[0]], [days[4]])
     r = pf.simulate([u], days, {d: "R1" for d in days}, pf.Config(capital=10_000))
     assert r.trades == 2 and r.final > 10_000  # 101에 사서 105에 판다 (비용 차감)
+    assert r.fills == [(days[1], "A", "buy"), (days[5], "A", "sell")]
 
 
 def test_stop_loss_and_cash_limit():

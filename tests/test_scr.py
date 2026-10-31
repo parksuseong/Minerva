@@ -195,3 +195,14 @@ def test_live_variant_l3_keeps_only_full_score_entries():
     p = _plan(days, [100] * 2, score={days[0]: 3, days[1]: 2})
     entry = scr.live_variant(u, p, "L3").entry
     assert entry == {days[0]: True, days[1]: False}
+
+
+def test_monthly_table_counts_fills_and_compounds():
+    from minerva.strategy import portfolio as pf
+
+    a, b = date(2024, 1, 31), date(2024, 2, 29)
+    res = pf.Result(121, 0, 0, 2, 0, [(a, 110), (b, 121)], [], [(a, "A", "buy"), (b, "A", "sell")])
+    rows = scr.monthly_table(res, 100)
+    assert [r[0] for r in rows] == ["2024-01", "2024-02"]
+    assert abs(rows[0][1] - 0.10) < 1e-9 and abs(rows[1][1] - 0.10) < 1e-9
+    assert (rows[0][2], rows[0][3], rows[1][2], rows[1][3]) == (1, 0, 0, 1)

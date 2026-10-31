@@ -88,6 +88,7 @@ class Result:
     exposure: float
     equity: list[tuple[date, float]] = field(default_factory=list)
     unfilled: list[tuple[date, str, float]] = field(default_factory=list)  # 날짜, 코드, 시가/지정가
+    fills: list[tuple[date, str, str]] = field(default_factory=list)  # 날짜, 코드, buy/sell
 
 
 def _signals_for(src: list[Bar], kind: str, vix: list[Bar], mode: str = "tm") -> tuple[dict, dict]:
@@ -185,6 +186,7 @@ def simulate(
     pending_buy: list[tuple[str, int, float]] = []
     curve, invested, trades = [], [], 0
     unfilled: list[tuple[date, str, float]] = []
+    fills: list[tuple[date, str, str]] = []
     last_px: dict[str, float] = {}
 
     def value(code: str) -> float:
@@ -204,6 +206,7 @@ def simulate(
                 del pos[code]
             del pending_sell[code]
             trades += 1
+            fills.append((day, code, "sell"))
         for code, qty, ref in pending_buy:
             bar = by[code].prices.get(day)
             if bar is None or code in pos:
@@ -221,6 +224,7 @@ def simulate(
             cash -= qty * px * (1 + _cost(code, "buy"))
             pos[code] = Pos(qty, px, t)
             trades += 1
+            fills.append((day, code, "buy"))
         pending_buy = []
         # 2) 장중 손절
         for code in list(pos):
@@ -234,6 +238,7 @@ def simulate(
                 del pos[code]
                 pending_sell.pop(code, None)
                 trades += 1
+                fills.append((day, code, "sell"))
         if cfg.park is not None:
             # 파킹 이자, 그리고 매매 때마다 ETF를 사고파는 비용
             cash -= abs(cash - cash0) * _cost(PARK_CODE, "buy")
@@ -316,6 +321,7 @@ def simulate(
         sum(invested) / len(invested) if invested else 0,
         curve,
         unfilled,
+        fills,
     )
 
 

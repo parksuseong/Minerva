@@ -520,8 +520,8 @@ def _vix_tables(vix: list[Bar]) -> tuple:
 def monthly_block(bars: list[Bar], today: date) -> dict:
     """코스피 월봉 3단 과매수 이탈 뒤 신규 매수 제한 (사용자 결정 2026-10-31).
 
-    CCI<0 또는 RSI<50을 거쳐 CCI>0·RSI>50으로 돌아온 달에 풀린다. 진행 중인 달은 쓰지 않아서
-    새 달 첫 거래일 분석부터 반영된다. 근거: `docs/backtests/2026-10-31-monthly-block-hypotheses.md`.
+    CCI<0 또는 RSI<50을 거쳐 CCI>0·RSI>50으로 돌아온 달에 풀린다. 진행 중인 달은 쓰지 않는다.
+    근거: `docs/backtests/2026-10-31-monthly-block-hypotheses.md`.
     """
     months = [
         s

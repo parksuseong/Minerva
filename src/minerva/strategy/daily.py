@@ -70,6 +70,8 @@ class Asset:
 
 
 KOSPI_TOP = 200  # 사용자 결정 2026-10-28: 50 → 200 (장기 백테스트 수익↑·낙폭↓)
+# 사용자 결정 2026-10-31: 신규 매수는 시총 상위 100까지. 분석·검증(BH 다중 검정)은 200 그대로다
+TRADE_TOP = 100
 
 CORE = [
     Asset("^KS11", "코스피", "KR"),
@@ -613,6 +615,8 @@ def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
     # 국내 종목 중 마지막 봉이 다른 종목보다 오래된 것(거래정지·자료 지연)은 묵은 신호라 뺀다
     kr_days = [x["date"] for x in assets + products if x.get("market") == "KR" and "date" in x]
     latest = max(kr_days) if kr_days else ""
+    # 분석 실패 종목은 market이 없어서 심볼로 센다. 봇 보유분의 청산은 순위와 무관하게 따른다
+    ranks = {x["symbol"]: i for i, x in enumerate(y for y in assets if y["symbol"].endswith(".KS"))}
     for a in assets:
         # 지수는 직접 살 수 없다. 코스피 신호는 KODEX 200(상품)으로만 주문한다
         if "error" in a or a["symbol"].startswith("^"):
@@ -620,7 +624,8 @@ def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
         if a.get("market") == "KR" and a.get("date", latest) < latest:
             continue
         if a["tm"]["state"] == "진입 신호":
-            out.append(_action(a, "long", a["tm"], "LONG_ENTRY"))
+            if ranks.get(a["symbol"], 0) < TRADE_TOP:
+                out.append(_action(a, "long", a["tm"], "LONG_ENTRY"))
         elif a["tm"]["state"] == "청산 신호":
             out.append(_action(a, "long", a["tm"], "LONG_EXIT"))
     for p in products:

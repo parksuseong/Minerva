@@ -290,3 +290,68 @@ def test_make_actions_limits_new_buys_to_trade_top_but_keeps_exits():
         (f"{daily.TRADE_TOP - 1:06d}.KS", "LONG_ENTRY"),
         (f"{daily.TRADE_TOP + 1:06d}.KS", "LONG_EXIT"),
     }
+
+
+def _monthly(monkey_states):
+    from minerva.strategy.indicators import TMState
+
+    return [TMState(d, 100, 50, c, r, 0, s) for d, c, r, s in monkey_states]
+
+
+def test_monthly_block_starts_on_exit_and_clears_after_dip_and_recovery(monkeypatch):
+    from datetime import date
+
+    from minerva.strategy import daily
+
+    rows = [
+        (date(2026, 1, 31), 150, 75, 0),
+        (date(2026, 2, 28), 90, 65, 3),
+        (date(2026, 3, 31), 40, 55, 0),
+        (date(2026, 4, 30), -20, 45, 0),
+        (date(2026, 5, 31), 30, 55, 0),
+        (date(2026, 6, 30), 30, 55, 0),
+    ]
+    monkeypatch.setattr(daily, "resample", lambda bars, frame: bars)
+
+    def block(upto, today):
+        monkeypatch.setattr(daily, "tm_states", lambda bars: _monthly(rows[:upto]))
+        return daily.monthly_block([], today)
+
+    assert block(1, date(2026, 2, 3)) == {"blocked": False, "since": None}
+    assert block(3, date(2026, 4, 1)) == {"blocked": True, "since": "2026-02-28"}
+    assert block(4, date(2026, 5, 1))["blocked"]
+    assert not block(5, date(2026, 6, 1))["blocked"]
+
+
+def test_monthly_block_ignores_month_in_progress(monkeypatch):
+    from datetime import date
+
+    from minerva.strategy import daily
+
+    rows = [(date(2026, 1, 31), 150, 75, 0), (date(2026, 2, 13), 90, 65, 3)]
+    monkeypatch.setattr(daily, "resample", lambda bars, frame: bars)
+    monkeypatch.setattr(daily, "tm_states", lambda bars: _monthly(rows))
+    assert not daily.monthly_block([], date(2026, 2, 13))["blocked"]
+    assert daily.monthly_block([], date(2026, 3, 2))["blocked"]
+
+
+def test_make_actions_blocked_keeps_exits_only():
+    from minerva.strategy import daily
+
+    def item(sym, state):
+        return {
+            "symbol": sym,
+            "name": sym,
+            "market": "KR",
+            "date": "2026-10-30",
+            "close": 100,
+            "adv": 1,
+            "verify": {"long": {"label": "검증됨"}},
+            "tm": {"state": state, "signal": "", "stop": 0, "take": "", "days_held": 0},
+        }
+
+    assets = [item("000001.KS", "진입 신호"), item("000002.KS", "청산 신호")]
+    products = [item("069500.KS", "진입 신호")]
+    got = daily.make_actions(assets, products, True)
+    assert [(a["symbol"], a["action"]) for a in got] == [("000002.KS", "LONG_EXIT")]
+    assert len(daily.make_actions(assets, products)) == 3

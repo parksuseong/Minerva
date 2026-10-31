@@ -374,8 +374,8 @@ def load(daily: dict) -> tuple[list[tuple], list[Bar]]:
     rows = [("069500.KS", "KODEX 200", trade.INDEX_ETF_WEIGHT)]
     rows += [
         (a["symbol"], a["name"], trade.WEIGHT)
-        for a in daily["assets"]
-        if "error" not in a and a.get("market") == "KR" and not a["symbol"].startswith("^")
+        for a in dm.trade_family(daily["assets"])
+        if "error" not in a and a.get("market") == "KR"
     ]
     return rows, vix
 
@@ -465,7 +465,7 @@ def compare_live(daily: dict, vix: list[Bar], capital: float) -> None:
         print(name, "종목", len(uni), "사용", len(kept), flush=True)
         spans = dm.block_spans(tm_states(resample(idx, "M")), dm.monthly_touches(idx))
         ranked = [a["symbol"].split(".")[0] for a in daily["assets"] if a["symbol"].endswith(".KS")]
-        top = {"069500", *ranked[: dm.TRADE_TOP]}
+        top = {"069500", *ranked[: dm.KOSPI_TOP]}
         for label in ("현행", "L1", "L2", "L3", "M1", "M1-100"):
             hold = 10**6 if label in ("L1", "L2") else 20
             cooked = [live_variant(u, plans[u.code], label) for u in kept]
@@ -508,10 +508,8 @@ def monthly_report(daily: dict, vix: list[Bar], start: date, capital: float) -> 
     idx = dm.completed(fetch_yahoo("^KS11", "max", ttl=10**9), "KR")
     regime = dm._regime_by_day(vix, idx)
     park = pf.park_returns()
-    family = dm.trade_family(daily["assets"])
-    pool = {**daily, "assets": family}  # 다중 검정 묶음을 실전과 같은 상위 100으로 맞춘다
-    uni, _ = wf.load_universe(pool, vix, start)
-    top = {"069500", *(a["symbol"].split(".")[0] for a in family)}
+    uni, _ = wf.load_universe(daily, vix, start)
+    top = {"069500", *(a["symbol"].split(".")[0] for a in dm.trade_family(daily["assets"]))}
     spans = dm.block_spans(tm_states(resample(idx, "M")), dm.monthly_touches(idx))
     now = [block_entries(u, spans) for u in uni if u.code in top]
     days = [b.day for b in idx if b.day >= start]

@@ -282,14 +282,14 @@ def test_make_actions_limits_new_buys_to_trade_top_but_keeps_exits():
             "tm": tm,
         }
 
-    assets = [asset(i, "대기") for i in range(daily.TRADE_TOP + 2)]
-    assets[daily.TRADE_TOP - 1] = asset(daily.TRADE_TOP - 1, "진입 신호")
-    assets[daily.TRADE_TOP] = asset(daily.TRADE_TOP, "진입 신호")
-    assets[daily.TRADE_TOP + 1] = asset(daily.TRADE_TOP + 1, "청산 신호")
+    assets = [asset(i, "대기") for i in range(daily.KOSPI_TOP + 2)]
+    assets[daily.KOSPI_TOP - 1] = asset(daily.KOSPI_TOP - 1, "진입 신호")
+    assets[daily.KOSPI_TOP] = asset(daily.KOSPI_TOP, "진입 신호")
+    assets[daily.KOSPI_TOP + 1] = asset(daily.KOSPI_TOP + 1, "청산 신호")
     got = {(a["symbol"], a["action"]) for a in daily.make_actions(assets, [])}
     assert got == {
-        (f"{daily.TRADE_TOP - 1:06d}.KS", "LONG_ENTRY"),
-        (f"{daily.TRADE_TOP + 1:06d}.KS", "LONG_EXIT"),
+        (f"{daily.KOSPI_TOP - 1:06d}.KS", "LONG_ENTRY"),
+        (f"{daily.KOSPI_TOP + 1:06d}.KS", "LONG_EXIT"),
     }
 
 
@@ -577,3 +577,48 @@ def test_trade_family_keeps_error_rows_in_rank_count():
     rows = [{"symbol": f"{i:03d}.KS", "error": "x"} for i in range(100)]
     rows.append({"symbol": "100.KS"})
     assert "100.KS" not in {a["symbol"] for a in daily.trade_family(rows)}
+
+
+def test_watchlist_keeps_held_stock_outside_top_for_exits(monkeypatch):
+    top = [("005930.KS", "삼성전자")]
+    monkeypatch.setattr(daily, "kospi_top", lambda n: top)
+    monkeypatch.setattr(daily, "nasdaq_top", lambda n: [("AAPL", "애플")])
+    owned = {
+        "005930": {"name": "삼성전자"},
+        "069500": {"name": "KODEX 200"},
+        "000720": {"name": "현대건설"},
+    }
+    monkeypatch.setattr(daily, "read_owned", lambda: owned)
+    symbols = [a.symbol for a in daily.watchlist()]
+    assert symbols.count("005930.KS") == 1 and "069500.KS" not in symbols
+    assert symbols.index("000720.KS") == symbols.index("005930.KS") + 1  # 상위 뒤에 온다
+
+
+def test_held_stock_outside_top_exits_but_cannot_be_bought():
+    def item(i, state):
+        return {
+            "symbol": f"{i:06d}.KS",
+            "name": str(i),
+            "market": "KR",
+            "date": "2026-10-30",
+            "close": 100,
+            "adv": 1,
+            "verify": {"long": {"label": "검증됨"}},
+            "tm": {"state": state, "signal": "", "stop": 0, "take": "", "days_held": 0},
+        }
+
+    rows = [item(i, "대기") for i in range(daily.KOSPI_TOP)]
+    held = item(daily.KOSPI_TOP, "청산 신호")
+    assert [a["action"] for a in daily.make_actions([*rows, held], [])] == ["LONG_EXIT"]
+    held = item(daily.KOSPI_TOP, "진입 신호")
+    assert daily.make_actions([*rows, held], []) == []
+
+
+def test_watchlist_survives_broken_positions_file(monkeypatch):
+    def broken():
+        raise ValueError("bad json")
+
+    monkeypatch.setattr(daily, "kospi_top", lambda n: [("005930.KS", "삼성전자")])
+    monkeypatch.setattr(daily, "nasdaq_top", lambda n: [])
+    monkeypatch.setattr(daily, "read_owned", broken)
+    assert "005930.KS" in [a.symbol for a in daily.watchlist()]

@@ -137,8 +137,8 @@ def load_universe(daily: dict, vix: list[Bar], codes: set[str] | None = None) ->
                 v.get("net_edge") or 0.0,
             )
         )
-    for a in daily.get("assets", []):
-        if "error" in a or a.get("market") != "KR" or a["symbol"].startswith("^"):
+    for a in dm.trade_family(daily.get("assets", [])):
+        if "error" in a or a.get("market") != "KR":
             continue
         v = a["verify"]["long"]
         code = a["symbol"].split(".")[0]

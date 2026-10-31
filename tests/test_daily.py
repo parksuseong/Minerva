@@ -455,7 +455,10 @@ def test_build_keeps_exit_flow_when_index_fetch_fails(monkeypatch):
     monkeypatch.setattr(daily, "watchlist", lambda: [])
     monkeypatch.setattr(daily, "PRODUCTS", [])
     monkeypatch.setattr(daily, "fear_status", lambda v, m: {})
+    used = []
+    monkeypatch.setattr(daily, "apply_fdr_by_family", lambda a: used.append(a))
     assert daily.build()["market_block"] == daily.closed_block("OSError")
+    assert len(used) == 1  # 실전 분석이 묶음별 검정을 쓰는지
 
 
 def test_make_actions_blocked_keeps_exits_only():
@@ -564,6 +567,7 @@ def test_fdr_by_family_tests_top_100_apart_from_the_rest():
     label = lambda a: a["verify"]["long"]["label"]  # noqa: E731
     assert label(stocks[50]) == "검증됨"
     assert label(us) == "검증됨"  # 나머지 묶음은 참고용이고 따로 건다
+    assert label(stocks[120]) == "미검증"  # 나머지 묶음도 검정을 거친다
     assert label(stocks[0]) == "미검증"
     assert [a["symbol"] for a in daily.trade_family(assets)][:2] == ["000.KS", "001.KS"]
     assert len(daily.trade_family(assets)) == 100

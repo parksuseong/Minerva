@@ -123,3 +123,29 @@ def test_log_records_reason_and_won_pnl():
     scr.simulate([p], days, {d: "R1" for d in days}, 10_000, {}, log)
     assert [t["reason"] for t in log] == ["stop"]
     assert log[0]["opened"] == days[1] and log[0]["pnl"] < 0
+
+
+def _fail_run(days, closes, fail, **flags):
+    p = _plan(days, closes, entry={days[0]: True}, **flags)
+    return scr.simulate([p], days, {d: "R1" for d in days}, 10_000, {}, fail=fail)[0].trades
+
+
+def test_fail_any_sells_on_stoch_return_and_none_keeps_position():
+    days = _days(5)
+    low = {days[3]: True}
+    assert _fail_run(days, [100] * 5, "any", oversold=low) == 2
+    assert _fail_run(days, [100] * 5, None, oversold=low) == 1
+
+
+def test_fail_before80_ignores_return_after_overbought():
+    days = _days(6)
+    high, low = {days[2]: True}, {days[4]: True}
+    assert _fail_run(days, [100] * 6, "before80", oversold=low, overbought=high) == 1
+    assert _fail_run(days, [100] * 6, "before80", oversold=low) == 2
+
+
+def test_fail_ma50_needs_close_above_first():
+    days = _days(6)
+    up, down = {days[2]: True}, {days[4]: True}
+    assert _fail_run(days, [100] * 6, "ma50", below50=down) == 1
+    assert _fail_run(days, [100] * 6, "ma50", below50=down, above50=up) == 2

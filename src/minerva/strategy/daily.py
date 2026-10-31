@@ -737,7 +737,7 @@ def make_actions(assets: list[dict], products: list[dict], blocked: bool = False
         if a.get("market") == "KR" and a.get("date", latest) < latest:
             continue
         if a["tm"]["state"] == "진입 신호":
-            if not blocked and not a.get("held_only") and ranks.get(a["symbol"], 0) < KOSPI_TOP:
+            if not blocked and (a["symbol"] in ranks or not a["symbol"].endswith(".KS")):
                 out.append(_action(a, "long", a["tm"], "LONG_ENTRY"))
         elif a["tm"]["state"] == "청산 신호":
             out.append(_action(a, "long", a["tm"], "LONG_EXIT"))

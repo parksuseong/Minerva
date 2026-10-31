@@ -175,3 +175,23 @@ def test_frame_up_accepts_positive_values_or_rising_indicators():
     flat = TMState(d1, 100, 5, -40, 45, 0, 0)
     assert scr.frame_up([prev, up], d1)
     assert not scr.frame_up([prev, flat], d1)
+
+
+def test_live_variant_l2_holds_strong_and_sells_on_exit():
+    from minerva.strategy import portfolio as pf
+
+    days = _days(3)
+    u = pf.Instrument("A", "A", "long", 0.3, {}, {}, {days[0]: True, days[1]: True})
+    p = _plan(days, [100] * 3, strong={days[0]: True}, htf_exit={days[2]: True})
+    take = scr.live_variant(u, p, "L2").take
+    assert [take[d] for d in days] == [False, True, True]
+
+
+def test_live_variant_l3_keeps_only_full_score_entries():
+    from minerva.strategy import portfolio as pf
+
+    days = _days(2)
+    u = pf.Instrument("A", "A", "long", 0.3, {}, {days[0]: True, days[1]: True}, {})
+    p = _plan(days, [100] * 2, score={days[0]: 3, days[1]: 2})
+    entry = scr.live_variant(u, p, "L3").entry
+    assert entry == {days[0]: True, days[1]: False}

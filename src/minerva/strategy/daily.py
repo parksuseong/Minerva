@@ -517,6 +517,29 @@ def _vix_tables(vix: list[Bar]) -> tuple:
     return hit
 
 
+def monthly_block(bars: list[Bar], today: date) -> dict:
+    """코스피 월봉 3단 과매수 이탈 뒤 신규 매수 제한 (사용자 결정 2026-10-31).
+
+    CCI<0 또는 RSI<50을 거쳐 CCI>0·RSI>50으로 돌아온 달에 풀린다. 진행 중인 달은 쓰지 않아서
+    새 달 첫 거래일 분석부터 반영된다. 근거: `docs/backtests/2026-10-31-monthly-block-hypotheses.md`.
+    """
+    months = [
+        s
+        for s in tm_states(resample(bars, "M"))
+        if (s.day.year, s.day.month) != (today.year, today.month)
+    ]
+    since, dipped = None, False
+    for prev, cur in zip(months, months[1:]):
+        if since is None:
+            if cur.short_level == 3 and prev.short_level < 3:
+                since, dipped = cur.day, False
+        elif (cur.cci or 0) < 0 or (cur.rsi or 100) < 50:
+            dipped = True
+        elif dipped:
+            since = None
+    return {"blocked": since is not None, "since": since.isoformat() if since else None}
+
+
 def build() -> dict:
     vix = completed(fetch_yahoo("^VIX", "max"), "US")
     vix3m = completed(fetch_yahoo("^VIX3M", "max"), "US")
@@ -526,6 +549,7 @@ def build() -> dict:
     w5, w10, calm = weekly_gate_at(vix_weekly(vix), today)
     regime = gated_regime(raw, calm)
     gate = {"w5": _r(w5), "w10": _r(w10), "open": calm}
+    block = monthly_block(completed(fetch_yahoo("^KS11", "max"), "KR"), today)
     universe = watchlist()
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {a.symbol: pool.submit(analyze, a, vix, gate) for a in universe}
@@ -558,7 +582,8 @@ def build() -> dict:
             "gate": gate,
         },
         "fear": fear_status(vix, vix3m),
-        "actions": make_actions(assets, products),
+        "market_block": block,
+        "actions": make_actions(assets, products, block["blocked"]),
         "assets": assets,
         "products": products,
         "note": NOTE,
@@ -609,8 +634,8 @@ def _action(a: dict, side: str, st: dict, code: str) -> dict:
 ASSET_SIDES = ("long",)
 
 
-def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
-    """오늘 낼 주문 목록. 검증된 것을 앞에 둔다."""
+def make_actions(assets: list[dict], products: list[dict], blocked: bool = False) -> list[dict]:
+    """오늘 낼 주문 목록. 검증된 것을 앞에 둔다. blocked면 청산만 낸다."""
     out = []
     # 국내 종목 중 마지막 봉이 다른 종목보다 오래된 것(거래정지·자료 지연)은 묵은 신호라 뺀다
     kr_days = [x["date"] for x in assets + products if x.get("market") == "KR" and "date" in x]
@@ -624,7 +649,7 @@ def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
         if a.get("market") == "KR" and a.get("date", latest) < latest:
             continue
         if a["tm"]["state"] == "진입 신호":
-            if ranks.get(a["symbol"], 0) < TRADE_TOP:
+            if not blocked and ranks.get(a["symbol"], 0) < TRADE_TOP:
                 out.append(_action(a, "long", a["tm"], "LONG_ENTRY"))
         elif a["tm"]["state"] == "청산 신호":
             out.append(_action(a, "long", a["tm"], "LONG_EXIT"))
@@ -632,7 +657,8 @@ def make_actions(assets: list[dict], products: list[dict]) -> list[dict]:
         if "error" in p:
             continue
         if p["tm"]["state"] == "진입 신호":
-            out.append(_action(p, "long", p["tm"], "LONG_ENTRY"))
+            if not blocked:
+                out.append(_action(p, "long", p["tm"], "LONG_ENTRY"))
         elif p["tm"]["state"] == "청산 신호":
             out.append(_action(p, "long", p["tm"], "LONG_EXIT"))
     return sorted(out, key=lambda x: (not x["verified"], x["action"]))
@@ -691,6 +717,9 @@ def write_summary(data: dict) -> list[str]:
     f = data["fear"]
     if f.get("state", "없음") != "없음":
         out.append(f"공포 초입 매수: {f['state']}.")
+    block = data.get("market_block") or {}
+    if block.get("blocked"):
+        out.append(f"코스피 월봉 3단 이탈({block['since'][:7]})로 신규 매수 제한 중이에요.")
     acts = data.get("actions", [])
     if acts:
         ok = [x for x in acts if x["verified"]]

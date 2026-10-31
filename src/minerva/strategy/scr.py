@@ -463,7 +463,7 @@ def compare_live(daily: dict, vix: list[Bar], capital: float) -> None:
     for name, uni, days in segments:
         kept = [u for u in uni if u.code in plans]
         print(name, "종목", len(uni), "사용", len(kept), flush=True)
-        spans = dm.block_spans(tm_states(resample(idx, "M")))
+        spans = dm.block_spans(tm_states(resample(idx, "M")), dm.monthly_touches(idx))
         ranked = [a["symbol"].split(".")[0] for a in daily["assets"] if a["symbol"].endswith(".KS")]
         top = {"069500", *ranked[: dm.TRADE_TOP]}
         for label in ("현행", "L1", "L2", "L3", "M1", "M1-100"):

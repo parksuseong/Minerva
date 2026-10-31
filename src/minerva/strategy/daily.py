@@ -522,14 +522,29 @@ MONTHLY_MIN = 60  # 이보다 짧으면 이전 신호를 놓쳐 제한 상태를
 MONTHLY_GAP = 7  # 달력일. 긴 연휴보다 길게 비면 자료가 끊긴 것으로 본다
 
 
-def block_spans(months: list[TMState]) -> list[tuple[date, date | None]]:
-    """코스피 월봉 3단 과매수 이탈부터 CCI<0 또는 RSI<50을 거쳐 회복한 달까지. None은 진행 중."""
+def monthly_touches(bars: list[Bar]) -> set[date]:
+    """월봉 저가가 20개월선에 닿은 달. 깊게 빠졌다고 보고 제한을 푼다 (사용자 결정 2026-10-31)."""
+    months = resample(bars, "M")
+    ma = sma([b.close for b in months], 20)
+    return {b.day for b, m in zip(months, ma) if m is not None and b.low <= m}
+
+
+def block_spans(
+    months: list[TMState], touches: frozenset[date] | set[date] = frozenset()
+) -> list[tuple[date, date | None]]:
+    """코스피 월봉 3단 과매수 이탈부터 해제 달까지. None은 진행 중.
+
+    해제: 월봉 저가의 20개월선 터치, 또는 CCI<0 또는 RSI<50을 거쳐 회복.
+    """
     spans: list[tuple[date, date | None]] = []
     since, dipped = None, False
     for prev, cur in zip(months, months[1:]):
         if since is None:
             if cur.short_level == 3 and prev.short_level < 3:
                 since, dipped = cur.day, False
+        elif cur.day in touches:
+            spans.append((since, cur.day))
+            since = None
         elif (cur.cci or 0) < 0 or (cur.rsi or 100) < 50:
             dipped = True
         elif dipped:
@@ -559,7 +574,7 @@ def monthly_block(bars: list[Bar], today: date) -> dict:
     ]
     if len(months) < MONTHLY_MIN:
         return closed_block(f"자료 부족 {len(months)}개월")
-    spans = block_spans(months)
+    spans = block_spans(months, monthly_touches(bars))
     since = spans[-1][0] if spans and spans[-1][1] is None else None
     return {"blocked": since is not None, "since": since.isoformat() if since else None}
 

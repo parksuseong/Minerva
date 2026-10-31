@@ -197,6 +197,7 @@ def simulate(
                     "closed": day,
                     "reason": reason,
                     "tranches": p.tranches,
+                    "cost": p.cost,
                     "strong": p.was_strong,
                     "failed": p.failed,
                     "spent": p.spent,

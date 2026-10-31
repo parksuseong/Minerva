@@ -787,6 +787,13 @@ def write_summary(data: dict) -> list[str]:
     return out
 
 
+def read_owned() -> dict:
+    from minerva import trade
+
+    path = trade.TRADE_DIR / "positions.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
 def trade_memo(data: dict, today: date) -> list[str]:
     """신규 매수가 왜 언제까지 막히는지. 막힌 게 없으면 비어 있다 (사용자 요청 2026-10-31)."""
     out = []
@@ -826,6 +833,56 @@ def trade_memo(data: dict, today: date) -> list[str]:
     return out
 
 
+def buy_candidates(data: dict) -> list[str]:
+    """지금 검증을 통과해 신호가 나면 살 수 있는 종목. KODEX 200이 맨 앞이다."""
+    ok = lambda x: (x.get("verify", {}).get("long") or {}).get("label") == "검증됨"  # noqa: E731
+    stocks = [a for a in data["assets"] if a["symbol"].endswith(".KS")][:TRADE_TOP]
+    return [x["name"] for x in data.get("products", []) + stocks if "error" not in x and ok(x)]
+
+
+def trade_plan(data: dict, owned: dict) -> list[str]:
+    """앞으로의 매매 계획. 숫자는 실제 주문에 쓰는 trade 상수에서 가져온다."""
+    from minerva import trade
+
+    blocked = (data.get("market_block") or {}).get("blocked")
+    closed = data["vix"]["regime"] not in ("R0", "R1")
+    out = ["매수 제한이 풀릴 때까지 매수 주문은 없어요."] if blocked or closed else []
+    if owned:
+        names = ", ".join(p.get("name", code) for code, p in owned.items())
+        stop = f"{trade.LONG_STOP:.0%}"
+        out.append(f"보유 중인 {names}은(는) 청산 신호나 손절(−{stop})이 나오면 팔아요.")
+    else:
+        out.append("지금 봇 보유 종목이 없어서 청산 주문도 없어요.")
+    names = buy_candidates(data)
+    if names:
+        out.append(
+            f"매수 후보는 {', '.join(names)} {len(names)}종목이에요. "
+            "이 중 신호가 나온 종목만 사고, 후보는 주 1회 다시 검증해요."
+        )
+    else:
+        out.append("지금은 검증을 통과한 매수 후보가 없어요. 후보는 주 1회 다시 검증해요.")
+    out.append(
+        f"신호 다음 거래일 장 시작 때 전일 종가 +{trade.GAP_BUFFER - 1:.0%} 지정가로 사요. "
+        "더 높게 뜨면 사지 않아요."
+    )
+    out.append(
+        f"비중은 개별주 {trade.WEIGHT:.0%}, KODEX 200 {trade.INDEX_ETF_WEIGHT:.0%}까지, "
+        f"최대 {trade.MAX_POSITIONS}종목이에요. 손절은 매입가 −{trade.LONG_STOP:.0%}이고, "
+        "남는 돈은 CD금리 ETF에 둬요."
+    )
+    return out
+
+
+def add_memo(data: dict, today: date) -> None:
+    """화면 문구 오류로 분석 파일(주문 근거) 저장이 멈추면 안 된다."""
+    try:
+        data["memo"] = trade_memo(data, today)
+        data["plan"] = trade_plan(data, read_owned())
+    except Exception as exc:  # noqa: BLE001
+        data["memo"] = [f"요약을 만들지 못했어요 ({type(exc).__name__})."]
+        data["plan"] = []
+
+
 def telegram_summary(data: dict) -> str:
     v, f = data["vix"], data["fear"]
     lines = [
@@ -861,7 +918,7 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     data = build()
     data["summary"] = write_summary(data)
-    data["memo"] = trade_memo(data, datetime.now(timezone(timedelta(hours=9))).date())
+    add_memo(data, datetime.now(timezone(timedelta(hours=9))).date())
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")

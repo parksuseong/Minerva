@@ -487,6 +487,49 @@ def compare_live(daily: dict, vix: list[Bar], capital: float) -> None:
                 )
 
 
+def monthly_table(res: pf.Result, capital: float) -> list[tuple[str, float, int, int, float]]:
+    """월, 수익률, 매수, 매도, 월말 평가액. 체결일 기준이다."""
+    ends: dict[str, float] = {}
+    for d, e in res.equity:
+        ends[d.isoformat()[:7]] = e
+    rows, prev = [], capital
+    for month, end in ends.items():
+        buys = sum(f[2] == "buy" and f[0].isoformat()[:7] == month for f in res.fills)
+        sells = sum(f[2] == "sell" and f[0].isoformat()[:7] == month for f in res.fills)
+        rows.append((month, end / prev - 1, buys, sells, end))
+        prev = end
+    return rows
+
+
+def monthly_report(daily: dict, vix: list[Bar], start: date, capital: float) -> None:
+    """현행 규칙(상위 100·월봉 제한)을 월별로 보여준다. 검증은 월별 워크포워드다."""
+    from minerva.strategy import walkforward as wf
+
+    idx = dm.completed(fetch_yahoo("^KS11", "max", ttl=10**9), "KR")
+    regime = dm._regime_by_day(vix, idx)
+    park = pf.park_returns()
+    uni, _ = wf.load_universe(daily, vix, start)
+    ranked = [a["symbol"].split(".")[0] for a in daily["assets"] if a["symbol"].endswith(".KS")]
+    top = {"069500", *ranked[: dm.TRADE_TOP]}
+    spans = dm.block_spans(tm_states(resample(idx, "M")), dm.monthly_touches(idx))
+    now = [block_entries(u, spans) for u in uni if u.code in top]
+    days = [b.day for b in idx if b.day >= start]
+    print("제한", [(str(a), str(b)) for a, b in spans if b is None or b >= start])
+    print("종목", len(now), [u.name for u in now])
+    for label, limit in (("지정가", trade.GAP_BUFFER), ("시가", None)):
+        res = pf.simulate(now, days, regime, pf.Config(capital=capital, limit=limit, park=park))
+        print(label, f"{res.cagr:.1%} {res.mdd:.1%} {res.exposure:.0%}", res.final)
+        rows = monthly_table(res, capital)
+        for month, ret, buys, sells, end in rows:
+            print(month, f"{ret:+.2%}", buys, sells, round(end))
+        print(
+            "합계",
+            sum(r[2] for r in rows),
+            sum(r[3] for r in rows),
+            f"{res.final / capital - 1:+.1%}",
+        )
+
+
 def main(argv: list[str] | None = None) -> None:
     default = "~/.minerva/daily/history/2026-10-29-1631.json"
     parser = argparse.ArgumentParser(description="SCR 재설계 전략 백테스트")
@@ -496,11 +539,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--fail", choices=("any", "before80", "ma50"), help="돌파 실패 매도 변형")
     parser.add_argument("--tilt", choices=("prop", "all3", "topdown"), help="일치 점수 변형")
     parser.add_argument("--live", action="store_true", help="현행 규칙 매도·진입 변형 비교")
+    parser.add_argument("--monthly", help="현행 규칙 월별 성과 (시작일 YYYY-MM-DD)")
     args = parser.parse_args(argv)
     daily = json.loads(Path(args.daily).read_text())
     rows, vix = load(daily)
     if args.live:
         compare_live(daily, vix, args.capital)
+        return
+    if args.monthly:
+        monthly_report(daily, vix, date.fromisoformat(args.monthly), args.capital)
         return
     idx = dm.completed(fetch_yahoo("^KS11", "max", ttl=10**9), "KR")
     regime = dm._regime_by_day(vix, idx)

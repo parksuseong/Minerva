@@ -91,6 +91,16 @@ def held_outside(top: list[tuple[str, str]], owned: dict) -> list[Asset]:
     return [Asset(s, n, "KR", held_only=True) for s, n in held if s not in known]
 
 
+def warn_owned(exc: Exception) -> None:
+    """경고가 실패해도 분석은 계속한다. 청산 신호가 더 중요하다."""
+    try:
+        from minerva import notify
+
+        notify.send(f"⚠️ 봇 보유 목록을 못 읽었어요 ({type(exc).__name__}). 순위 밖 청산 확인 필요")
+    except Exception as err:  # noqa: BLE001
+        print(f"경고 전송 실패: {err}", file=sys.stderr)
+
+
 def watchlist() -> list[Asset]:
     top = kospi_top(KOSPI_TOP)
     kr = [Asset(s, n, "KR") for s, n in top]
@@ -99,9 +109,7 @@ def watchlist() -> list[Asset]:
         held = held_outside(top, read_owned())
     except Exception as exc:  # noqa: BLE001 — 보유 파일이 깨져도 상위 종목의 청산 신호는 나가야 한다
         print(f"보유 목록을 못 읽음: {exc}", file=sys.stderr)
-        from minerva import notify
-
-        notify.send(f"⚠️ 봇 보유 목록을 못 읽었어요 ({type(exc).__name__}). 순위 밖 청산 확인 필요")
+        warn_owned(exc)
         held = []
     return CORE + kr + held + us
 

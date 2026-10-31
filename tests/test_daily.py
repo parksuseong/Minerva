@@ -452,13 +452,15 @@ def test_build_keeps_exit_flow_when_index_fetch_fails(monkeypatch):
     monkeypatch.setattr(daily, "vix_weekly", lambda v: [])
     monkeypatch.setattr(daily, "weekly_gate_at", lambda w, d: (1, 2, True))
     monkeypatch.setattr(daily, "gated_regime", lambda r, c: r)
-    monkeypatch.setattr(daily, "watchlist", lambda: [])
+    held = daily.Asset("000720.KS", "현대건설", "KR", held_only=True)
+    monkeypatch.setattr(daily, "watchlist", lambda: [held])
+    monkeypatch.setattr(daily, "analyze", lambda a, v, g: 1 / 0)  # 분석 실패 행에도 표시가 남는지
     monkeypatch.setattr(daily, "PRODUCTS", [])
     monkeypatch.setattr(daily, "fear_status", lambda v, m: {})
     used = []
-    monkeypatch.setattr(daily, "apply_fdr_by_family", lambda a: used.append(a))
+    monkeypatch.setattr(daily, "apply_fdr_by_family", lambda a: used.append(list(a)))
     assert daily.build()["market_block"] == daily.closed_block("OSError")
-    assert len(used) == 1  # 실전 분석이 묶음별 검정을 쓰는지
+    assert len(used) == 1 and used[0][0]["held_only"]  # 실전 분석이 묶음별 검정을 쓰는지
 
 
 def test_make_actions_blocked_keeps_exits_only():
@@ -632,6 +634,20 @@ def test_watchlist_survives_broken_positions_file(monkeypatch):
     monkeypatch.setattr("minerva.notify.send", lambda text: sent.append(text))
     assert "005930.KS" in [a.symbol for a in daily.watchlist()]
     assert "ValueError" in sent[0]
+
+
+def test_watchlist_survives_failed_alert(monkeypatch):
+    def broken():
+        raise ValueError("bad json")
+
+    def no_config(text):
+        raise PermissionError("telegram.env")
+
+    monkeypatch.setattr(daily, "kospi_top", lambda n: [("005930.KS", "삼성전자")])
+    monkeypatch.setattr(daily, "nasdaq_top", lambda n: [])
+    monkeypatch.setattr(daily, "read_owned", broken)
+    monkeypatch.setattr("minerva.notify.send", no_config)
+    assert "005930.KS" in [a.symbol for a in daily.watchlist()]
 
 
 def test_watchlist_survives_positions_file_of_wrong_type(monkeypatch):

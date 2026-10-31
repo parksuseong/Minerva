@@ -266,7 +266,7 @@ def test_verify_ttl_is_spread_over_days():
     assert verify_ttl("005930.KS") == verify_ttl("005930.KS") <= VERIFY_TTL
 
 
-def test_make_actions_limits_new_buys_to_trade_top_but_keeps_exits():
+def test_make_actions_limits_new_buys_to_top_but_keeps_exits():
     from minerva.strategy import daily
 
     def asset(i, state):
@@ -592,6 +592,7 @@ def test_watchlist_keeps_held_stock_outside_top_for_exits(monkeypatch):
     symbols = [a.symbol for a in daily.watchlist()]
     assert symbols.count("005930.KS") == 1 and "069500.KS" not in symbols
     assert symbols.index("000720.KS") == symbols.index("005930.KS") + 1  # 상위 뒤에 온다
+    assert [a.symbol for a in daily.watchlist() if a.held_only] == ["000720.KS"]
 
 
 def test_held_stock_outside_top_exits_but_cannot_be_bought():
@@ -612,6 +613,12 @@ def test_held_stock_outside_top_exits_but_cannot_be_bought():
     assert [a["action"] for a in daily.make_actions([*rows, held], [])] == ["LONG_EXIT"]
     held = item(daily.KOSPI_TOP, "진입 신호")
     assert daily.make_actions([*rows, held], []) == []
+    # 순위를 10개만 받아도 순위 밖 보유 종목은 위치와 무관하게 살 수 없다
+    held["held_only"] = True
+    assert daily.make_actions([*rows[:10], held], []) == []
+    assert held not in daily.trade_family([*rows[:10], held])
+    data = {"assets": [*rows[:10], held], "products": []}
+    assert held["name"] not in daily.buy_candidates(data)
 
 
 def test_watchlist_survives_broken_positions_file(monkeypatch):
@@ -621,4 +628,15 @@ def test_watchlist_survives_broken_positions_file(monkeypatch):
     monkeypatch.setattr(daily, "kospi_top", lambda n: [("005930.KS", "삼성전자")])
     monkeypatch.setattr(daily, "nasdaq_top", lambda n: [])
     monkeypatch.setattr(daily, "read_owned", broken)
+    sent = []
+    monkeypatch.setattr("minerva.notify.send", lambda text: sent.append(text))
+    assert "005930.KS" in [a.symbol for a in daily.watchlist()]
+    assert "ValueError" in sent[0]
+
+
+def test_watchlist_survives_positions_file_of_wrong_type(monkeypatch):
+    monkeypatch.setattr(daily, "kospi_top", lambda n: [("005930.KS", "삼성전자")])
+    monkeypatch.setattr(daily, "nasdaq_top", lambda n: [])
+    monkeypatch.setattr(daily, "read_owned", lambda: None)
+    monkeypatch.setattr("minerva.notify.send", lambda text: True)
     assert "005930.KS" in [a.symbol for a in daily.watchlist()]

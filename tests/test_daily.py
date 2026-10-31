@@ -403,6 +403,21 @@ def test_block_spans_release_on_twenty_month_touch():
     assert daily.block_spans(_monthly(rows)) == [(date(2026, 2, 27), None)]
 
 
+def test_block_spans_keeps_block_while_new_exit_is_active():
+    from datetime import date
+
+    from minerva.strategy import daily
+
+    rows = [
+        (date(2026, 1, 30), 150, 75, 0),
+        (date(2026, 2, 27), 90, 65, 3),
+        (date(2026, 3, 31), 90, 65, 3),
+        (date(2026, 4, 30), 40, 55, 0),
+    ]
+    touches = {date(2026, 3, 31), date(2026, 4, 30)}
+    assert daily.block_spans(_monthly(rows), touches) == [(date(2026, 2, 27), date(2026, 4, 30))]
+
+
 def test_monthly_touches_uses_low_against_twenty_month_average():
     from datetime import date, timedelta
 

@@ -542,7 +542,7 @@ def block_spans(
         if since is None:
             if cur.short_level == 3 and prev.short_level < 3:
                 since, dipped = cur.day, False
-        elif cur.day in touches:
+        elif cur.day in touches and cur.short_level < 3:  # 새 이탈이 나온 달은 풀지 않는다
             spans.append((since, cur.day))
             since = None
         elif (cur.cci or 0) < 0 or (cur.rsi or 100) < 50:

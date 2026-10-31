@@ -508,3 +508,44 @@ def test_trade_memo_last_business_day_still_waits_for_this_close():
 def test_trade_memo_reports_data_failure():
     memo = daily.trade_memo(_memo_data(**daily.closed_block("OSError")), date(2026, 11, 2))
     assert memo[0] == "코스피 자료 문제(OSError)로 신규 매수를 막았어요."
+
+
+def _plan_data(regime="R0", blocked=False):
+    def asset(symbol, name, label):
+        return {"symbol": symbol, "name": name, "verify": {"long": {"label": label}}}
+
+    stocks = [asset(f"{i:06d}.KS", f"종목{i}", "미검증") for i in range(120)]
+    stocks[3] = asset("000003.KS", "기아", "검증됨")
+    stocks[105] = asset("000105.KS", "밖", "검증됨")
+    return {
+        "vix": {"regime": regime},
+        "market_block": {"blocked": blocked},
+        "assets": [asset("^KS11", "코스피", "검증됨"), *stocks],
+        "products": [asset("069500.KS", "KODEX 200", "검증됨")],
+    }
+
+
+def test_buy_candidates_are_verified_and_inside_top_100():
+    assert daily.buy_candidates(_plan_data()) == ["KODEX 200", "기아"]
+
+
+def test_trade_plan_while_blocked_says_no_buys_and_uses_live_numbers():
+    plan = daily.trade_plan(_plan_data("R2", blocked=True), {})
+    assert plan[0] == "매수 제한이 풀릴 때까지 매수 주문은 없어요."
+    assert plan[1] == "지금 봇 보유 종목이 없어서 청산 주문도 없어요."
+    assert "KODEX 200, 기아 2종목" in plan[2]
+    assert "+3% 지정가" in plan[3]
+    assert "개별주 30%, KODEX 200 60%까지, 최대 10종목" in plan[4]
+    assert "−10%" in plan[4]
+
+
+def test_trade_plan_when_open_names_holdings():
+    plan = daily.trade_plan(_plan_data(), {"000270": {"name": "기아"}})
+    assert plan[0] == "보유 중인 기아은(는) 청산 신호나 손절(−10%)이 나오면 팔아요."
+
+
+def test_add_memo_failure_does_not_stop_analysis(monkeypatch):
+    monkeypatch.setattr(daily, "read_owned", lambda: 1 / 0)
+    data = _plan_data()
+    daily.add_memo(data, date(2026, 11, 2))
+    assert data["memo"] == ["요약을 만들지 못했어요 (ZeroDivisionError)."] and data["plan"] == []

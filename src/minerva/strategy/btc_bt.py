@@ -16,7 +16,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from minerva.strategy.btc_data import FRAMES, OUT
-from minerva.strategy.indicators import Bar, tm_states
+from minerva.strategy.indicators import Bar, TMState, tm_states
 
 SPLIT = date(2024, 1, 1)
 COST = 0.0005
@@ -68,10 +68,17 @@ def simulate(
     start: int = 0,
     end: int | None = None,
     stop: float | None = None,
+    allow_long: Sequence[bool] | None = None,
+    allow_short: Sequence[bool] | None = None,
+    log: list[float] | None = None,
 ) -> Result:
     """[start, end) 구간을 무포지션으로 시작한다. 마지막 봉 종가에 남은 포지션을 정리한다."""
     end = len(bars) if end is None else end
     open_long, open_short = edges(long_levels, k), edges(short_levels, k)
+    if allow_long is not None:
+        open_long = [o and a for o, a in zip(open_long, allow_long)]
+    if allow_short is not None:
+        open_short = [o and a for o, a in zip(open_short, allow_short)]
     close_long, close_short = edges(short_levels, c), edges(long_levels, c)
     equity, peak, mdd = 1.0, 1.0, 0.0
     pos, entry, base, before = 0, 0.0, 0.0, 0.0  # base: 진입 직후, before: 진입 직전 평가액
@@ -87,6 +94,8 @@ def simulate(
         after = value(px) - base * (px / entry) * cost
         pnl[pos] += after - before
         trades += 1
+        if log is not None:
+            log.append(after / before - 1)
         wins += after > before
         equity, pos = after, 0
 
@@ -118,6 +127,8 @@ def simulate(
             if worst <= 0:  # 1배 숏은 가격이 두 배면 평가액이 사라진다
                 pnl[pos] -= before
                 trades += 1
+                if log is not None:
+                    log.append(-1.0)
                 equity, pos, ruined = 0.0, 0, True
                 mdd = -1.0
                 break
@@ -175,11 +186,93 @@ def run_frame(frame: str, root: Path = OUT, stop: float | None = None) -> list[d
     return out
 
 
+def close_times(frame: str, root: Path = OUT) -> list[int]:
+    with (root / f"{frame}.csv").open() as f:
+        return [int(r["close_time"]) for r in csv.DictReader(f)]
+
+
+def state_dir(s: TMState) -> int:
+    """상방 1, 하방 −1, 중립 0."""
+    if s.cci is None or s.rsi is None:
+        return 0
+    if s.cci > 0 and s.rsi > 50:
+        return 1
+    return -1 if s.cci < 0 and s.rsi < 50 else 0
+
+
+def align(times: Sequence[int], upper_times: Sequence[int], upper: Sequence[int]) -> list[int]:
+    """매매 봉이 마감된 시각까지 마감된 마지막 상위 봉의 값. 없으면 0."""
+    out, j, cur = [], 0, 0
+    for t in times:
+        while j < len(upper_times) and upper_times[j] <= t:
+            cur = upper[j]
+            j += 1
+        out.append(cur)
+    return out
+
+
+def without_top(rets: Sequence[float], n: int, days: int) -> float:
+    """거래 수익 상위 n건을 뺀 연수익."""
+    kept = sorted(rets)[: max(len(rets) - n, 0)]
+    equity = 1.0
+    for r in kept:
+        equity *= 1 + r
+    return equity ** (YEAR_DAYS / max(days, 1)) - 1
+
+
+def run_filter(root: Path = OUT) -> dict:
+    """15분봉 + 상위 봉 방향 필터 20개 (2026-11-01 사전 등록)."""
+    bars = load("15m", root)
+    times = close_times("15m", root)
+    states = tm_states(bars)
+    lo, sh = [s.long_level for s in states], [s.short_level for s in states]
+    cut, n = split_at(bars), len(bars)
+    back_days = (bars[-1].day - bars[cut].day).days
+    rows = []
+    for up in ("4h", "1d"):
+        dirs = [state_dir(s) for s in tm_states(load(up, root))]
+        mask = align(times, close_times(up, root), dirs)
+        allow_l, allow_s = [m == 1 for m in mask], [m == -1 for m in mask]
+        for stop in (None, 0.01):
+            for k, c in RULES:
+                row = {"upper": up, "stop": stop, "k": k, "c": c}
+                common = (allow_l, allow_s)
+                row["front"] = asdict(simulate(bars, lo, sh, k, c, COST, 0, cut, stop, *common))
+                rets: list[float] = []
+                row["back"] = asdict(
+                    simulate(bars, lo, sh, k, c, COST, cut, n, stop, *common, rets)
+                )
+                row["back_cost10"] = asdict(
+                    simulate(bars, lo, sh, k, c, 0.001, cut, n, stop, *common)
+                )
+                row["front_gross"] = asdict(
+                    simulate(bars, lo, sh, k, c, 0.0, 0, cut, stop, *common)
+                )
+                row["back_gross"] = asdict(simulate(bars, lo, sh, k, c, 0.0, cut, n, stop, *common))
+                row["back_without_top5"] = without_top(rets, 5, back_days)
+                rows.append(row)
+                print(up, stop, k, c, row["front"]["cagr"], row["back"]["cagr"], flush=True)
+    picks = [r for r in rows if r["front"]["trades"] >= 30]
+    daily = load("1d", root)
+    dcut = split_at(daily)
+    return {
+        "hold": {"front": hold(daily, 0, dcut), "back": hold(daily, dcut, len(daily))},
+        "rows": rows,
+        "pick": max(picks, key=lambda r: r["front"]["ratio"]) if picks else None,
+    }
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--stop", type=float, help="손절 비율 (예: 0.01)")
+    p.add_argument("--filter", action="store_true", help="15분봉 상위 봉 필터 시험")
     args = p.parse_args(argv)
     root = OUT
+    if args.filter:
+        path = root / "scr-15m-filter.json"
+        path.write_text(json.dumps(run_filter(root), ensure_ascii=False, indent=1))
+        print("wrote", path)
+        return
     bars = load("1d", root)
     cut = split_at(bars)
     report = {

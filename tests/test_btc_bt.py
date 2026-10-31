@@ -133,3 +133,41 @@ def test_stop_allows_entry_on_a_later_signal():
     )
     r = bt.simulate(bars, [0, 1, 0, 1, 0, 0], [0] * 6, 1, 1, cost=0, stop=0.01)
     assert r.trades == 2 and r.final == pytest.approx(0.99 * 120 / 99)
+
+
+def test_filter_blocks_open_but_not_exit():
+    bars = _bars([100, 100, 100, 200, 200, 100, 100])
+    lo, sh = [0, 1, 0, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 0]
+    blocked = [False] * 7
+    r = bt.simulate(bars, lo, sh, 1, 1, cost=0, allow_long=blocked, allow_short=blocked)
+    assert r.trades == 0
+    # 롱만 허용: 숏 오픈은 막혀도 숏 1단은 롱 종료로 쓰인다
+    r = bt.simulate(bars, lo, sh, 1, 1, cost=0, allow_long=[True] * 7, allow_short=blocked)
+    assert r.trades == 1 and r.final == pytest.approx(2.0)
+
+
+def test_align_uses_only_closed_upper_bars():
+    # 상위 봉이 100에 마감하면 100에 마감한 매매 봉부터 보이고 99에는 안 보인다
+    assert bt.align([50, 99, 100, 150, 200], [100, 200], [1, -1]) == [0, 0, 1, 1, -1]
+
+
+def test_state_dir_needs_cci_and_rsi_to_agree():
+    from minerva.strategy.indicators import TMState
+
+    day = date(2024, 1, 1)
+    make = lambda cci, rsi: TMState(day, 1, 50, cci, rsi, 0, 0)  # noqa: E731
+    assert bt.state_dir(make(1, 60)) == 1
+    assert bt.state_dir(make(-1, 40)) == -1
+    assert bt.state_dir(make(1, 40)) == 0
+    assert bt.state_dir(make(None, 40)) == 0
+
+
+def test_without_top_drops_best_trades():
+    assert bt.without_top([0.5, -0.1, 0.1], 1, 365) == pytest.approx(0.9 * 1.1 - 1, rel=1e-2)
+
+
+def test_log_records_each_trade_return():
+    bars = _bars([100, 100, 100, 200, 200])
+    rets = []
+    bt.simulate(bars, [0, 1, 0, 0, 0], [0] * 5, 1, 1, cost=0, log=rets)
+    assert rets == pytest.approx([1.0])

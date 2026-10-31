@@ -576,7 +576,14 @@ def monthly_block(bars: list[Bar], today: date) -> dict:
         return closed_block(f"자료 부족 {len(months)}개월")
     spans = block_spans(months, monthly_touches(bars))
     since = spans[-1][0] if spans and spans[-1][1] is None else None
-    return {"blocked": since is not None, "since": since.isoformat() if since else None}
+    if since is None:
+        return {"blocked": False, "since": None}
+    return {
+        "blocked": True,
+        "since": since.isoformat(),
+        "dipped": any((s.cci or 0) < 0 or (s.rsi or 100) < 50 for s in months if s.day > since),
+        "ma20": _r(sma([b.close for b in resample(bars, "M")], 20)[-1]),
+    }
 
 
 def build() -> dict:
@@ -780,6 +787,45 @@ def write_summary(data: dict) -> list[str]:
     return out
 
 
+def trade_memo(data: dict, today: date) -> list[str]:
+    """신규 매수가 왜 언제까지 막히는지. 막힌 게 없으면 비어 있다 (사용자 요청 2026-10-31)."""
+    out = []
+    block = data.get("market_block") or {}
+    if block.get("blocked") and block.get("since"):
+        # 주말이면 이번 달 마감은 이미 끝났으니 다음 영업일의 달을 본다
+        cur = today + timedelta(days=7 - today.weekday() if today.weekday() >= 5 else 0)
+        nxt = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+        after = (nxt.replace(day=28) + timedelta(days=4)).replace(day=1)
+        ma = f"{block['ma20']:,.0f}"
+        head = f"코스피 월봉 3단 이탈({block['since'][:7]})로 신규 매수 제한 중이에요."
+        if block.get("dipped"):
+            out.append(
+                f"{head} {cur.month}월 마감에 월봉 CCI 0·RSI 50 위로 회복하거나 저가가 "
+                f"20개월선({ma})에 닿으면 {nxt.month}월 초부터 풀려요."
+            )
+        else:
+            out.append(
+                f"{head} {cur.month}월 저가가 20개월선({ma})에 닿으면 {nxt.month}월 초부터 풀려요. "
+                f"안 닿으면 월봉 CCI 0 또는 RSI 50 아래로 눌렸다가 회복해야 해서 "
+                f"빨라도 {after.month}월 초예요."
+            )
+    elif block.get("blocked"):
+        out.append(f"코스피 자료 문제({block.get('error')})로 신규 매수를 막았어요.")
+    v = data["vix"]
+    if v["regime"] not in ("R0", "R1"):
+        g = v.get("gate") or {}
+        friday = today + timedelta(days=(4 - today.weekday()) % 7)
+        out.append(
+            f"VIX 주봉 5주선({g.get('w5')})이 10주선({g.get('w10')}) 위라 신규 매수가 막혀 있어요. "
+            f"{friday.month}월 {friday.day}일(금) 마감에 5<10이 되면 다음 주부터 열려요."
+        )
+    if len(out) == 2:
+        out.append("두 조건이 모두 풀려야 매수해요.")
+    if out:
+        out.append("청산은 막지 않아요.")
+    return out
+
+
 def telegram_summary(data: dict) -> str:
     v, f = data["vix"], data["fear"]
     lines = [
@@ -815,6 +861,7 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     data = build()
     data["summary"] = write_summary(data)
+    data["memo"] = trade_memo(data, datetime.now(timezone(timedelta(hours=9))).date())
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")

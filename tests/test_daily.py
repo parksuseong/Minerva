@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
+from minerva.strategy import daily
 from minerva.strategy.daily import completed, fear_status, telegram_summary
 from minerva.strategy.indicators import Bar
 
@@ -325,8 +326,9 @@ def test_monthly_block_starts_on_exit_and_clears_after_dip_and_recovery(monkeypa
         return daily.monthly_block(_month_bars(rows[:upto]), today)
 
     assert block(1, date(2026, 2, 3)) == {"blocked": False, "since": None}
-    assert block(3, date(2026, 4, 1)) == {"blocked": True, "since": "2026-02-27"}
-    assert block(4, date(2026, 5, 1))["blocked"]
+    got = block(3, date(2026, 4, 1))
+    assert (got["blocked"], got["since"], got["dipped"]) == (True, "2026-02-27", False)
+    assert block(4, date(2026, 5, 1))["dipped"]
     assert not block(5, date(2026, 6, 1))["blocked"]
 
 
@@ -476,3 +478,33 @@ def test_make_actions_blocked_keeps_exits_only():
     got = daily.make_actions(assets, products, True)
     assert [(a["symbol"], a["action"]) for a in got] == [("000002.KS", "LONG_EXIT")]
     assert len(daily.make_actions(assets, products)) == 3
+
+
+def _memo_data(regime="R0", **block):
+    gate = {"w5": 16.89, "w10": 15.92}
+    return {"vix": {"regime": regime, "gate": gate}, "market_block": block}
+
+
+def test_trade_memo_empty_when_nothing_blocks_buys():
+    assert daily.trade_memo(_memo_data(blocked=False, since=None), date(2026, 11, 2)) == []
+
+
+def test_trade_memo_weekend_after_month_end_points_to_next_close():
+    block = dict(blocked=True, since="2026-08-31", dipped=False, ma20=4948.2)
+    memo = daily.trade_memo(_memo_data("R2", **block), date(2026, 10, 31))
+    assert "11월 저가가 20개월선(4,948)에 닿으면 12월 초부터" in memo[0]
+    assert "빨라도 1월 초" in memo[0]
+    assert "11월 6일(금)" in memo[1]
+    assert memo[2:] == ["두 조건이 모두 풀려야 매수해요.", "청산은 막지 않아요."]
+
+
+def test_trade_memo_last_business_day_still_waits_for_this_close():
+    block = dict(blocked=True, since="2026-08-31", dipped=True, ma20=4948.2)
+    memo = daily.trade_memo(_memo_data(**block), date(2026, 11, 30))
+    assert "11월 마감에 월봉 CCI 0·RSI 50 위로 회복" in memo[0]
+    assert "12월 초부터" in memo[0] and len(memo) == 2
+
+
+def test_trade_memo_reports_data_failure():
+    memo = daily.trade_memo(_memo_data(**daily.closed_block("OSError")), date(2026, 11, 2))
+    assert memo[0] == "코스피 자료 문제(OSError)로 신규 매수를 막았어요."

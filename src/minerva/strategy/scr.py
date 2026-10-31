@@ -414,6 +414,63 @@ def compare_verified(plans: list[Plan], daily, vix, idx, regime, park, capital) 
     print("뒤 SCR-V 거래", len(closed), f"승률 {win:.1%} 최악 {min(closed):.1%}")
 
 
+def live_variant(u: pf.Instrument, plan: Plan, name: str) -> pf.Instrument:
+    """현행 종목에 변형을 입힌다 (`docs/backtests/2026-10-31-live-exit-hypotheses.md`)."""
+    if name == "L2":
+        days = set(u.take) | set(plan.htf_exit)
+        take = {
+            d: bool(plan.htf_exit.get(d)) or (bool(u.take.get(d)) and not plan.strong.get(d))
+            for d in days
+        }
+        return replace(u, take=take)
+    if name == "L3":
+        return replace(u, entry={d: v and plan.score.get(d) == 3 for d, v in u.entry.items()})
+    return u
+
+
+def compare_live(daily: dict, vix: list[Bar], capital: float) -> None:
+    from minerva.strategy import walkforward as wf
+
+    idx = dm.completed(fetch_yahoo("^KS11", "max", ttl=10**9), "KR")
+    regime = dm._regime_by_day(vix, idx)
+    park = pf.park_returns()
+    back_uni, _ = wf.load_universe(daily, vix, SPLIT, compute=False)
+    segments = (
+        (
+            "앞",
+            pf.load_universe(daily, vix),
+            [b.day for b in idx if date(2010, 1, 1) <= b.day < SPLIT],
+        ),
+        ("뒤", back_uni, [b.day for b in idx if b.day >= SPLIT]),
+    )
+    plans: dict[str, Plan] = {}
+    for _, uni, _ in segments:
+        for u in uni:
+            if u.code not in plans:
+                bars = [u.prices[d] for d in sorted(u.prices)]
+                plan = plan_for(u.code, u.name, u.cap, bars)
+                if plan is not None:
+                    plans[u.code] = plan
+    for name, uni, days in segments:
+        kept = [u for u in uni if u.code in plans]
+        print(name, "종목", len(uni), "사용", len(kept), flush=True)
+        for label in ("현행", "L1", "L2", "L3"):
+            hold = 10**6 if label in ("L1", "L2") else 20
+            cooked = [live_variant(u, plans[u.code], label) for u in kept]
+            for limit in (trade.GAP_BUFFER, None):
+                cfg = pf.Config(capital=capital, limit=limit, park=park, hold=hold)
+                r = pf.simulate(cooked, days, regime, cfg)
+                print(
+                    name,
+                    label,
+                    "지정가" if limit else "시가",
+                    f"{r.cagr:.1%} {r.mdd:.1%} {r.cagr / abs(r.mdd):.2f}",
+                    r.trades,
+                    f"{r.exposure:.0%}",
+                    flush=True,
+                )
+
+
 def main(argv: list[str] | None = None) -> None:
     default = "~/.minerva/daily/history/2026-10-29-1631.json"
     parser = argparse.ArgumentParser(description="SCR 재설계 전략 백테스트")
@@ -422,9 +479,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--verified", action="store_true", help="SCR-V: 검증 종목만 신규 매수")
     parser.add_argument("--fail", choices=("any", "before80", "ma50"), help="돌파 실패 매도 변형")
     parser.add_argument("--tilt", choices=("prop", "all3", "topdown"), help="일치 점수 변형")
+    parser.add_argument("--live", action="store_true", help="현행 규칙 매도·진입 변형 비교")
     args = parser.parse_args(argv)
     daily = json.loads(Path(args.daily).read_text())
     rows, vix = load(daily)
+    if args.live:
+        compare_live(daily, vix, args.capital)
+        return
     idx = dm.completed(fetch_yahoo("^KS11", "max", ttl=10**9), "KR")
     regime = dm._regime_by_day(vix, idx)
     park = pf.park_returns()

@@ -195,3 +195,31 @@ def test_marked_short_mirrors_long():
 def test_marked_ignores_cci_older_than_window():
     states = [_state(10, -150), _state(10, -50), _state(10, -50), _state(30, -50)]
     assert bt.marked_levels(states)[0] == [0, 0, 0, 0]
+
+
+def _rsi_state(stoch, rsi):
+    from minerva.strategy.indicators import TMState
+
+    return TMState(date(2024, 1, 1), 1, stoch, 0, rsi, 0, 0)
+
+
+def test_wait_rsi_requires_recent_extreme():
+    states = [_rsi_state(10, 25), _rsi_state(10, 35), _rsi_state(30, 40)]
+    states += [_rsi_state(10, 45), _rsi_state(10, 45), _rsi_state(10, 45), _rsi_state(30, 45)]
+    lo, sh = bt.wait_levels(states, [None] * 7, True, False)
+    assert lo == [0, 0, 1, 0, 0, 0, 0] and sh == [0] * 7
+
+
+def test_wait_hour_cci_needs_matching_side():
+    states = [_rsi_state(10, 50), _rsi_state(30, 50), _rsi_state(90, 50), _rsi_state(70, 50)]
+    lo, sh = bt.wait_levels(states, [0, 25, 0, -5], False, True)
+    assert lo == [0, 0, 0, 0] and sh == [0, 0, 0, 0]  # 롱은 1시간 CCI<0, 숏은 >0이어야 한다
+    lo, sh = bt.wait_levels(states, [0, -25, 0, 5], False, True)
+    assert lo == [0, 1, 0, 0] and sh == [0, 0, 0, 1]
+
+
+def test_wait_both_conditions_must_hold():
+    states = [_rsi_state(10, 25), _rsi_state(30, 40)]
+    assert bt.wait_levels(states, [0, 5], True, True)[0] == [0, 0]
+    assert bt.wait_levels(states, [0, -5], True, True)[0] == [0, 1]
+    assert bt.wait_levels(states, [None, None], True, True)[0] == [0, 0]

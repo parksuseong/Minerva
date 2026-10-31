@@ -201,6 +201,32 @@ def marked_levels(states: Sequence[TMState], window: int = 3) -> tuple[list[int]
     return long_lv, short_lv
 
 
+def wait_levels(
+    states: Sequence[TMState],
+    hour_cci: Sequence[float | None],
+    use_rsi: bool,
+    use_hour: bool,
+    window: int = 3,
+) -> tuple[list[int], list[int]]:
+    """기다림 규칙 (2026-11-01 사전 등록). Stoch 돌파·이탈 봉에 RSI 과열·1시간봉 CCI를 본다."""
+    long_lv, short_lv = [0] * len(states), [0] * len(states)
+    for i in range(1, len(states)):
+        prev, cur = states[i - 1].stoch, states[i].stoch
+        if prev is None or cur is None:
+            continue
+        recent = [s.rsi for s in states[max(0, i - window + 1) : i + 1] if s.rsi is not None]
+        hour = hour_cci[i]
+        if prev <= 20 < cur:
+            rsi_ok = any(r <= 30 for r in recent)
+            hour_ok = hour is not None and hour < 0
+            long_lv[i] = int((rsi_ok or not use_rsi) and (hour_ok or not use_hour))
+        if prev >= 80 > cur:
+            rsi_ok = any(r >= 70 for r in recent)
+            hour_ok = hour is not None and hour > 0
+            short_lv[i] = int((rsi_ok or not use_rsi) and (hour_ok or not use_hour))
+    return long_lv, short_lv
+
+
 def close_times(frame: str, root: Path = OUT) -> list[int]:
     with (root / f"{frame}.csv").open() as f:
         return [int(r["close_time"]) for r in csv.DictReader(f)]

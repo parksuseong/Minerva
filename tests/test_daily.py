@@ -292,10 +292,16 @@ def test_make_actions_limits_new_buys_to_trade_top_but_keeps_exits():
     }
 
 
-def _monthly(monkey_states):
+def _monthly(rows):
     from minerva.strategy.indicators import TMState
 
-    return [TMState(d, 100, 50, c, r, 0, s) for d, c, r, s in monkey_states]
+    return [TMState(d, 100, 50, c, r, 0, s) for d, c, r, s in rows]
+
+
+def _month_bars(rows):
+    from minerva.strategy.indicators import Bar
+
+    return [Bar(r[0], 1, 1, 1, 1, 1) for r in rows]
 
 
 def test_monthly_block_starts_on_exit_and_clears_after_dip_and_recovery(monkeypatch):
@@ -304,21 +310,22 @@ def test_monthly_block_starts_on_exit_and_clears_after_dip_and_recovery(monkeypa
     from minerva.strategy import daily
 
     rows = [
-        (date(2026, 1, 31), 150, 75, 0),
-        (date(2026, 2, 28), 90, 65, 3),
+        (date(2026, 1, 30), 150, 75, 0),
+        (date(2026, 2, 27), 90, 65, 3),
         (date(2026, 3, 31), 40, 55, 0),
         (date(2026, 4, 30), -20, 45, 0),
-        (date(2026, 5, 31), 30, 55, 0),
+        (date(2026, 5, 29), 30, 55, 0),
         (date(2026, 6, 30), 30, 55, 0),
     ]
     monkeypatch.setattr(daily, "resample", lambda bars, frame: bars)
+    monkeypatch.setattr(daily, "MONTHLY_MIN", 1)
 
     def block(upto, today):
         monkeypatch.setattr(daily, "tm_states", lambda bars: _monthly(rows[:upto]))
-        return daily.monthly_block([], today)
+        return daily.monthly_block(_month_bars(rows[:upto]), today)
 
     assert block(1, date(2026, 2, 3)) == {"blocked": False, "since": None}
-    assert block(3, date(2026, 4, 1)) == {"blocked": True, "since": "2026-02-28"}
+    assert block(3, date(2026, 4, 1)) == {"blocked": True, "since": "2026-02-27"}
     assert block(4, date(2026, 5, 1))["blocked"]
     assert not block(5, date(2026, 6, 1))["blocked"]
 
@@ -328,11 +335,77 @@ def test_monthly_block_ignores_month_in_progress(monkeypatch):
 
     from minerva.strategy import daily
 
-    rows = [(date(2026, 1, 31), 150, 75, 0), (date(2026, 2, 13), 90, 65, 3)]
+    rows = [(date(2026, 1, 30), 150, 75, 0), (date(2026, 2, 13), 90, 65, 3)]
     monkeypatch.setattr(daily, "resample", lambda bars, frame: bars)
     monkeypatch.setattr(daily, "tm_states", lambda bars: _monthly(rows))
-    assert not daily.monthly_block([], date(2026, 2, 13))["blocked"]
-    assert daily.monthly_block([], date(2026, 3, 2))["blocked"]
+    monkeypatch.setattr(daily, "MONTHLY_MIN", 1)
+    assert not daily.monthly_block(_month_bars(rows), date(2026, 2, 13))["blocked"]
+    rows[1] = (date(2026, 2, 27), 90, 65, 3)
+    assert daily.monthly_block(_month_bars(rows), date(2026, 3, 2))["blocked"]
+
+
+def test_monthly_block_fails_closed_without_usable_data(monkeypatch):
+    from datetime import date
+
+    from minerva.strategy import daily
+
+    assert daily.monthly_block([], date(2026, 11, 2)) == daily.closed_block("자료 없음")
+    rows = [(date(2026, 1, 30), 150, 75, 0)]
+    monkeypatch.setattr(daily, "resample", lambda bars, frame: bars)
+    monkeypatch.setattr(daily, "tm_states", lambda bars: _monthly(rows))
+    assert "자료 부족" in daily.monthly_block(_month_bars(rows), date(2026, 2, 2))["error"]
+
+
+def test_monthly_block_treats_cut_off_month_as_stale():
+    from datetime import date
+
+    from minerva.strategy import daily
+
+    rows = [(date(2026, 8, 14), 0, 0, 0)]
+    got = daily.monthly_block(_month_bars(rows), date(2026, 9, 1))
+    assert got["blocked"] and got["since"] is None and "끊김" in got["error"]
+
+
+def test_block_spans_keeps_open_span():
+    from datetime import date
+
+    from minerva.strategy import daily
+
+    rows = [
+        (date(2026, 1, 30), 150, 75, 0),
+        (date(2026, 2, 27), 90, 65, 3),
+        (date(2026, 3, 31), -1, 45, 0),
+        (date(2026, 4, 30), 30, 55, 0),
+        (date(2026, 5, 29), 90, 65, 3),
+    ]
+    assert daily.block_spans(_monthly(rows[:1] + [(rows[0][0], 90, 65, 0)] + rows[1:])) == [
+        (date(2026, 2, 27), date(2026, 4, 30)),
+        (date(2026, 5, 29), None),
+    ]
+
+
+def test_build_keeps_exit_flow_when_index_fetch_fails(monkeypatch):
+    from datetime import date
+
+    from minerva.strategy import daily
+
+    bars = _month_bars([(date(2026, 10, 30), 0, 0, 0)])
+
+    def fetch(sym, rng="max"):
+        if sym == "^KS11":
+            raise OSError("down")
+        return bars
+
+    monkeypatch.setattr(daily, "fetch_yahoo", fetch)
+    monkeypatch.setattr(daily, "completed", lambda b, m: b)
+    monkeypatch.setattr(daily, "vix_regimes", lambda v: {bars[-1].day: "R1"})
+    monkeypatch.setattr(daily, "vix_weekly", lambda v: [])
+    monkeypatch.setattr(daily, "weekly_gate_at", lambda w, d: (1, 2, True))
+    monkeypatch.setattr(daily, "gated_regime", lambda r, c: r)
+    monkeypatch.setattr(daily, "watchlist", lambda: [])
+    monkeypatch.setattr(daily, "PRODUCTS", [])
+    monkeypatch.setattr(daily, "fear_status", lambda v, m: {})
+    assert daily.build()["market_block"] == daily.closed_block("OSError")
 
 
 def test_make_actions_blocked_keeps_exits_only():

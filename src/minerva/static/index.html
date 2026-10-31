@@ -119,6 +119,10 @@
   </nav>
 
   <div class="panel" id="tab-today">
+    <section class="card" id="trade-memo" hidden>
+      <h2>📌 매매 메모</h2>
+      <ul id="trade-memo-list" style="margin:0 0 0 16px;padding:0"></ul>
+    </section>
     <section class="card" id="daily">
       <h2>🎯 오늘 할 일</h2>
       <div id="daily-meta" class="placeholder">불러오는 중…</div>
@@ -252,7 +256,7 @@
       show(location.hash.slice(1));
     })();
   </script>
-  <script src="/static/daily.js?v=20261030"></script>
+  <script src="/static/daily.js?v=20261031"></script>
   <script src="/static/account.js?v=20261029b"></script>
   <script src="/static/trade.js?v=20261029"></script>
   <script src="/static/office.js?v=20261029b"></script>

@@ -86,3 +86,50 @@ def test_ruin_counts_as_a_losing_trade():
     bars = _bars([100, 100, 100, 250, 250])
     r = bt.simulate(bars, [0] * 5, [0, 1, 0, 0, 0], 1, 1, cost=0)
     assert r.trades == 1 and r.win_rate == 0 and r.short_pnl == pytest.approx(-1.0)
+
+
+def _ohlc(rows):
+    d = date(2024, 1, 1)
+    return [Bar(d + timedelta(days=i), o, h, lo, c, 0) for i, (o, h, lo, c) in enumerate(rows)]
+
+
+def test_long_stop_fills_at_line_and_waits_for_next_signal():
+    bars = _ohlc(
+        [(100, 100, 100, 100), (100, 100, 100, 100), (100, 101, 98, 99), (99, 200, 99, 200)]
+    )
+    r = bt.simulate(bars, [0, 1, 0, 0], [0, 0, 0, 0], 1, 1, cost=0, stop=0.01)
+    assert r.trades == 1 and r.final == pytest.approx(0.99)  # 99에 정리, 200 상승은 못 먹는다
+
+
+def test_short_stop_fills_at_line():
+    bars = _ohlc([(100, 100, 100, 100), (100, 100, 100, 100), (100, 102, 99, 99), (99, 99, 50, 50)])
+    r = bt.simulate(bars, [0, 0, 0, 0], [0, 1, 0, 0], 1, 1, cost=0, stop=0.01)
+    assert r.trades == 1 and r.final == pytest.approx(0.99)
+
+
+def test_stop_gapped_through_fills_at_open():
+    bars = _ohlc(
+        [
+            (100, 100, 100, 100),
+            (100, 100, 100, 100),
+            (100, 101, 100, 100),
+            (90, 91, 89, 90),
+        ]
+    )
+    r = bt.simulate(bars, [0, 1, 0, 0], [0, 0, 0, 0], 1, 1, cost=0, stop=0.01)
+    assert r.final == pytest.approx(0.90)
+
+
+def test_stop_allows_entry_on_a_later_signal():
+    bars = _ohlc(
+        [
+            (100, 100, 100, 100),
+            (100, 100, 100, 100),
+            (100, 100, 98, 99),
+            (99, 99, 99, 99),
+            (99, 120, 99, 120),
+            (120, 120, 120, 120),
+        ]
+    )
+    r = bt.simulate(bars, [0, 1, 0, 1, 0, 0], [0] * 6, 1, 1, cost=0, stop=0.01)
+    assert r.trades == 2 and r.final == pytest.approx(0.99 * 120 / 99)

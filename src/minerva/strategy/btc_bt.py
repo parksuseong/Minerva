@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import statistics
@@ -66,6 +67,7 @@ def simulate(
     cost: float = COST,
     start: int = 0,
     end: int | None = None,
+    stop: float | None = None,
 ) -> Result:
     """[start, end) 구간을 무포지션으로 시작한다. 마지막 봉 종가에 남은 포지션을 정리한다."""
     end = len(bars) if end is None else end
@@ -103,6 +105,15 @@ def simulate(
                 equity = base
         if pos:
             in_market += 1
+            if stop is not None:
+                line = entry * (1 - stop) if pos == 1 else entry * (1 + stop)
+                hit = b.low <= line if pos == 1 else b.high >= line
+                if hit:
+                    gapped = b.open < line if pos == 1 else b.open > line
+                    leave(b.open if gapped else line)
+                    peak = max(peak, equity)
+                    mdd = min(mdd, equity / peak - 1)
+                    continue
             worst = value(b.low if pos == 1 else b.high)
             if worst <= 0:  # 1배 숏은 가격이 두 배면 평가액이 사라진다
                 pnl[pos] -= before
@@ -148,7 +159,7 @@ def split_at(bars: Sequence[Bar]) -> int:
     return next(i for i, b in enumerate(bars) if b.day >= SPLIT)
 
 
-def run_frame(frame: str, root: Path = OUT) -> list[dict]:
+def run_frame(frame: str, root: Path = OUT, stop: float | None = None) -> list[dict]:
     bars = load(frame, root)
     states = tm_states(bars)
     lo, sh = [s.long_level for s in states], [s.short_level for s in states]
@@ -157,14 +168,17 @@ def run_frame(frame: str, root: Path = OUT) -> list[dict]:
     for k, c in RULES:
         row = {"frame": frame, "k": k, "c": c}
         for name, a, b in (("front", 0, cut), ("back", cut, n)):
-            row[name] = asdict(simulate(bars, lo, sh, k, c, COST, a, b))
-        row["back_cost10"] = asdict(simulate(bars, lo, sh, k, c, 0.001, cut, n))
-        row["front_cost10"] = asdict(simulate(bars, lo, sh, k, c, 0.001, 0, cut))
+            row[name] = asdict(simulate(bars, lo, sh, k, c, COST, a, b, stop))
+        row["back_cost10"] = asdict(simulate(bars, lo, sh, k, c, 0.001, cut, n, stop))
+        row["front_cost10"] = asdict(simulate(bars, lo, sh, k, c, 0.001, 0, cut, stop))
         out.append(row)
     return out
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--stop", type=float, help="손절 비율 (예: 0.01)")
+    args = p.parse_args(argv)
     root = OUT
     bars = load("1d", root)
     cut = split_at(bars)
@@ -173,14 +187,14 @@ def main() -> None:
         "rows": [],
     }
     for frame in FRAMES:
-        rows = run_frame(frame, root)
+        rows = run_frame(frame, root, args.stop)
         report["rows"] += rows
         best = max(rows, key=lambda r: r["front"]["ratio"])
         print(frame, best["k"], best["c"], best["front"]["cagr"], best["back"]["cagr"], flush=True)
     picks = [r for r in report["rows"] if r["front"]["trades"] >= 30]
     report["pick"] = max(picks, key=lambda r: r["front"]["ratio"]) if picks else None
     report["median_front_cagr"] = statistics.median(r["front"]["cagr"] for r in report["rows"])
-    path = root / "scr-backtest.json"
+    path = root / (f"scr-backtest-stop{args.stop}.json" if args.stop else "scr-backtest.json")
     path.write_text(json.dumps(report, ensure_ascii=False, indent=1))
     print("wrote", path)
 

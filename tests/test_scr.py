@@ -114,3 +114,12 @@ def test_average_stop_closes_whole_position():
     p = _plan(days, [100, 100, 80, 80, 80], entry={days[0]: True})
     res, closed = _run(p, days)
     assert res.trades == 2 and closed[0] < -0.10
+
+
+def test_log_records_reason_and_won_pnl():
+    days = _days(5)
+    p = _plan(days, [100, 100, 80, 80, 80], entry={days[0]: True})
+    log: list[dict] = []
+    scr.simulate([p], days, {d: "R1" for d in days}, 10_000, {}, log)
+    assert [t["reason"] for t in log] == ["stop"]
+    assert log[0]["opened"] == days[1] and log[0]["pnl"] < 0

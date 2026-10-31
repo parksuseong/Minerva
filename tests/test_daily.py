@@ -263,3 +263,30 @@ def test_verify_ttl_is_spread_over_days():
     syms = [f"{n:06d}.KS" for n in range(100, 150)]
     assert {verify_ttl(s) // 86400 for s in syms} == {4, 5, 6, 7}
     assert verify_ttl("005930.KS") == verify_ttl("005930.KS") <= VERIFY_TTL
+
+
+def test_make_actions_limits_new_buys_to_trade_top_but_keeps_exits():
+    from minerva.strategy import daily
+
+    def asset(i, state):
+        tm = {"state": state, "signal": "", "stop": 0, "take": "", "days_held": 0}
+        return {
+            "symbol": f"{i:06d}.KS",
+            "name": str(i),
+            "market": "KR",
+            "date": "2026-10-30",
+            "close": 100,
+            "adv": 1,
+            "verify": {"long": {"label": "검증됨"}},
+            "tm": tm,
+        }
+
+    assets = [asset(i, "대기") for i in range(daily.TRADE_TOP + 2)]
+    assets[daily.TRADE_TOP - 1] = asset(daily.TRADE_TOP - 1, "진입 신호")
+    assets[daily.TRADE_TOP] = asset(daily.TRADE_TOP, "진입 신호")
+    assets[daily.TRADE_TOP + 1] = asset(daily.TRADE_TOP + 1, "청산 신호")
+    got = {(a["symbol"], a["action"]) for a in daily.make_actions(assets, [])}
+    assert got == {
+        (f"{daily.TRADE_TOP - 1:06d}.KS", "LONG_ENTRY"),
+        (f"{daily.TRADE_TOP + 1:06d}.KS", "LONG_EXIT"),
+    }

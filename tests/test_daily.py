@@ -387,6 +387,36 @@ def test_block_spans_keeps_open_span():
     ]
 
 
+def test_block_spans_release_on_twenty_month_touch():
+    from datetime import date
+
+    from minerva.strategy import daily
+
+    rows = [
+        (date(2026, 1, 30), 150, 75, 0),
+        (date(2026, 2, 27), 90, 65, 3),
+        (date(2026, 3, 31), 40, 55, 0),
+    ]
+    assert daily.block_spans(_monthly(rows), {date(2026, 3, 31)}) == [
+        (date(2026, 2, 27), date(2026, 3, 31))
+    ]
+    assert daily.block_spans(_monthly(rows)) == [(date(2026, 2, 27), None)]
+
+
+def test_monthly_touches_uses_low_against_twenty_month_average():
+    from datetime import date, timedelta
+
+    from minerva.strategy import daily
+    from minerva.strategy.indicators import Bar
+
+    days = [date(2024, 1, 15) + timedelta(days=31 * i) for i in range(22)]
+    bars = [Bar(d, 100, 110, 105, 100, 1) for d in days]
+    bars[-1] = Bar(days[-1], 100, 100, 90, 95, 1)
+    bars[-2] = Bar(days[-2], 100, 110, 101, 100, 1)
+    assert days[-1] in daily.monthly_touches(bars)
+    assert days[-2] not in daily.monthly_touches(bars)
+
+
 def test_build_keeps_exit_flow_when_index_fetch_fails(monkeypatch):
     from datetime import date
 

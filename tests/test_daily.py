@@ -364,6 +364,9 @@ def test_monthly_block_treats_cut_off_month_as_stale():
     rows = [(date(2026, 8, 14), 0, 0, 0)]
     got = daily.monthly_block(_month_bars(rows), date(2026, 9, 1))
     assert got["blocked"] and got["since"] is None and "끊김" in got["error"]
+    rows = [(date(2026, 9, 30), 0, 0, 0)]
+    got = daily.monthly_block(_month_bars(rows), date(2026, 12, 15))
+    assert got["blocked"] and "끊김" in got["error"]
 
 
 def test_block_spans_keeps_open_span():

@@ -549,7 +549,8 @@ def monthly_block(bars: list[Bar], today: date) -> dict:
         return closed_block("자료 없음")
     last = bars[-1].day
     month_end = (last.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-    if (min(today, month_end) - last).days > MONTHLY_GAP:
+    months_behind = (today.year - last.year) * 12 + today.month - last.month
+    if months_behind > 1 or (min(today, month_end) - last).days > MONTHLY_GAP:
         return closed_block(f"자료 끊김 {last}")  # 끊긴 달을 마감된 달로 오해하지 않게
     months = [
         s

@@ -91,6 +91,26 @@ def test_parse_naver_closes():
     assert pf.parse_naver_closes(xml) == [(date(2020, 7, 7), 49948.0)]
 
 
+def test_blend_rebalances_each_year():
+    d = [date(2024, 12, 30), date(2024, 12, 31), date(2025, 1, 2), date(2025, 1, 3)]
+    up = [(d[0], 1.0), (d[1], 2.0), (d[2], 2.0), (d[3], 4.0)]
+    flat = [(x, 1.0) for x in d]
+    out = pf.blend([up, flat], [0.5, 0.5])
+    # 연말 1.5 → 반반으로 되돌린 뒤 위쪽 슬리브만 2배: 0.75 × 2 + 0.75
+    assert out[-1][1] == pytest.approx(2.25)
+
+
+def test_trend_curve_uses_only_month_end_after_signal():
+    days = [date(2024, m, 28) for m in range(1, 13)]
+    days += [date(2024, m, 29) for m in range(1, 13)]
+    days = sorted(days)
+    bars = [Bar(d, 100 + i, 101 + i, 99 + i, 100 + i, 0) for i, d in enumerate(days)]
+    start = days[6:]
+    curve = pf.trend_curve(bars, start, {d: 0.0 for d in days}, window=3)
+    assert curve[0][1] == 1.0  # 신호가 나오기 전엔 파킹
+    assert curve[-1][1] > 1.0  # 상승 중이면 들어간다
+
+
 def test_filter_mode_holds_while_filter_is_on(monkeypatch):
     days = [date(2024, 1, 1) + timedelta(days=i) for i in range(4)]
     bars = [Bar(d, 100, 101, 99, 100, 0) for d in days]

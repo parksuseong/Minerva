@@ -1,4 +1,4 @@
-"""BTCUSDT 15분봉 스윙 라벨 매매 (사전 등록: docs/backtests/2026-11-01-btc-swing-label-hypotheses.md).
+"""BTCUSDT 15분봉 스윙 라벨 매매. 사전 등록: docs/backtests/2026-11-01-btc-swing-label-hypotheses.md
 
 실행: PYTHONPATH=src python docs/backtests/raw/btc_swing_label.py
 주문과 연결되지 않는다.

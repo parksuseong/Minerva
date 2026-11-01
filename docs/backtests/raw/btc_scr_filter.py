@@ -1,6 +1,6 @@
 """SCR 진입 필터. 사전 등록: docs/backtests/2026-11-01-btc-combo-hypotheses.md 끝부분
 
-실행: PYTHONPATH=src:<numpy>:docs/backtests/raw python docs/backtests/raw/btc_scr_filter.py <combo.json>
+실행: PYTHONPATH=src:<numpy>:docs/backtests/raw python <이 파일> <combo.json>
 주문과 연결되지 않는다.
 """
 

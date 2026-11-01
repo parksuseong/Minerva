@@ -169,11 +169,12 @@ def report(frame: str, result: dict) -> None:
                     y = int(years[t[2]])
                     by[y] = by.get(y, 0.0) + math.log1p(t[6])
                     by10[y] = by10.get(y, 0.0) + math.log1p(t[6] - 0.001)
-                rows.append(((lead, conf, ex), by, by10, tr))
+                pre = sum(1 for t in tr if t[2] < s25)
+                rows.append(((lead, conf, ex), by, by10, len(tr), pre))  # 거래 내역은 메모리 때문에 버린다
         print(frame, lead, len(rows), flush=True)
     IS, OOS = range(2020, 2025), (2025, 2026)
     sc = lambda b, ys: sum(b.get(y, 0.0) for y in ys)  # noqa: E731
-    pool = [r for r in rows if sum(1 for t in r[3] if t[2] < s25) >= 100]
+    pool = [r for r in rows if r[4] >= 100]
     pool.sort(key=lambda r: -sc(r[1], IS))
     top = pool[:20]
     oos = [math.exp(sc(r[1], OOS)) - 1 for r in top]
@@ -181,7 +182,11 @@ def report(frame: str, result: dict) -> None:
     alli = [math.exp(sc(r[1], IS)) - 1 for r in pool]
     days = (bars[-1].day - bars[s20].day).days
     best = top[0]
-    got = mit.stats(best[3], years, days)
+    lead, conf, ex = best[0]
+    lng, sht = ind[lead][0] & runs[lead][0], ind[lead][1] & runs[lead][1]
+    for cf in conf:
+        lng, sht = lng & ind[cf][0], sht & ind[cf][1]
+    got = mit.stats(mit.run(arr, sigs(lng, sht), s20, n, EXITS[ex], 0.01), years, days)
     res = {
         "tried": len(rows),
         "is_positive": sum(v > 0 for v in alli),
@@ -200,7 +205,7 @@ def report(frame: str, result: dict) -> None:
                 str(r[0]),
                 round(math.exp(sc(r[1], IS)) - 1, 3),
                 round(math.exp(sc(r[1], OOS)) - 1, 3),
-                len(r[3]),
+                r[3],
             )
             for r in top[:5]
         ],

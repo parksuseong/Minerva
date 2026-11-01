@@ -28,7 +28,7 @@ TOP = 0.99
 BAD = (datetime(2018, 2, 8).date(), datetime(2018, 2, 11).date())
 
 
-def outcomes(o, h, l, tp: float, side: int):
+def outcomes(o, h, l, tp: float, side: int):  # noqa: E741
     """봉 i 신호, i+1 시가 진입. (win: 1/0/-1(시간 초과·끝), exit 봉, exit 가격)."""
     n = len(o)
     win = np.full(n, -1, dtype=np.int8)
@@ -135,15 +135,11 @@ def main(path: str) -> None:
         r = np.full(len(c), np.nan)
         r[n:] = c[n:] / c[:-n] - 1
         feat[f"수익률{n}"] = r
-    hour = np.array(
-        [datetime.fromtimestamp(t / 1000, timezone.utc).hour for t in ts], dtype=float
-    )
+    hour = np.array([datetime.fromtimestamp(t / 1000, timezone.utc).hour for t in ts], dtype=float)
     feat["sin"] = np.sin(hour / 24 * 2 * np.pi)
     feat["cos"] = np.cos(hour / 24 * 2 * np.pi)
     names = list(feat)
-    X = np.array(
-        [[np.nan if v is None else v for v in feat[k]] for k in names], dtype=float
-    ).T
+    X = np.array([[np.nan if v is None else v for v in feat[k]] for k in names], dtype=float).T
     ok = np.isfinite(X).all(axis=1)
     days_of = [b.day for b in bars]
     years_of = np.array([d.year for d in days_of])
@@ -175,7 +171,7 @@ def main(path: str) -> None:
                 train &= ok & ~bad & (y >= 0)
                 mu, sd = X[train].mean(0), X[train].std(0) + 1e-12
                 design = lambda m: np.c_[  # noqa: E731
-                    np.ones(int(m.sum())), np.clip((X[m] - mu) / sd, -5, 5)
+                    np.ones(int(m.sum())), np.clip((X[m] - mu) / sd, -5, 5)  # noqa: B023
                 ]
                 beta = fit(design(train), y[train])
                 inner = predict(design(train), beta)

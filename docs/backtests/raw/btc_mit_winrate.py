@@ -21,6 +21,7 @@ from minerva.strategy import btc_bt as bt
 
 TPS = (None,) if "--opposite" in sys.argv else (0.003, 0.005, 0.007, 0.01, 0.015, 0.02)
 SL = 0.01
+FLOOR = -0.999  # 손절 없는 숏은 한 거래 손실이 100%를 넘을 수 있다. 거의 전액 손실로 친다
 NO_STOP = 9.0  # 롱 손절가가 음수, 숏 손절가가 10배라 닿지 않는다
 SLS = {"sl3": 0.03, "sl5": 0.05, "none": NO_STOP}
 GRID = (
@@ -36,8 +37,8 @@ def tally(tr, years):
         b = by.setdefault(y, [0, 0, 0.0, 0.0])
         b[0] += 1
         b[1] += t[6] > 0
-        b[2] += math.log1p(t[6])
-        b[3] += math.log1p(t[6] - 0.001)
+        b[2] += math.log1p(max(t[6], FLOOR))
+        b[3] += math.log1p(max(t[6] - 0.001, FLOOR))
     return by
 
 
@@ -59,6 +60,7 @@ def top1_stats(row, ind, runs, arr, s20, n, years, bars):
         lng, sht = lng & ind[cf][0], sht & ind[cf][1]
     tp, sl = next((g[0], g[1]) for g in GRID if g[2] == key)
     tr = mit.run(arr, combo.sigs(lng, sht), s20, n, tp, sl)
+    tr = [(*t[:6], max(t[6], FLOOR)) for t in tr]
     return mit.stats(tr, years, (bars[-1].day - bars[s20].day).days)
 
 

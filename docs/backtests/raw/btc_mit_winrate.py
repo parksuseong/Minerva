@@ -21,6 +21,11 @@ from minerva.strategy import btc_bt as bt
 
 TPS = (None,) if "--opposite" in sys.argv else (0.003, 0.005, 0.007, 0.01, 0.015, 0.02)
 SL = 0.01
+NO_STOP = 9.0  # 롱 손절가가 음수, 숏 손절가가 10배라 닿지 않는다
+SLS = {"sl3": 0.03, "sl5": 0.05, "none": NO_STOP}
+GRID = (
+    [(None, v, k) for k, v in SLS.items()] if "--wide" in sys.argv else [(tp, SL, tp) for tp in TPS]
+)
 IS, OOS = range(2020, 2025), (2025, 2026)
 
 
@@ -47,6 +52,16 @@ def agg(by, ys):
     )
 
 
+def top1_stats(row, ind, runs, arr, s20, n, years, bars):
+    lead, conf, key = row[0]
+    lng, sht = ind[lead][0] & runs[lead][0], ind[lead][1] & runs[lead][1]
+    for cf in conf:
+        lng, sht = lng & ind[cf][0], sht & ind[cf][1]
+    tp, sl = next((g[0], g[1]) for g in GRID if g[2] == key)
+    tr = mit.run(arr, combo.sigs(lng, sht), s20, n, tp, sl)
+    return mit.stats(tr, years, (bars[-1].day - bars[s20].day).days)
+
+
 def report(frame: str, result: dict) -> None:
     bars = bt.load(frame)
     arr = tuple(np.array([getattr(b, k) for b in bars]) for k in ("open", "high", "low", "close"))
@@ -66,8 +81,8 @@ def report(frame: str, result: dict) -> None:
             for cf in conf:
                 lng, sht = lng & ind[cf][0], sht & ind[cf][1]
             sig = combo.sigs(lng, sht)
-            for tp in TPS:
-                rows.append(((lead, conf, tp), tally(mit.run(arr, sig, s20, n, tp, SL), years)))
+            for tp, sl, key in GRID:
+                rows.append(((lead, conf, key), tally(mit.run(arr, sig, s20, n, tp, sl), years)))
         print(frame, lead, len(rows), flush=True)
     pool = [r for r in rows if (a := agg(r[1], IS))[0] >= 500 and a[2] > 0]
     pool.sort(key=lambda r: -agg(r[1], IS)[1])
@@ -91,17 +106,28 @@ def report(frame: str, result: dict) -> None:
         "is_pos_500": len(pool),
         "is_win60_pos": sum(agg(r[1], IS)[1] >= 0.6 for r in pool),
         "is_win70_pos": sum(agg(r[1], IS)[1] >= 0.7 for r in pool),
-        "by_tp_pool": {str(tp): sum(r[0][2] == tp for r in pool) for tp in TPS},
+        "by_tp_pool": {str(g[2]): sum(r[0][2] == g[2] for r in pool) for g in GRID},
     }
     if top:
         oo = [math.exp(agg(r[1], OOS)[2]) - 1 for r in top]
-        be = [(SL + 0.001) / ((r[0][2] or SL) + SL) for r in top]
+        be = [
+            (SL + 0.001) / (((r[0][2] if isinstance(r[0][2], float) else None) or SL) + SL)
+            for r in top
+        ]
         res |= {
             "top20_oos_win_median": statistics.median(agg(r[1], OOS)[1] for r in top),
             "top20_breakeven_median": statistics.median(be),
             "top20_oos_ret_median": statistics.median(oo),
             "top20_oos_positive": sum(v > 0 for v in oo),
             "top5": [show(r) for r in top[:5]],
+            "top1_stats": top1_stats(top[0], ind, runs, arr, s20, n, years, bars),
+            "by_exit_top": {
+                str(g[2]): show(
+                    max((r for r in pool if r[0][2] == g[2]), key=lambda r: agg(r[1], IS)[1])
+                )
+                for g in GRID
+                if any(r[0][2] == g[2] for r in pool)
+            },
             "best_oos_of_top20": show(max(top, key=lambda r: agg(r[1], OOS)[2])),
         }
     eq, eq10, picks = 0.0, 0.0, {}

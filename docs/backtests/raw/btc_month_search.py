@@ -199,8 +199,11 @@ def summary(rets):
     return {"n": len(a), "cum": float(np.prod(1 + a) - 1), "win": float((a > 0).mean())}
 
 
+SPAN = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+
+
 def legal(g, m):
-    return m["n"] >= 20 and m["win"] >= 0.60
+    return m["n"] >= 20 * SPAN and m["win"] >= 0.60
 
 
 def key(g):
@@ -239,7 +242,8 @@ def month_span(d, ym):
 
 
 def evaluate(d, tr, te, rng):
-    a, z = month_span(d, tr)
+    a = month_span(d, tr[0])[0]
+    z = month_span(d, tr[-1])[1]
     top, base, rounds, tried = search(d, a, z, rng)
     a2, z2 = month_span(d, te)
     tests = [summary(sim(d, g, a2, z2)) for g, _ in top]
@@ -268,8 +272,8 @@ def main() -> None:
     rng = random.Random(11)
     months = [202512 + 0] + [202600 + m for m in range(1, 11)]
     out = []
-    for tr, te in zip(months[::-1][1:], months[::-1][:-1]):  # 최근 달부터
-        out.append(evaluate(d, tr, te, rng))
+    for i in range(len(months) - 1, SPAN - 1, -1):  # 최근 달부터
+        out.append(evaluate(d, months[i - SPAN : i], months[i], rng))
     with open(sys.argv[1], "w") as f:
         json.dump(out, f, ensure_ascii=False, indent=1, default=str)
 

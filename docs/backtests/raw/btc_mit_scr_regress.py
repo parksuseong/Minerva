@@ -78,7 +78,14 @@ def main() -> None:
     p = pred(x, m, d, b)
     lg, tr = run(arr, lng & (p > 0), sht & (p < 0), a, n)
     print("fit", {k: round(float(v) * 1e4, 1) for k, v in zip(names, b)})
-    print("in", len(tr), sum(t[6] > 0 for t in tr), round(math.exp(lg) - 1, 3), "base", round(math.exp(run(arr, lng, sht, a, n)[0]) - 1, 3))
+    print(
+        "in",
+        len(tr),
+        sum(t[6] > 0 for t in tr),
+        round(math.exp(lg) - 1, 3),
+        "base",
+        round(math.exp(run(arr, lng, sht, a, n)[0]) - 1, 3),
+    )
     s0 = next(i for i, x_ in enumerate(bars) if x_.day >= date(2020, 1, 1))
     res = []
     for i in range(s0, n - 2 * SPAN + 1, SPAN):
@@ -89,16 +96,29 @@ def main() -> None:
         base = run(arr, lng, sht, e, f)[0]
         res.append((run(arr, lq, lw, e, f)[0], run(arr, lq, lw, e, f, 0.001)[0], base, bars[e].day))
     w = [r[0] for r in res]
-    print("walk n", len(w), "sum", round(math.expm1(sum(w)), 3), "sum10", round(math.expm1(sum(r[1] for r in res)), 3), "base", round(math.expm1(sum(r[2] for r in res)), 3), "pos", sum(v > 0 for v in w), "beat", sum(r[0] > r[2] for r in res))
-    print("last", [(str(r[3]), round(math.expm1(r[0]), 3), round(math.expm1(r[2]), 3)) for r in res[-5:]])
-    print("post2025", round(math.expm1(sum(r[0] for r in res if r[3] >= date(2025, 1, 1))), 3), round(math.expm1(sum(r[2] for r in res if r[3] >= date(2025, 1, 1))), 3))
-    np.save(sys_path(), p)
-
-
-def sys_path():
-    import sys
-
-    return sys.argv[1]
+    print(
+        "walk n",
+        len(w),
+        "sum",
+        round(math.expm1(sum(w)), 3),
+        "sum10",
+        round(math.expm1(sum(r[1] for r in res)), 3),
+        "base",
+        round(math.expm1(sum(r[2] for r in res)), 3),
+        "pos",
+        sum(v > 0 for v in w),
+        "beat",
+        sum(r[0] > r[2] for r in res),
+    )
+    print(
+        "last",
+        [(str(r[3]), round(math.expm1(r[0]), 3), round(math.expm1(r[2]), 3)) for r in res[-5:]],
+    )
+    print(
+        "post2025",
+        round(math.expm1(sum(r[0] for r in res if r[3] >= date(2025, 1, 1))), 3),
+        round(math.expm1(sum(r[2] for r in res if r[3] >= date(2025, 1, 1))), 3),
+    )
 
 
 if __name__ == "__main__":

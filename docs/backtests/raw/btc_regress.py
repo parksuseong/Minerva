@@ -79,7 +79,7 @@ def trade(signals, win_exit, cost: float, opens):
     """signals: (봉, 쪽, 익절) 시간순. 포지션이 없을 때만 진입. 거래별 (exit 봉, 수익, 승)."""
     out, free = [], -1
     for i, side, tp in signals:
-        if i <= free:
+        if i < free:  # 청산 봉 마감 신호는 다음 봉 시가에 진입할 수 있다
             continue
         win, ex, px = win_exit[(tp, side)]
         if win[i] == -1:

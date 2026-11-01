@@ -1,4 +1,6 @@
-"""mit 조합에 RSI·SCR 조건 추가. 사전 등록: docs/backtests/2026-11-01-btc-mit-scr-filter-hypotheses.md
+"""mit 조합에 RSI·SCR 조건 추가.
+
+사전 등록: docs/backtests/2026-11-01-btc-mit-scr-filter-hypotheses.md
 
 numpy 필요. 실행: PYTHONPATH=src:<numpy 경로>:docs/backtests/raw python <이 파일>
 주문과 연결되지 않는다.

@@ -70,7 +70,7 @@ def sim(sig, t1, c1, m5, wait, pen):
             missed.append(win)
             continue
         if win:
-            r = s * TP - MAKER - MAKER * (1 + s * TP)
+            r = TP - MAKER - MAKER * (1 + s * TP)
             last = e + fg
         else:
             b = e + fs
@@ -96,7 +96,8 @@ def show(tag, trades, missed, sig_n, years, days, s25):
         y = int(years[x[0]])
         by[y] = by.get(y, 1.0) * (1 + x[3])
     print(
-        f"{tag}: 체결 {len(r)}/{len(r) + len(missed)} ({len(r) / (len(r) + len(missed)) * 100:.0f}%) "
+        f"{tag}: 체결 {len(r)}/{len(r) + len(missed)} "
+        f"({len(r) / (len(r) + len(missed)) * 100:.0f}%) "
         f"승률 {(r > 0).mean() * 100:.1f} 놓친 승률 {np.mean(missed) * 100 if missed else 0:.1f} "
         f"연 {cagr * 100:+.1f}% 낙폭 {mdd * 100:.1f}% 비 {cagr / abs(mdd):.2f} "
         f"평균 {r.mean() * 100:.3f}% 상위5제외 {rest:.2f} 2025~ {rec:.3f} "

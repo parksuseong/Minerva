@@ -19,7 +19,7 @@ import numpy as np
 
 from minerva.strategy import btc_bt as bt
 
-TPS = (0.003, 0.005, 0.007, 0.01, 0.015, 0.02)
+TPS = (None,) if "--opposite" in sys.argv else (0.003, 0.005, 0.007, 0.01, 0.015, 0.02)
 SL = 0.01
 IS, OOS = range(2020, 2025), (2025, 2026)
 
@@ -95,7 +95,7 @@ def report(frame: str, result: dict) -> None:
     }
     if top:
         oo = [math.exp(agg(r[1], OOS)[2]) - 1 for r in top]
-        be = [(SL + 0.001) / (r[0][2] + SL) for r in top]
+        be = [(SL + 0.001) / ((r[0][2] or SL) + SL) for r in top]
         res |= {
             "top20_oos_win_median": statistics.median(agg(r[1], OOS)[1] for r in top),
             "top20_breakeven_median": statistics.median(be),

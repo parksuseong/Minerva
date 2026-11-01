@@ -51,6 +51,8 @@ def signals(bars):
             state = 2
         if state == 1 and cur and cur[0] == 1 and bars[i].high >= cur[2]:
             cur = [1, i, bars[i].high]
+        if state == 2 and cur and cur[0] == -1 and bars[i].low <= cur[2]:
+            cur = [-1, i, bars[i].low]
     return buy, sell, swings
 
 

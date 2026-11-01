@@ -74,7 +74,7 @@ def hindsight(swings, bars, a, z):
     x = [s for s in swings if a <= s[1] < z]
     eq = 1.0
     for p, q in zip(x, x[1:]):
-        eq *= 1 + (q[2] / p[2] - 1) * p[0] - 0.001
+        eq *= 1 - (q[2] / p[2] - 1) * p[0] - 0.001  # p[0]=1은 고점 라벨이라 숏
     return eq, len(x) - 1
 
 

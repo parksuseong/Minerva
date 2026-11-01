@@ -124,7 +124,8 @@ def masks(flt: tuple, c: np.ndarray, m: dict) -> tuple:
         lo, sh = f > ref, f < ref
     else:
         lo, sh = (c > f) & (f > ref), (c < f) & (f < ref)
-    return lo, sh, c < ref, c > ref
+    below, above = c < ref, c > ref
+    return lo, sh, below & np.r_[False, above[:-1]], above & np.r_[False, below[:-1]]
 
 
 def run(d: dict, sig: tuple, perm: tuple, exit_kind: str, a: int, b: int) -> tuple:

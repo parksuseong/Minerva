@@ -33,7 +33,7 @@ def main() -> None:
         bars = bt.load(frame)
         c = [b.close for b in bars]
         n = len(bars)
-        at = lambda d: next(i for i, b in enumerate(bars) if b.day >= d)  # noqa: E731
+        at = lambda d: next(i for i, b in enumerate(bars) if b.day >= d)  # noqa: E731, B023
         s20, s25 = at(date(2020, 1, 1)), at(date(2025, 1, 1))
         st = bp.crosses(stoch_fast_k(bars, 5), 20, 80)
         r14 = rsi(c, 14)
@@ -49,7 +49,7 @@ def main() -> None:
                     line(tag, bars, lo, sh, 3, s20, s25, n, stop)
     bars = bt.load("1h")
     n = len(bars)
-    at = lambda d: next(i for i, b in enumerate(bars) if b.day >= d)  # noqa: E731
+    at = lambda d: next(i for i, b in enumerate(bars) if b.day >= d)  # noqa: E731, B023
     s20, s25 = at(date(2020, 1, 1)), at(date(2025, 1, 1))
     for ob, os_ in ((70, 30), (80, 20)):
         sl.OB, sl.OS = ob, os_

@@ -1,9 +1,9 @@
-# 15분마다. 4시간봉은 KST 01·05·09·13·17·21시에 마감한다.
+# 매시 00·15·30·45분(10초 뒤, 막 마감한 봉이 시세에 들어오도록). 4시간봉은 KST 01·05·09·13·17·21시에 마감한다.
 [Unit]
 Description=Refresh Minerva BTCUSDT analysis every 15 minutes
 
 [Timer]
-OnCalendar=*:02/15
+OnCalendar=*:00/15:10
 Persistent=true
 
 [Install]

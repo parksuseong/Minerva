@@ -87,7 +87,7 @@ def main() -> None:
                                 "ret": round(float((eq[-1] - 1) * 100), 1),
                                 "mdd": round(float((eq / pk[1:] - 1).min() * 100), 1),
                                 "drop5": round(float(s[:-5].mean() * 100), 3) if len(s) > 5 else None}
-                    key = f"{gate}_{'opp' if use_opp else 'hold'}_sl{sl * 100:.2f}_tp{tp * 100:.0f}"
+                    key = f"{gate}_{'opp' if use_opp else 'hold'}_sl{sl * 100:.2f}_tp{tp * 100:g}"
                     rep["cells"][key] = {"old": st(t < SPLIT), "new": st(t >= SPLIT), "all": st(t > 0),
                                          "all_c10": st(t > 0, 1, 0.001), "new_3x": st(t >= SPLIT, 3),
                                          "all_3x": st(t > 0, 3)}

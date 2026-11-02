@@ -24,7 +24,10 @@ SPLIT = datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp() * 1000
 
 
 def zigzag(h: np.ndarray, l: np.ndarray, th: float) -> list:
-    """(극점 봉, 가격, 종류 +1 고점/−1 저점, 확정 봉). 극점에서 th만큼 되돌면 그 봉에 확정."""
+    """(극점 봉, 가격, 종류 +1 고점/−1 저점, 확정 봉). 극점에서 th만큼 되돌면 그 봉에 확정.
+
+    다음 극점은 확정된 극점의 다음 봉부터 찾는다. 같은 봉을 고점·저점으로 거듭 찍지 않게 하려는 것이다.
+    """
     piv = []
     trend = 0
     hi_i = lo_i = 0
@@ -37,25 +40,25 @@ def zigzag(h: np.ndarray, l: np.ndarray, th: float) -> list:
             if h[i] >= l[lo_i] * (1 + th) and lo_i < i:
                 piv.append((lo_i, l[lo_i], -1, i))
                 trend = 1
-                hi_i = lo_i + int(np.argmax(h[lo_i:i + 1]))
+                hi_i = lo_i + 1 + int(np.argmax(h[lo_i + 1:i + 1]))
             elif l[i] <= h[hi_i] * (1 - th) and hi_i < i:
                 piv.append((hi_i, h[hi_i], 1, i))
                 trend = -1
-                lo_i = hi_i + int(np.argmin(l[hi_i:i + 1]))
+                lo_i = hi_i + 1 + int(np.argmin(l[hi_i + 1:i + 1]))
         elif trend == 1:
             if h[i] > h[hi_i]:
                 hi_i = i
-            if l[i] <= h[hi_i] * (1 - th):
+            if l[i] <= h[hi_i] * (1 - th) and hi_i < i:
                 piv.append((hi_i, h[hi_i], 1, i))
                 trend = -1
-                lo_i = hi_i + int(np.argmin(l[hi_i:i + 1]))
+                lo_i = hi_i + 1 + int(np.argmin(l[hi_i + 1:i + 1]))
         else:
             if l[i] < l[lo_i]:
                 lo_i = i
-            if h[i] >= l[lo_i] * (1 + th):
+            if h[i] >= l[lo_i] * (1 + th) and lo_i < i:
                 piv.append((lo_i, l[lo_i], -1, i))
                 trend = 1
-                hi_i = lo_i + int(np.argmax(h[lo_i:i + 1]))
+                hi_i = lo_i + 1 + int(np.argmax(h[lo_i + 1:i + 1]))
     return piv
 
 

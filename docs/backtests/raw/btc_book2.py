@@ -49,7 +49,8 @@ def limit_trade(d: dict, side: int, start: int, lim: int, entry: float, stop: fl
     else:
         return None
     if (side > 0 and px <= stop) or (side < 0 and px >= stop):
-        return (stop / px - 1) * side, "stop", px, i
+        # 시가가 이미 손절가 밖에서 체결: 손절 주문이 바로 체결가에 나간다고 본다
+        return 0.0, "stop", px, i
     end = min(i + CAP, n - 1)
     for j in range(i, end):
         if (side > 0 and l[j] <= stop) or (side < 0 and h[j] >= stop):

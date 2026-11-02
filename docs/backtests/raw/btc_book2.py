@@ -90,6 +90,11 @@ def scan(d: dict, piv: list, side: int) -> list:
 
     for k in range(len(piv)):
         p = piv
+        # 마지막 다리는 한 번에 와야 한다: 마지막 피벗 다음 피벗이 확정되면 그때 대기를 취소한다
+        nxt_cf = p[k + 1][3] if k + 1 < len(p) else None
+
+        def cap(start: int, lim: int) -> int:
+            return lim if nxt_cf is None else min(lim, nxt_cf - start)
         # 하모닉: X 저 → A 고 → B 저 → C 고, D 지정가 매수
         if k >= 3 and p[k][2] == 1 and p[k - 3][2] == -1:
             X, A, B, C = p[k - 3], p[k - 2], p[k - 1], p[k]
@@ -107,8 +112,9 @@ def scan(d: dict, piv: list, side: int) -> list:
                         continue
                     stop = A[1] - sr * xa
                     tgt = Dp + TGT * (A[1] - Dp)
-                    lim = 2 * max(C[0] - X[0], 4)
-                    out.append((name, C[3] + 1, lim, Dp, stop, tgt, C[1], "limit"))
+                    lim = cap(C[3] + 1, 2 * max(C[0] - X[0], 4))
+                    if lim > 0:
+                        out.append((name, C[3] + 1, lim, Dp, stop, tgt, C[1], "limit"))
             # AB=CD: A 고 → B 저 → C 고, D = C − AB
             Ah, Bl, Ch = p[k - 2], p[k - 1], p[k]
             ab2 = Ah[1] - Bl[1]
@@ -118,8 +124,9 @@ def scan(d: dict, piv: list, side: int) -> list:
                     Dp = Ch[1] - ab2
                     stop = Ch[1] - 1.272 * ab2
                     tgt = Dp + TGT * (Ah[1] - Dp)
-                    lim = 2 * max(Ch[0] - Ah[0], 4)
-                    out.append(("ABCD", Ch[3] + 1, lim, Dp, stop, tgt, Ch[1], "limit"))
+                    lim = cap(Ch[3] + 1, 2 * max(Ch[0] - Ah[0], 4))
+                    if lim > 0:
+                        out.append(("ABCD", Ch[3] + 1, lim, Dp, stop, tgt, Ch[1], "limit"))
         # 쓰리 드라이브: H0 → L1 → H1 → L2 → H2, 세 번째 드라이브 끝 지정가 매수
         if k >= 4 and p[k][2] == 1 and p[k - 4][2] == 1:
             H0, L1, H1, L2, H2 = p[k - 4:k + 1]
@@ -133,16 +140,19 @@ def scan(d: dict, piv: list, side: int) -> list:
                         Dp = H2[1] - 1.272 * r2
                         stop = H2[1] - 1.618 * r2
                         if Dp < L2[1]:
-                            lim = 2 * max(H2[0] - L1[0], 4)
-                            out.append(("3DRV", H2[3] + 1, lim, Dp, stop, H2[1], H2[1], "limit"))
+                            lim = cap(H2[3] + 1, 2 * max(H2[0] - L1[0], 4))
+                            if lim > 0:
+                                out.append(("3DRV", H2[3] + 1, lim, Dp, stop, H2[1], H2[1],
+                                            "limit"))
         # 골든 포켓: 저점 L → 고점 H 확정 뒤 0.618 되돌림 지정가 매수, 손절 L, 목표 H
         if k >= 1 and p[k][2] == 1 and p[k - 1][2] == -1:
             L, Hh = p[k - 1], p[k]
             up = Hh[1] - L[1]
             if up > 0:
                 Dp = Hh[1] - 0.618 * up
-                lim = 2 * max(Hh[0] - L[0], 4)
-                out.append(("GP", Hh[3] + 1, lim, Dp, L[1], Hh[1], Hh[1], "limit"))
+                lim = cap(Hh[3] + 1, 2 * max(Hh[0] - L[0], 4))
+                if lim > 0:
+                    out.append(("GP", Hh[3] + 1, lim, Dp, L[1], Hh[1], Hh[1], "limit"))
         # 상승 삼각: L0 → H1 → L1 → H2 → L2, 고점 수평, 저점 상승, 고점 돌파 종가
         if k >= 4 and p[k][2] == -1 and p[k - 4][2] == -1:
             L0, H1, L1, H2, L2 = p[k - 4:k + 1]

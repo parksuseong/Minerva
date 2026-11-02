@@ -62,6 +62,11 @@ def zigzag(h: np.ndarray, l: np.ndarray, th: float) -> list:
     return piv
 
 
+def sym(a: int, b: int) -> bool:
+    """두 구간 봉 수의 비가 0.5~2 사이. 모양이 한쪽으로 늘어진 것을 뺀다."""
+    return a > 0 and b > 0 and 0.5 <= a / b <= 2.0
+
+
 def find(piv: list, c: np.ndarray, kind: str) -> list:
     """롱 기준 패턴을 찾는다. 숏은 가격을 뒤집어 같은 함수를 쓴다.
 
@@ -82,6 +87,8 @@ def find(piv: list, c: np.ndarray, kind: str) -> list:
             if height <= 0 or abs(l2[1] - l1[1]) > TOL * (hh[1] - l1[1]):
                 continue
             if h0[1] - l1[1] < (hh[1] - l1[1]):  # 앞선 하락이 반등보다 커야 한다
+                continue
+            if not sym(hh[0] - l1[0], l2[0] - hh[0]):  # 두 바닥의 간격이 고르게
                 continue
             neck, stop = hh[1], min(l1[1], l2[1])
             target = neck + height
@@ -108,6 +115,8 @@ def find(piv: list, c: np.ndarray, kind: str) -> list:
             height = neck - base
             if height <= 0 or max(l1[1], l2[1], l3[1]) - base > TOL * height:
                 continue
+            if not sym(l2[0] - l1[0], l3[0] - l2[0]) or abs(h1[1] - h2[1]) > 0.3 * height:
+                continue
             if h0[1] - l1[1] < (h1[1] - l1[1]):
                 continue
             br = breakout(c, l3[3], neck, base, max(l3[0] - l1[0], 4))
@@ -123,6 +132,8 @@ def find(piv: list, c: np.ndarray, kind: str) -> list:
                 continue
             span = min(h1[1], h2[1]) - hd[1]
             if span <= 0 or abs(ls[1] - rs[1]) > SHOULDER_TOL * span:
+                continue
+            if not sym(hd[0] - ls[0], rs[0] - hd[0]):
                 continue
             if h0[1] - ls[1] < (h1[1] - ls[1]):
                 continue

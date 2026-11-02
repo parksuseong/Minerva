@@ -24,9 +24,12 @@ BUY, SELL = "#1a9850", "#d73027"
 INK, GRID = "#333333", "#e6e6e6"
 MA_COLORS = ("#1f6fb4", "#e08a00")
 TOPS = [
+    ("S3", ("X", "S", 30, 80), "M", "SCR 3-level + SMA30 vs SMA80, exit on SMA80 cross"),
+    ("S3", ("X", "S", 50, 80), "M", "SCR 3-level + SMA50 vs SMA80, exit on SMA80 cross"),
+    ("R", ("X", "S", 30, 60), "M", "RSI 30/70 + SMA30 vs SMA60, exit on SMA60 cross"),
     ("R", ("X", "S", 20, 60), "M", "RSI 30/70 + SMA20 vs SMA60, exit on SMA60 cross"),
-    ("R", ("X", "S", 20, 50), "M", "RSI 30/70 + SMA20 vs SMA50, exit on SMA50 cross"),
 ]
+EXTRA = (30, 80)
 
 
 def draw(d, sig, m, flt, ex, title, out, bars_all):
@@ -91,6 +94,7 @@ def main() -> None:
     d = B.load(Path("~/.minerva/data/btc/30m.csv").expanduser())
     sigs = B.raw_signals(d)
     m = B.all_mas(d["c"])
+    m.update({("S", per): B.sma(d["c"], per) for per in EXTRA})
     bars = [
         B.Bar(datetime.fromtimestamp(t / 1000, timezone.utc).date(), o, h, l, c, 0.0)
         for t, o, h, l, c in zip(d["t"], d["o"], d["h"], d["l"], d["c"])

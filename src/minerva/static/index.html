@@ -126,6 +126,25 @@
       <div id="btc-meta" class="placeholder">불러오는 중…</div>
     </section>
     <section class="card">
+      <h2>🤖 ML 규칙 기록 (15분봉, 주문 없음)</h2>
+      <div id="btcml-meta" class="placeholder">불러오는 중…</div>
+      <div id="btcml-rules"></div>
+    </section>
+    <section class="card">
+      <h2>차트 (15분봉 3일)</h2>
+      <div class="mini" id="btcml-legend"></div>
+      <div id="btcml-chart" style="height:720px;margin-top:6px"></div>
+    </section>
+    <section class="card">
+      <h2>기록된 매매</h2>
+      <div id="btcml-trades" class="placeholder">-</div>
+    </section>
+    <section class="card">
+      <h2>최근 점수 (마감된 봉)</h2>
+      <div id="btcml-recent" class="placeholder">-</div>
+      <p class="mini">점수 = 모델 5개(랜덤포레스트·MLP·XGBoost·LSTM·CNN)가 본 "+1.5%에 먼저 닿을" 확률 평균. 기록만 하고 주문은 나가지 않아요.</p>
+    </section>
+    <section class="card">
       <h2>봉별 상태</h2>
       <div id="btc-frames" class="placeholder">-</div>
     </section>
@@ -280,6 +299,8 @@
   </script>
   <script src="/static/daily.js?v=20261031b"></script>
   <script src="/static/btc.js?v=20261031"></script>
+  <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
+  <script src="/static/btcml.js?v=20261104"></script>
   <script src="/static/account.js?v=20261029b"></script>
   <script src="/static/trade.js?v=20261029"></script>
   <script src="/static/office.js?v=20261029b"></script>

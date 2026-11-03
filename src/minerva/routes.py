@@ -27,6 +27,11 @@ def btc_path() -> Path:
     return Path(os.environ.get("MINERVA_BTC_OUT", "~/.minerva/btc/latest.json")).expanduser()
 
 
+def btc_ml_path() -> Path:
+    default = "~/.minerva/research/btc-ml-tracker/view.json"
+    return Path(os.environ.get("MINERVA_BTC_ML_OUT", default)).expanduser()
+
+
 def daily_path() -> Path:
     return Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
 
@@ -64,6 +69,15 @@ def btc_analysis() -> dict:
     data = _read(btc_path())
     if data is None:
         return {"status": "pending", "message": "아직 비트코인 분석이 없어요 (15분마다 자동 실행)"}
+    return data
+
+
+@router.get("/api/btc/ml")
+def btc_ml_tracker() -> dict:
+    """ML 규칙 A·B 기록 추적(주문 없음). 추적기 `minerva-btc-mltrack.timer`가 15분마다 쓴다."""
+    data = _read(btc_ml_path())
+    if data is None:
+        return {"status": "pending", "message": "아직 추적 기록이 없어요 (15분마다 자동 실행)"}
     return data
 
 

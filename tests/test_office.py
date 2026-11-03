@@ -141,3 +141,16 @@ def test_account_not_connected_until_snapshot(tmp_path, monkeypatch):
     assert client.get("/api/account").json()["status"] == "ok"
     page = client.get("/").text
     assert 'id="tab-account"' in page and "/static/account.js" in page
+
+
+def test_btc_ml_endpoint_pending_then_data(tmp_path, monkeypatch):
+    out = tmp_path / "view.json"
+    monkeypatch.setenv("MINERVA_BTC_ML_OUT", str(out))
+    client = TestClient(app)
+    assert client.get("/api/btc/ml").json()["status"] == "pending"
+    out.write_text(json.dumps({"rules": [], "recent": [], "chart": None}))
+    assert client.get("/api/btc/ml").json()["rules"] == []
+    page = client.get("/").text
+    assert "/static/btcml.js" in page and 'id="btcml-chart"' in page
+    assert client.get("/static/btcml.js").status_code == 200
+    assert client.get("/static/vendor/lightweight-charts-5.2.1.js").status_code == 200

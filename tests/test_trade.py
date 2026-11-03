@@ -828,7 +828,12 @@ def test_liquidate_sells_everything_even_when_halted(tmp_path, monkeypatch):
     ]
     assert "limit" not in r[0]  # 시장가
     assert "전량 현금화" in sent[-1]
-    assert trade.run_liquidate(NOW) == []  # 같은 날 두 번 내지 않는다
+    # 모의 실행(dry)은 들어간 주문이 아니라 다시 낸다; 들어간 주문만 건너뛴다
+    assert len(trade.run_liquidate(NOW)) == 1
+    monkeypatch.setattr(trade, "mode", lambda: "live")
+    monkeypatch.setattr(trade, "send_order", lambda cfg, o, live: {**o, "result": "sent"})
+    assert len(trade.run_liquidate(NOW)) == 1
+    assert trade.run_liquidate(NOW) == []
 
 
 def test_liquidate_check_reports_and_clears_state(tmp_path, monkeypatch):

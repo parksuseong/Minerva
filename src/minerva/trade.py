@@ -938,7 +938,8 @@ def run_liquidate(now: datetime | None = None, check: bool = False) -> list[dict
         log.warning("holiday check failed: %s", e)
     held = holdings()
     live = mode() == "live"
-    done = {e["key"] for e in _read_journal()}
+    # 거부·실패한 주문은 08:55 재실행에서 다시 낸다 (들어간 주문만 건너뛴다)
+    done = {e["key"] for e in _read_journal() if e.get("result") == "sent"}
     today = now.strftime("%Y-%m-%d")
     results = []
     for p in held:

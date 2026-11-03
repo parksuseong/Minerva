@@ -1,0 +1,12 @@
+# BTCUSDT 추세 청산 기록 추적(주문 없음). minerva-btc-trend-paper.timer가 실행한다.
+# 설치: sudo cp deploy/minerva-btc-trend-paper.* /etc/systemd/system/ && sudo systemctl enable --now minerva-btc-trend-paper.timer
+[Unit]
+Description=Minerva BTCUSDT trend-exit paper tracking
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.strategy.btc_trend_paper

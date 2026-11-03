@@ -118,7 +118,7 @@ def build(d5: dict) -> dict:
 
 
 # ---- 모델 ----
-def fit_predict_tab(name: str, Xtr, ytr, Xte, seed: int) -> np.ndarray:
+def fit_predict_tab(name: str, Xtr, ytr, Xte, seed: int, ncls: int = 3) -> np.ndarray:
     if name == "rf":
         from sklearn.ensemble import RandomForestClassifier
 
@@ -134,13 +134,16 @@ def fit_predict_tab(name: str, Xtr, ytr, Xte, seed: int) -> np.ndarray:
         return m.predict_proba(Xte)
     import xgboost as xgb
 
-    bst = xgb.train({"objective": "multi:softprob", "num_class": 3, "max_depth": 5, "eta": 0.05,
-                     "subsample": 0.8, "colsample_bytree": 0.8, "nthread": 2, "seed": seed},
-                    xgb.DMatrix(Xtr, label=ytr), num_boost_round=300)
-    return bst.predict(xgb.DMatrix(Xte))
+    prm = {"max_depth": 5, "eta": 0.05, "subsample": 0.8, "colsample_bytree": 0.8, "nthread": 2,
+           "seed": seed}
+    prm.update({"objective": "multi:softprob", "num_class": ncls} if ncls > 2
+               else {"objective": "binary:logistic"})
+    bst = xgb.train(prm, xgb.DMatrix(Xtr, label=ytr), num_boost_round=300)
+    p = bst.predict(xgb.DMatrix(Xte))
+    return p if ncls > 2 else np.stack([1 - p, p], 1)
 
 
-def fit_predict_seq(kind: str, seqn, Xn, y, tr_idx, te_idx, seed: int) -> np.ndarray:
+def fit_predict_seq(kind: str, seqn, Xn, y, tr_idx, te_idx, seed: int, ncls: int = 3) -> np.ndarray:
     import torch
     from torch import nn
 
@@ -157,7 +160,7 @@ def fit_predict_seq(kind: str, seqn, Xn, y, tr_idx, te_idx, seed: int) -> np.nda
                 self.body = nn.Sequential(nn.Conv1d(nf, 32, 5, padding=2), nn.ReLU(),
                                           nn.Conv1d(32, 32, 5, padding=2), nn.ReLU(),
                                           nn.AdaptiveAvgPool1d(1))
-            self.head = nn.Sequential(nn.Linear(32 + nt, 32), nn.ReLU(), nn.Linear(32, 3))
+            self.head = nn.Sequential(nn.Linear(32 + nt, 32), nn.ReLU(), nn.Linear(32, ncls))
 
         def forward(self, s, x):
             if kind == "lstm":

@@ -492,7 +492,18 @@ def step(notify: bool = True) -> dict:
         sigs,
         meta,
         state,
-        chart_data(B, X, seq, t, seq_ok, models, meta, trades, state["start"]),
+        chart_data(
+            B,
+            X,
+            seq,
+            t,
+            seq_ok,
+            models,
+            meta,
+            trades,
+            state["start"],
+            {r: summary[r]["open"] for r in RULES},
+        ),
     )
     if notify:
         for s in msgs:
@@ -510,7 +521,7 @@ BACKTEST = {  # 2026-11-04 문서의 2024-01~ 결과 (3배, 수수료 포함, �
 CHART_BARS = 288  # 3일
 
 
-def chart_data(B, X, seq, t, seq_ok, models, meta, trades, start) -> dict:
+def chart_data(B, X, seq, t, seq_ok, models, meta, trades, start, opens=None) -> dict:
     """화면 차트용: 최근 3일 15분봉, Stoch·CCI·RSI, 모델 점수, 기록 시작 뒤 진입·청산 표시.
 
     시각은 KST로 옮긴 초(차트 라이브러리는 UTC로 그리므로 9시간을 더한다).
@@ -566,6 +577,17 @@ def chart_data(B, X, seq, t, seq_ok, models, meta, trades, start) -> dict:
                     "time": sec(x["t_exit"]),
                     "win": bool(x["win"]),
                     "net3": round(x["net1"] * 300, 2),
+                }
+            )
+    for r, o in (opens or {}).items():  # 아직 안 끝난 포지션도 진입 표시를 단다
+        if o and o["kind"] == "pos":
+            marks.append(
+                {
+                    "rule": r,
+                    "side": o["side"],
+                    "kind": "open",
+                    "time": sec(o["t_fill"]),
+                    "price": o["px"],
                 }
             )
     return {"bars": bars, "marks": marks, "thr": meta["thr"], "start": sec(start)}

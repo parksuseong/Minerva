@@ -813,3 +813,47 @@ def test_evidence_uses_long_only_and_skips_old_inverse():
         ],
     }
     assert trade._evidence(daily) == {"005930": (0.01, 0.02)}
+
+
+def test_liquidate_sells_everything_even_when_halted(tmp_path, monkeypatch):
+    held = [{"code": "357870", "name": "CD", "qty": 168, "price": 58310}, {"code": "X", "qty": 0}]
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: {**ACCOUNT, "positions": held})
+    sent = []
+    monkeypatch.setattr(trade.notify, "send", lambda text: sent.append(text) or True)
+    (tmp_path / "HALT").write_text("")
+    r = trade.run_liquidate(NOW)
+    assert [(x["code"], x["qty"], x["side"], x["result"]) for x in r] == [
+        ("357870", 168, "sell", "dry")
+    ]
+    assert "limit" not in r[0]  # 시장가
+    assert "전량 현금화" in sent[-1]
+    assert trade.run_liquidate(NOW) == []  # 같은 날 두 번 내지 않는다
+
+
+def test_liquidate_check_reports_and_clears_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    sent = []
+    monkeypatch.setattr(trade.notify, "send", lambda text: sent.append(text) or True)
+    (tmp_path / "park.json").write_text(json.dumps({"qty": 168}))
+    left = [{"code": "357870", "name": "CD", "qty": 168}]
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: {**ACCOUNT, "positions": left})
+    assert trade.run_liquidate(NOW, check=True) == [{"code": "357870", "qty": 168}]
+    assert "남은 보유" in sent[-1]
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: ACCOUNT)
+    assert trade.run_liquidate(NOW, check=True) == []
+    assert json.loads((tmp_path / "park.json").read_text()) == {"qty": 0}
+    assert "완료" in sent[-1]
+
+
+def test_liquidate_skips_holiday(tmp_path, monkeypatch):
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(trade, "is_open_day", lambda cfg, day: False)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: pytest.fail("no orders"))
+    assert trade.run_liquidate(NOW) == []
+
+
+def test_liquidate_requires_yes_flag(capsys):
+    with pytest.raises(SystemExit):
+        trade.main(["liquidate"])
+    assert "--yes" in capsys.readouterr().err

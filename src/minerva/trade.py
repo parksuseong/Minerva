@@ -11,6 +11,8 @@
 - `watch` (장중 30초): 이 봇이 산 종목만 손절가 감시, 닿으면 시장가 매도
 - `reconcile` (평일 15:45): 봇 보유 목록과 실제 잔고를 맞춘다 (미체결·직접 매도 정리)
 - `selftest --yes` (장중, 수동): 1주 사고 바로 팔아 주문 경로를 확인한다 (모드와 무관하게 실주문)
+- `liquidate --yes` (수동·일회성 예약): 계좌 보유 전부를 시장가로 판다. 사용자가 "전부 현금으로"를
+  지시했을 때만 쓴다. HALT와 무관하게 돈다(보통 HALT를 켠 채 쓴다). `--check`는 다 팔렸는지 알린다.
 
 봇 손익이 고점보다 평가액의 DRAWDOWN_LIMIT 넘게 줄면 `NO_ENTRY` 파일을 만들어 신규 매수만 막는다.
 손절·청산 매도는 계속한다. 봇 손익 기준이라 입출금에는 반응하지 않는다.
@@ -528,6 +530,7 @@ REASON = {
     "SELFTEST": "시험",
     "PARK": "대기 자금 파킹",
     "UNPARK": "파킹 해제",
+    "LIQUIDATE": "전량 현금화",
 }
 
 
@@ -909,6 +912,57 @@ def run_selftest(code: str = SELFTEST_CODE, wait: float = 90) -> list[dict]:
     return results
 
 
+def run_liquidate(now: datetime | None = None, check: bool = False) -> list[dict]:
+    """계좌 보유 전부 시장가 매도(장전이면 시가 동시호가). check면 남은 보유만 알린다."""
+    now = now or datetime.now(kis.KST)
+    cfg = kis.load_config()
+
+    def holdings() -> list[dict]:
+        return [p for p in kis.snapshot(cfg, now)["positions"] if p.get("qty", 0) > 0]
+
+    if check:
+        held = holdings()
+        if held:
+            names = ", ".join(f"{p['name']} {p['qty']}주" for p in held)
+            notify.send(f"⚠️ 전량 현금화 확인: 아직 남은 보유 {names}")
+        else:
+            _save(TRADE_DIR / "positions.json", {})
+            _save(TRADE_DIR / "park.json", {"qty": 0})
+            notify.send("✅ 전량 현금화 완료: 보유 종목 없음. 매매 중지(HALT) 상태 유지")
+        return [{"code": p["code"], "qty": p["qty"]} for p in held]
+    try:
+        if is_open_day(cfg, now) is False:
+            notify.send(f"📅 {now:%m/%d}은 휴장일이라 전량 현금화 주문을 내지 않았어요")
+            return []
+    except kis.KisError as e:
+        log.warning("holiday check failed: %s", e)
+    held = holdings()
+    live = mode() == "live"
+    done = {e["key"] for e in _read_journal()}
+    today = now.strftime("%Y-%m-%d")
+    results = []
+    for p in held:
+        o = {
+            "side": "sell",
+            "code": p["code"],
+            "name": p["name"],
+            "qty": int(p["qty"]),
+            "action": "LIQUIDATE",
+            "signal_date": today,
+            "kind": "liquidate",
+        }
+        key = f"liquidate:{order_key(o)}"
+        if key in done:
+            continue
+        r = send_order(cfg, o, live)
+        r["key"], r["at"] = key, now.isoformat(timespec="seconds")
+        _journal(r)
+        results.append(r)
+    head = "💸 전량 현금화 주문" + ("" if live else " (모의 실행: 실제 주문 안 냄)")
+    notify.send("\n".join([head, *([_line(r) for r in results] or ["팔 보유 없음"])]))
+    return results
+
+
 def _plan_ahead(daily: dict, account: dict) -> tuple[list[dict], list[str]]:
     """점검·미리보기용 계획. 08:50 실행과 같은 조건(파킹 자금·신규 매수 중지)으로 계산한다."""
     return plan(
@@ -1020,6 +1074,7 @@ COMMANDS = {
     "reconcile": run_reconcile,
     "selftest": run_selftest,
     "preflight": run_preflight,
+    "liquidate": run_liquidate,
 }
 
 
@@ -1028,11 +1083,12 @@ def main(argv: list[str] | None = None) -> int:
         description="국내 주식 자동 주문 (mode 파일이 live일 때만 실주문)"
     )
     parser.add_argument("command", choices=sorted(COMMANDS))
-    parser.add_argument("--yes", action="store_true", help="selftest: 실주문을 낸다는 확인")
+    parser.add_argument("--yes", action="store_true", help="selftest·liquidate: 실주문 확인")
+    parser.add_argument("--check", action="store_true", help="liquidate: 다 팔렸는지 확인만")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
-    if args.command == "selftest" and not args.yes:
-        parser.error("selftest는 실제 주문을 낸다. --yes 를 붙여야 실행한다")
+    if args.command in ("selftest", "liquidate") and not (args.yes or args.check):
+        parser.error(f"{args.command}는 실제 주문을 낸다. --yes 를 붙여야 실행한다")
     # 주문·감시·대사가 동시에 돌면 positions.json을 서로 덮어쓴다. 한 번에 하나만 돈다.
     # watch는 30초마다 다시 오니 기다리지 않고 건너뛴다.
     lock = _lock(wait=args.command != "watch")
@@ -1042,7 +1098,10 @@ def main(argv: list[str] | None = None) -> int:
             notify.send(f"⚠️ 자동 주문({args.command})을 건너뛰었어요: 다른 작업이 2분 넘게 실행 중")
         return 0
     try:
-        results = COMMANDS[args.command]()
+        if args.command == "liquidate":
+            results = run_liquidate(check=args.check)
+        else:
+            results = COMMANDS[args.command]()
     except (kis.KisError, OSError, KeyError, ValueError) as e:
         log.error("%s failed: %s", args.command, e)
         if args.command != "watch":  # watch는 30초마다 돌아 일시 오류로 알림이 쏟아진다

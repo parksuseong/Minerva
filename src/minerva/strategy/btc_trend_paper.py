@@ -5,8 +5,10 @@
   그 방향, 다르면 없음.
   그날 쓰는 추세는 전날 일봉 마감까지의 값이다.
 - 진입: 추세 방향의 15분봉 또는 30분봉 SCR 3단 신호, 봉 마감 다음 5분봉 시가.
+  일반 현물이라 롱만 받는다(LONG_ONLY).
 - 청산: 추세가 그 방향이 아니게 되면 그 5분봉 시가, 또는 진입가 대비 3% 손절.
-수익은 1배와 3배(수익·비용 ×3)를 같이 적는다. START 이후 마감 봉으로 매번 다시 계산해
+수익은 1배를 기본으로, 3배(수익·비용 ×3)는 참고로 같이 적는다.
+START 이후 마감 봉으로 매번 다시 계산해
 ~/.minerva/btc_trend_paper/에 쓰고, 새 진입·청산·추세 변화는 텔레그램으로 알린다.
 계산은 백테스트(docs/backtests/raw/btc_fractal.py, btc_trend_detect.py, btc_scr_trend.py)를
 numpy 없이 옮긴 것이다.
@@ -41,6 +43,7 @@ COST = 0.0005
 LIQ = 0.32
 RULES = {"T8-15m": 3, "T8-30m": 6}
 STRUCT_K = 5
+LONG_ONLY = True  # 사용자는 일반 현물(1배·롱만)로 한다(2026-11-03)
 
 
 @dataclass(frozen=True)
@@ -223,7 +226,12 @@ def rets(side: int, entry: float, px: float, mae: float) -> tuple[float, float]:
 
 
 def replay(
-    rule: str, bars5: Sequence[Bar], by_day: dict[int, int], start: int = START, stop: float = STOP
+    rule: str,
+    bars5: Sequence[Bar],
+    by_day: dict[int, int],
+    start: int = START,
+    stop: float = STOP,
+    long_only: bool = LONG_ONLY,
 ) -> list[Trade]:
     longs, shorts = signal_grid(bars5, RULES[rule])
     out: list[Trade] = []
@@ -253,6 +261,8 @@ def replay(
         if b.t < start:
             continue
         side = 1 if (b.t in longs and tr > 0) else -1 if (b.t in shorts and tr < 0) else 0
+        if long_only and side < 0:
+            side = 0
         if not side:
             continue
         cur = Trade(rule, side, b.t, b.open)

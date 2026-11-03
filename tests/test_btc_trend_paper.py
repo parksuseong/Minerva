@@ -84,8 +84,9 @@ def test_replay_trend_exit_and_stop(monkeypatch):
 
 def test_replay_ignores_signals_against_trend(monkeypatch):
     monkeypatch.setattr(tp, "signal_grid", lambda b, f: ({2 * M5}, {3 * M5}))
-    out = tp.replay("T8-30m", _flat5(6), {-DAY: -1}, start=0)
+    out = tp.replay("T8-30m", _flat5(6), {-DAY: -1}, start=0, long_only=False)
     assert len(out) == 1 and out[0].side == -1
+    assert tp.replay("T8-30m", _flat5(6), {-DAY: -1}, start=0) == []
 
 
 def test_run_notifies_once(tmp_path, monkeypatch):

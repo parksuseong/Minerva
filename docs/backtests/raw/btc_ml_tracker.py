@@ -1,0 +1,508 @@
+"""15분봉 ML 걸어두는 지정가 규칙 2개를 앞으로의 자료로 기록만 한다 (주문 없음).
+
+규칙(2026-11-04 사용자 승인, 문서 2026-11-04-btc-ml-rest-confirm·strict-hypotheses.md):
+- A: 5개 모델 평균 점수가 2025년 상위 10% 이상 + 4개 이상이 같은 방향 (V1)
+- B: 평균 점수 2025년 상위 5% 이상 + 5개 모두 같은 방향 (S3)
+숏은 하위 10%·5%와 반대 방향 동의. 체결·청산은 btc_ml_edge_cost.rest_sim과 같다.
+
+모델은 백테스트의 2026년 모델과 같은 자료·씨드로 한 번 학습해 저장한다(train).
+step은 15분마다: 현물 5분봉을 받아 붙이고, 새로 마감된 15분봉에 점수를 매기고,
+추적 시작 뒤의 신호로 모의 체결을 다시 계산해 새 사건만 텔레그램으로 알린다.
+
+실행: PYTHONPATH=<pyml>:src:docs/backtests/raw python3 docs/backtests/raw/btc_ml_tracker.py train|step|report
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import pickle
+import time
+import urllib.request
+from pathlib import Path
+
+import btc_ml_15m as M
+import btc_ml_ensemble as E
+import numpy as np
+from btc_fractal import load5
+from btc_ml_barrier import barrier_labels
+from btc_ml_edge_cost import MAKER, OFF, REST, SL, SLIP, TAKER, THRU, TP, mean_score
+
+HOME = Path("~/.minerva").expanduser()
+BASE5 = HOME / "data/btc/5m.csv"
+ST = Path(os.environ.get("MINERVA_MLTRACK_DIR", HOME / "research/btc-ml-tracker"))
+PRED = HOME / "research/btc-2026-11-04/ml15/pred.npz"
+URL = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1000&startTime={s}"
+BAR15 = 900_000
+YEAR = 2026
+RULES = {"A": (0.90, 4), "B": (0.95, 5)}
+NAMES = {"A": "A(4개 동의·상위10%)", "B": "B(5개 동의·상위5%)"}
+
+
+# ---- 자료 ----
+def live_path() -> Path:
+    return ST / "live5m.csv"
+
+
+def load_all() -> dict:
+    d = load5(BASE5)
+    lp = live_path()
+    if lp.exists():
+        e = load5(lp)
+        keep = e["t"] > d["t"][-1]
+        d = {k: np.r_[d[k], e[k][keep]] for k in d}
+    # 15분 경계에서 끝나게 자른다(부분 봉 제외는 resample이 한다)
+    return d
+
+
+def fetch_new() -> int:
+    d = load_all()
+    last = int(d["t"][-1])
+    now = int(time.time() * 1000)
+    rows, s = [], last + 300_000
+    while s < now - 300_000:
+        req = urllib.request.Request(URL.format(s=s), headers={"User-Agent": "minerva-tracker"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            k = json.load(r)
+        k = [x for x in k if int(x[6]) < now]  # 마감된 봉만
+        if not k:
+            break
+        rows += k
+        s = int(k[-1][0]) + 300_000
+        if len(k) < 999:
+            break
+    lp = live_path()
+    new = not lp.exists()
+    with lp.open("a", newline="") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(["open_time", "open", "high", "low", "close", "volume", "close_time"])
+        for x in rows:
+            w.writerow(x[:7])
+    return len(rows)
+
+
+# ---- 모델 ----
+def seq_net(kind: str, nf: int, nt: int):
+    import torch
+    from torch import nn
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            if kind == "lstm":
+                self.body = nn.LSTM(nf, 32, batch_first=True)
+            else:
+                self.body = nn.Sequential(
+                    nn.Conv1d(nf, 32, 5, padding=2),
+                    nn.ReLU(),
+                    nn.Conv1d(32, 32, 5, padding=2),
+                    nn.ReLU(),
+                    nn.AdaptiveAvgPool1d(1),
+                )
+            self.head = nn.Sequential(nn.Linear(32 + nt, 32), nn.ReLU(), nn.Linear(32, 2))
+
+        def forward(self, s, x):
+            if kind == "lstm":
+                _, (hn, _) = self.body(s)
+                z = hn[-1]
+            else:
+                z = self.body(s.transpose(1, 2)).squeeze(-1)
+            return self.head(torch.cat([z, x], 1))
+
+    return Net()
+
+
+def fit_seq(kind, Sn, Xn, y, tr, seed):
+    """E.fit_predict_seq와 같은 순서(씨드 → 망 생성 → 4회 반복)로 학습하고 망을 돌려준다."""
+    import torch
+    from torch import nn
+
+    torch.manual_seed(seed)
+    torch.set_num_threads(2)
+    net = seq_net(kind, Sn.shape[1], Xn.shape[1])
+    S, Xt, yt = torch.from_numpy(Sn), torch.from_numpy(Xn), torch.from_numpy(y)
+    off = torch.arange(-E.SEQ + 1, 1)
+    opt = torch.optim.Adam(net.parameters(), lr=1e-3)
+    lossf = nn.CrossEntropyLoss()
+    rng = np.random.default_rng(seed)
+    for _ in range(4):
+        perm = rng.permutation(tr)
+        for k in range(0, len(perm), 256):
+            b = perm[k : k + 256]
+            ii = torch.from_numpy(b)
+            opt.zero_grad()
+            loss = lossf(net(S[ii[:, None] + off[None, :]], Xt[ii]), yt[ii])
+            loss.backward()
+            opt.step()
+    net.eval()
+    return net
+
+
+def fit_tab(name, Xtr, ytr, seed):
+    if name == "rf":
+        from sklearn.ensemble import RandomForestClassifier
+
+        m = RandomForestClassifier(
+            n_estimators=200, max_depth=12, min_samples_leaf=50, n_jobs=2, random_state=seed
+        )
+        return m.fit(Xtr, ytr)
+    if name == "mlp":
+        from sklearn.neural_network import MLPClassifier
+
+        return MLPClassifier((64, 32), early_stopping=True, max_iter=200, random_state=seed).fit(
+            Xtr, ytr
+        )
+    import xgboost as xgb
+
+    prm = {
+        "max_depth": 5,
+        "eta": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "nthread": 2,
+        "seed": seed,
+        "objective": "binary:logistic",
+    }
+    return xgb.train(prm, xgb.DMatrix(Xtr, label=ytr), num_boost_round=300)
+
+
+def features(d5):
+    B = E.build(d5, M.FACTOR)
+    X, seq, t = B["X"], B["seq"], B["d"]["t"]
+    n = len(t)
+    valid = np.isfinite(X).all(1) & np.isfinite(seq).all(1)
+    seq_ok = np.convolve(valid.astype(int), np.ones(E.SEQ, int), "full")[:n] == E.SEQ
+    return B, X, seq, t, seq_ok
+
+
+def norm(X, seq, nz):
+    Xn = ((X - nz["mu"]) / nz["sd"]).astype(np.float32)
+    Xn[~np.isfinite(Xn)] = 0
+    Sn = ((seq - nz["smu"]) / nz["ssd"]).astype(np.float32)
+    Sn[~np.isfinite(Sn)] = 0
+    return Xn, Sn
+
+
+def predict(models, Xn, Sn, idx):
+    import torch
+    import xgboost as xgb
+
+    idx = np.asarray(idx)
+    out = np.full((len(E.MODELS), len(idx)), np.nan, np.float32)
+    off = torch.arange(-E.SEQ + 1, 1)
+    S, Xt = torch.from_numpy(Sn), torch.from_numpy(Xn)
+    for mi, name in enumerate(E.MODELS):
+        m = models[name]
+        if name in ("rf", "mlp"):
+            out[mi] = m.predict_proba(Xn[idx])[:, 1]
+        elif name == "xgb":
+            out[mi] = m.predict(xgb.DMatrix(Xn[idx]))
+        else:
+            res = []
+            with torch.no_grad():
+                for k in range(0, len(idx), 2048):
+                    ii = torch.from_numpy(idx[k : k + 2048])
+                    res.append(
+                        torch.softmax(m(S[ii[:, None] + off[None, :]], Xt[ii]), 1)[:, 1].numpy()
+                    )
+            out[mi] = np.concatenate(res)
+    return out
+
+
+def load_models():
+    import torch
+
+    meta = pickle.loads((ST / "models.pkl").read_bytes())
+    models = meta["tab"]
+    for k in ("lstm", "cnn"):
+        net = seq_net(k, meta["nf"], meta["nt"])
+        net.load_state_dict(torch.load(ST / f"{k}.pt", weights_only=True))
+        net.eval()
+        models[k] = net
+    return models, meta
+
+
+def train() -> None:
+    import torch
+
+    ST.mkdir(parents=True, exist_ok=True)
+    d5 = load5(BASE5)
+    B, X, seq, t, seq_ok = features(d5)
+    y = barrier_labels(B["d"], M.TP, M.SL)
+    base = (t >= E.ts(2018)) & (t < E.ts(YEAR) - M.EMBARGO * M.BAR) & seq_ok
+    i0 = np.flatnonzero(base)
+    nz = {
+        "mu": X[i0].mean(0),
+        "sd": X[i0].std(0) + 1e-6,
+        "smu": seq[i0].mean(0),
+        "ssd": seq[i0].std(0) + 1e-6,
+    }
+    Xn, Sn = norm(X, seq, nz)
+    tr = np.flatnonzero(base & (y >= 0))[::3]
+    tab = {}
+    for name in E.MODELS:
+        t0 = time.time()
+        if name in ("rf", "mlp", "xgb"):
+            tab[name] = fit_tab(name, Xn[tr], y[tr], YEAR)
+        else:
+            net = fit_seq(name, Sn, Xn, y, tr, YEAR)
+            torch.save(net.state_dict(), ST / f"{name}.pt")
+        print(name, "train", len(tr), "sec", round(time.time() - t0, 1), flush=True)
+    # 문턱: 백테스트와 같이 2025년 평균 점수의 분위수
+    z = np.load(PRED)
+    sc = mean_score(z["probs"])
+    yr = (z["t"] >= E.ts(2025)) & (z["t"] < E.ts(2026)) & np.isfinite(sc)
+    thr = {
+        k: (float(np.quantile(sc[yr], q)), float(np.quantile(sc[yr], 1 - q)))
+        for k, (q, _) in RULES.items()
+    }
+    meta = {
+        "tab": tab,
+        "nz": nz,
+        "nf": seq.shape[1],
+        "nt": X.shape[1],
+        "thr": thr,
+        "trained": time.strftime("%Y-%m-%d %H:%M"),
+        "n_train": int(len(tr)),
+    }
+    (ST / "models.pkl").write_bytes(pickle.dumps(meta))
+    # 확인: 2026년 백테스트 예측과 비교
+    models, _ = load_models()
+    te = np.flatnonzero((t >= E.ts(YEAR)) & seq_ok)
+    p = predict(models, Xn, Sn, te)
+    zi = np.searchsorted(z["t"], t[te])
+    ok = zi < len(z["t"])
+    ref = z["probs"][:, zi[ok]]
+    rep = {"trained": meta["trained"], "thr": thr, "n_train": meta["n_train"]}
+    for mi, name in enumerate(E.MODELS):
+        a, b = p[mi][ok], ref[mi]
+        m = np.isfinite(a) & np.isfinite(b)
+        rep[name] = {
+            "corr": round(float(np.corrcoef(a[m], b[m])[0, 1]), 4),
+            "maxdiff": round(float(np.abs(a[m] - b[m]).max()), 4),
+        }
+    print(json.dumps(rep, indent=1), flush=True)
+    (ST / "train_check.json").write_text(json.dumps(rep, indent=1))
+
+
+# ---- 신호와 모의 체결 ----
+def sig_path() -> Path:
+    return ST / "signals.csv"
+
+
+def read_signals() -> dict:
+    p = sig_path()
+    if not p.exists():
+        return {}
+    with p.open() as f:
+        return {int(r["t"]): r for r in csv.DictReader(f)}
+
+
+SIG_COLS = ["t", "c", "score", "up", "dn", "A", "B"]
+
+
+def paper(bars, sig, rule):
+    """rest_sim과 같은 체결·청산. 끝까지 안 끝난 주문·포지션도 돌려준다."""
+    t, o, h, l, c = (bars[k] for k in "tohlc")  # noqa: E741
+    n = len(t)
+    out, i, state = [], 0, None
+    while i < n:
+        s = sig[i]
+        if not s:
+            i += 1
+            continue
+        lim = c[i] * (1 - OFF * s)
+        if i + 1 >= n:
+            state = {"kind": "order", "side": s, "lim": lim, "t_sig": t[i]}
+            break
+        j = None
+        for b in range(i + 1, min(i + 1 + REST, n)):
+            if (l[b] <= lim * (1 - THRU)) if s > 0 else (h[b] >= lim * (1 + THRU)):
+                j = b
+                break
+        if j is None:
+            if i + REST >= n:  # 아직 기다리는 중
+                state = {"kind": "order", "side": s, "lim": lim, "t_sig": t[i]}
+                break
+            out.append({"t_sig": t[i], "side": s, "lim": lim, "filled": False})
+            i += 1
+            continue
+        px = lim
+        up, dn = px * (1 + TP), px * (1 - SL)
+        res, b = None, j
+        while b < n:
+            first = b == j
+            if s > 0:
+                if l[b] <= dn:
+                    res = (
+                        (min(o[b], dn) if not first else dn) * (1 - SLIP) / px - 1 - MAKER - TAKER,
+                        0,
+                    )
+                elif not first and h[b] >= up * (1 + THRU):
+                    res = (TP - 2 * MAKER, 1)
+            else:
+                if h[b] >= up:
+                    res = (
+                        -((max(o[b], up) if not first else up) * (1 + SLIP) / px - 1)
+                        - MAKER
+                        - TAKER,
+                        0,
+                    )
+                elif not first and l[b] <= dn * (1 - THRU):
+                    res = (SL - 2 * MAKER, 1)
+            if res:
+                break
+            b += 1
+        if res is None:
+            state = {
+                "kind": "pos",
+                "side": s,
+                "px": px,
+                "t_sig": t[i],
+                "t_fill": t[j],
+                "tp": up if s > 0 else dn,
+                "sl": dn if s > 0 else up,
+                "last": c[-1],
+            }
+            break
+        out.append(
+            {
+                "t_sig": t[i],
+                "side": s,
+                "lim": lim,
+                "filled": True,
+                "t_fill": t[j],
+                "t_exit": t[b],
+                "net1": res[0],
+                "win": res[1],
+            }
+        )
+        i = b
+    return out, state
+
+
+def kst(ms) -> str:
+    return time.strftime("%m/%d %H:%M", time.gmtime(ms / 1000 + 9 * 3600))
+
+
+def side_kr(s):
+    return "롱" if s > 0 else "숏"
+
+
+def step(notify: bool = True) -> dict:
+    from minerva import notify as N
+
+    got = fetch_new()
+    d5 = load_all()
+    B, X, seq, t, seq_ok = features(d5)
+    models, meta = load_models()
+    st_path = ST / "state.json"
+    state = json.loads(st_path.read_text()) if st_path.exists() else {}
+    if "start" not in state:
+        state = {"start": float(t[-1]) + BAR15, "sent": []}  # 다음 봉부터 기록
+    sigs = read_signals()
+    need = np.flatnonzero((t >= state["start"]) & seq_ok)
+    need = [i for i in need if int(t[i]) not in sigs]
+    if need:
+        Xn, Sn = norm(X, seq, meta["nz"])
+        p = predict(models, Xn, Sn, need)
+        sc = p.mean(0)
+        new = not sig_path().exists()
+        with sig_path().open("a", newline="") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(SIG_COLS)
+            for k, i in enumerate(need):
+                up, dn = int((p[:, k] > M.BE).sum()), int((p[:, k] < 1 - M.BE).sum())
+                row = [int(t[i]), B["d"]["c"][i], round(float(sc[k]), 5), up, dn]
+                for r, (_q, kk) in RULES.items():
+                    hi, lo = meta["thr"][r]
+                    row.append(
+                        1
+                        if (sc[k] >= hi and up >= kk)
+                        else (-1 if (sc[k] <= lo and dn >= kk) else 0)
+                    )
+                w.writerow(row)
+        sigs = read_signals()
+    m = t >= state["start"]
+    bars = {
+        "t": t[m],
+        "o": B["d"]["o"][m],
+        "h": B["d"]["h"][m],
+        "l": B["d"]["l"][m],
+        "c": B["d"]["c"][m],
+    }
+    summary = {"bars": int(m.sum()), "fetched": got, "last": kst(t[-1] + BAR15) if len(t) else ""}
+    msgs = []
+    sent = set(state["sent"])
+    for r in RULES:
+        sig = np.array([int(sigs.get(int(x), {}).get(r, 0)) for x in bars["t"]])
+        done, open_ = paper(bars, sig, r)
+        fills = [x for x in done if x["filled"]]
+        net = np.array([x["net1"] for x in fills]) if fills else np.zeros(0)
+        summary[r] = {
+            "signals": int((sig != 0).sum()),
+            "fills": len(fills),
+            "wins": int(sum(x["win"] for x in fills)),
+            "x1": round(float((np.prod(1 + net) - 1) * 100), 2),
+            "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
+            "open": open_,
+        }
+        for x in done:
+            key = f"{r}:{int(x['t_sig'])}:{'x' if x['filled'] else 'n'}"
+            if key in sent:
+                continue
+            sent.add(key)
+            if x["filled"]:
+                msgs.append(
+                    f"[BTC 기록] {NAMES[r]} {side_kr(x['side'])} 끝: {kst(x['t_fill'])} {x['lim']:,.1f} 체결 → "
+                    f"{kst(x['t_exit'])} {'목표 +1.5%' if x['win'] else '손절 −1.5%'}, "
+                    f"수수료 뺀 1배 {x['net1'] * 100:+.2f}% / 3배 {x['net1'] * 300:+.2f}%"
+                )
+            else:
+                msgs.append(
+                    f"[BTC 기록] {NAMES[r]} {side_kr(x['side'])} 신호 {kst(x['t_sig'] + BAR15)}, "
+                    f"{x['lim']:,.1f} 지정가 30분 안 닿아 취소"
+                )
+        if open_:
+            key = f"{r}:{int(open_['t_sig'])}:{open_['kind']}"
+            if key not in sent:
+                sent.add(key)
+                if open_["kind"] == "order":
+                    msgs.append(
+                        f"[BTC 기록] {NAMES[r]} {side_kr(open_['side'])} 신호 {kst(open_['t_sig'] + BAR15)}: "
+                        f"{open_['lim']:,.1f}에 지정가 (30분 유효, 주문 안 함)"
+                    )
+                else:
+                    msgs.append(
+                        f"[BTC 기록] {NAMES[r]} {side_kr(open_['side'])} 체결 {kst(open_['t_fill'])} "
+                        f"{open_['px']:,.1f}, 목표 {open_['tp']:,.1f} / 손절 {open_['sl']:,.1f}"
+                    )
+    state["sent"] = sorted(sent)
+    st_path.write_text(json.dumps(state))
+    (ST / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
+    if notify:
+        for s in msgs:
+            N.send(s)
+    print(json.dumps(summary, default=float), *msgs, sep="\n", flush=True)
+    return summary
+
+
+def report() -> None:
+    s = json.loads((ST / "summary.json").read_text())
+    print(json.dumps(s, indent=1, ensure_ascii=False))
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("cmd", choices=("train", "step", "report"))
+    ap.add_argument("--quiet", action="store_true")
+    a = ap.parse_args()
+    {"train": train, "step": lambda: step(not a.quiet), "report": report}[a.cmd]()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,10 @@
+# 15분봉 마감 40초 뒤
+[Unit]
+Description=Run Minerva BTC ML paper tracker every 15 minutes
+
+[Timer]
+OnCalendar=*:00,15,30,45:40
+Persistent=false
+
+[Install]
+WantedBy=timers.target

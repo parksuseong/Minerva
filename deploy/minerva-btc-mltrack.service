@@ -1,0 +1,13 @@
+# 15분봉 ML 규칙 A·B 기록 추적 (주문 없음). docs/backtests/raw/btc_ml_tracker.py
+[Unit]
+Description=Minerva BTC ML paper tracker (record only, no orders)
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/wt-btc-ma
+Environment=PYTHONPATH=/home/ec2-user/.minerva/research/btc-2026-11-04/pyml:src:docs/backtests/raw:/home/ec2-user/work/Minerva/src
+ExecStart=/usr/bin/python3 docs/backtests/raw/btc_ml_tracker.py step
+Nice=10
+MemoryMax=1200M
+TimeoutStartSec=300

@@ -26,7 +26,7 @@ from pathlib import Path
 import btc_ml_15m as M
 import btc_ml_ensemble as E
 import numpy as np
-from btc_fractal import load5
+from btc_fractal import cci, load5, rsi, stoch
 from btc_ml_barrier import barrier_labels
 from btc_ml_edge_cost import MAKER, OFF, REST, SL, SLIP, TAKER, THRU, TP, mean_score
 
@@ -437,10 +437,12 @@ def step(notify: bool = True) -> dict:
     }
     summary = {"bars": int(m.sum()), "fetched": got, "last": kst(t[-1] + BAR15) if len(t) else ""}
     msgs = []
+    trades = {}
     sent = set(state["sent"])
     for r in RULES:
         sig = np.array([int(sigs.get(int(x), {}).get(r, 0)) for x in bars["t"]])
         done, open_ = paper(bars, sig, r)
+        trades[r] = done
         fills = [x for x in done if x["filled"]]
         net = np.array([x["net1"] for x in fills]) if fills else np.zeros(0)
         summary[r] = {
@@ -484,11 +486,178 @@ def step(notify: bool = True) -> dict:
     state["sent"] = sorted(sent)
     st_path.write_text(json.dumps(state))
     (ST / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
+    write_view(
+        summary,
+        trades,
+        sigs,
+        meta,
+        state,
+        chart_data(B, X, seq, t, seq_ok, models, meta, trades, state["start"]),
+    )
     if notify:
         for s in msgs:
             N.send(s)
     print(json.dumps(summary, default=float), *msgs, sep="\n", flush=True)
     return summary
+
+
+BACKTEST = {  # 2026-11-04 문서의 2024-01~ 결과 (3배, 수수료 포함, 펀딩 포함)
+    "A": {"per_year": 267, "win": 55.1, "x3": 236.4, "mdd": -61.6, "y2023": 7.5},
+    "B": {"per_year": 142, "win": None, "x3": 60.0, "mdd": -37.0, "y2023": 64.8},
+}
+
+
+CHART_BARS = 288  # 3일
+
+
+def chart_data(B, X, seq, t, seq_ok, models, meta, trades, start) -> dict:
+    """화면 차트용: 최근 3일 15분봉, Stoch·CCI·RSI, 모델 점수, 기록 시작 뒤 진입·청산 표시.
+
+    시각은 KST로 옮긴 초(차트 라이브러리는 UTC로 그리므로 9시간을 더한다).
+    기록 시작 전 봉의 점수는 같은 모델로 계산한 참고값이다(신호·체결 기록에는 안 쓴다).
+    """
+    d = B["d"]
+    n = len(t)
+    a = max(0, n - CHART_BARS)
+    sec = lambda ms: int(ms // 1000) + 9 * 3600  # noqa: E731
+    k = stoch(d["h"], d["l"], d["c"])
+    cc = cci(d["h"], d["l"], d["c"])
+    rs = rsi(d["c"])
+    idx = np.array([i for i in range(a, n) if seq_ok[i]])
+    score = {}
+    if len(idx):
+        Xn, Sn = norm(X, seq, meta["nz"])
+        p = predict(models, Xn, Sn, idx).mean(0)
+        score = {int(i): round(float(v), 4) for i, v in zip(idx, p)}
+    rnd = lambda v: None if not np.isfinite(v) else round(float(v), 2)  # noqa: E731
+    bars = [
+        [
+            sec(t[i]),
+            d["o"][i],
+            d["h"][i],
+            d["l"][i],
+            d["c"][i],
+            rnd(k[i]),
+            rnd(cc[i]),
+            rnd(rs[i]),
+            score.get(i),
+        ]
+        for i in range(a, n)
+    ]
+    marks = []
+    for r, done in trades.items():
+        for x in done:
+            if not x["filled"]:
+                continue
+            marks.append(
+                {
+                    "rule": r,
+                    "side": x["side"],
+                    "kind": "open",
+                    "time": sec(x["t_fill"]),
+                    "price": x["lim"],
+                }
+            )
+            marks.append(
+                {
+                    "rule": r,
+                    "side": x["side"],
+                    "kind": "close",
+                    "time": sec(x["t_exit"]),
+                    "win": bool(x["win"]),
+                    "net3": round(x["net1"] * 300, 2),
+                }
+            )
+    return {"bars": bars, "marks": marks, "thr": meta["thr"], "start": sec(start)}
+
+
+def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
+    """웹 화면(비트코인 탭)이 읽는 파일. 웹은 이 파일만 읽고 계산하지 않는다."""
+    rows = [sigs[k] for k in sorted(sigs)][-96:]
+    recent = [
+        {
+            "at": kst(int(r["t"]) + BAR15),
+            "close": float(r["c"]),
+            "score": float(r["score"]),
+            "up": int(r["up"]),
+            "dn": int(r["dn"]),
+            "A": int(r["A"]),
+            "B": int(r["B"]),
+        }
+        for r in reversed(rows)
+    ]
+
+    def trade_row(x):
+        row = {"signal_at": kst(x["t_sig"] + BAR15), "side": side_kr(x["side"]), "limit": x["lim"]}
+        if x["filled"]:
+            row.update(
+                filled_at=kst(x["t_fill"]),
+                exit_at=kst(x["t_exit"]),
+                result="목표" if x["win"] else "손절",
+                net1=round(x["net1"] * 100, 2),
+                net3=round(x["net1"] * 300, 2),
+            )
+        else:
+            row["result"] = "미체결 취소"
+        return row
+
+    def open_row(o):
+        if not o:
+            return None
+        row = {
+            "kind": "지정가 대기" if o["kind"] == "order" else "보유 중",
+            "side": side_kr(o["side"]),
+            "signal_at": kst(o["t_sig"] + BAR15),
+        }
+        if o["kind"] == "order":
+            row["limit"] = o["lim"]
+        else:
+            row.update(
+                filled_at=kst(o["t_fill"]),
+                price=o["px"],
+                target=o["tp"],
+                stop=o["sl"],
+                last=o["last"],
+                pnl1=round((o["last"] / o["px"] - 1) * o["side"] * 100, 2),
+            )
+        return row
+
+    rules = []
+    for r, (q, k) in RULES.items():
+        s = summary[r]
+        rules.append(
+            {
+                "id": r,
+                "name": NAMES[r],
+                "top": round((1 - q) * 100),
+                "agree": k,
+                "long_above": round(meta["thr"][r][0], 4),
+                "short_below": round(meta["thr"][r][1], 4),
+                "signals": s["signals"],
+                "fills": s["fills"],
+                "wins": s["wins"],
+                "x1": s["x1"],
+                "x3": s["x3"],
+                "open": open_row(s["open"]),
+                "backtest": BACKTEST[r],
+                "trades": [trade_row(x) for x in reversed(trades[r])][:50],
+            }
+        )
+    view = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 9 * 3600)),
+        "start": kst(state["start"]),
+        "last_bar": summary["last"],
+        "bars": summary["bars"],
+        "be": round(M.BE, 4),
+        "models": list(E.MODELS),
+        "trained": meta.get("trained"),
+        "rules": rules,
+        "recent": recent,
+        "chart": chart,
+    }
+    tmp = ST / "view.json.tmp"
+    tmp.write_text(json.dumps(view, ensure_ascii=False, default=float))
+    tmp.replace(ST / "view.json")
 
 
 def report() -> None:

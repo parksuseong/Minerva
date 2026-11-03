@@ -58,10 +58,10 @@ def roll(x: np.ndarray, n: int, fn) -> np.ndarray:
     return out
 
 
-def build(d5: dict) -> dict:
-    d = resample(d5, 6)
+def build(d5: dict, factor: int = 6) -> dict:
+    d = resample(d5, factor)
     c, h, l, v, t = d["c"], d["h"], d["l"], d["v"], d["t"]  # noqa: E741
-    tc = t + M30
+    tc = t + factor * 300_000
     lc = np.log(c)
     cols, names = [], []
 

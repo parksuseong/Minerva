@@ -27,6 +27,9 @@ DAYS = 30
 NAMES = {
     "T5m|P0|F0|SL3%": "wait for 5m SCR, exit on 30m opposite SCR, stop 3%",
     "T5m|P0|F1|SL3%": "wait for 5m SCR, fast exit on 5m opposite SCR when in profit, stop 3%",
+    "E0|SL3%|F1": "no filter, fast exit on 5m opposite SCR when in profit, stop 3%",
+    "E2|SL3%|F1": "4h Stoch 80/20 filter, fast exit on 5m opposite SCR when in profit, stop 3%",
+    "E3|SL3%|F1": "second signal at a more extreme price, fast exit, stop 3%",
 }
 
 
@@ -69,7 +72,7 @@ def main() -> None:
         plt.Line2D([], [], color="#777777", ls=":", label="loss"),
     ]
     p.legend(handles=handles, loc="upper left", ncol=6, frameon=False, fontsize=9)
-    p.set_title(f"BTCUSDT 30m, last {DAYS} days: 30m SCR 3-level arms, {NAMES.get(key, key)}  |  "
+    p.set_title(f"BTCUSDT 30m, last {DAYS} days: 30m SCR 3-level, {NAMES.get(key, key)}  |  "
                 f"{wins}/{len(tr)} wins, net of 0.1% round-trip cost (KST)", loc="left",
                 color=INK, fontsize=11)
     for a_, (name, v, lines) in zip(ax[1:], (("Stoch 5", s, (20, 80)), ("CCI 20", cc, (-100, 100)),

@@ -301,7 +301,24 @@ def read_signals() -> dict:
         return {int(r["t"]): r for r in csv.DictReader(f)}
 
 
-SIG_COLS = ["t", "c", "score", "up", "dn", "A", "B"]
+SIG_COLS = ["t", "c", "score", "up", "dn", "A", "B"] + [f"p_{m}" for m in E.MODELS]
+LABEL = {"rf": "랜덤포레스트", "mlp": "MLP", "xgb": "XGBoost", "lstm": "LSTM", "cnn": "CNN"}
+
+
+def model_probs(sigs: dict, t_sig) -> dict:
+    """신호 봉에서 모델마다 낸 '+1.5% 먼저' 확률."""
+    r = sigs.get(int(t_sig), {})
+    return {m: float(r[f"p_{m}"]) for m in E.MODELS if r.get(f"p_{m}") not in (None, "")}
+
+
+def probs_text(pr: dict, side: int) -> str:
+    if not pr:
+        return ""
+    be = M.BE if side > 0 else 1 - M.BE
+    mark = (lambda v: v > be) if side > 0 else (lambda v: v < be)
+    return "\n모델별 +1.5% 먼저 닿을 확률(롱은 0.533 넘으면, 숏은 0.467 밑이면 ✓): " + " · ".join(
+        f"{LABEL[m]} {v:.2f}{'✓' if mark(v) else '✗'}" for m, v in pr.items()
+    )
 
 
 def paper(bars, sig, rule):
@@ -404,6 +421,10 @@ def step(notify: bool = True) -> dict:
     if "start" not in state:
         state = {"start": float(t[-1]) + BAR15, "sent": []}  # 다음 봉부터 기록
     sigs = read_signals()
+    if sigs and "p_rf" not in next(iter(sigs.values())):
+        # 모델별 확률 칸이 없던 옛 파일: 같은 모델로 처음부터 다시 매긴다(결과는 같다)
+        sig_path().replace(ST / "signals.v1.csv")
+        sigs = {}
     need = np.flatnonzero((t >= state["start"]) & seq_ok)
     need = [i for i in need if int(t[i]) not in sigs]
     if need:
@@ -425,6 +446,7 @@ def step(notify: bool = True) -> dict:
                         if (sc[k] >= hi and up >= kk)
                         else (-1 if (sc[k] <= lo and dn >= kk) else 0)
                     )
+                row += [round(float(p[mi, k]), 4) for mi in range(len(E.MODELS))]
                 w.writerow(row)
         sigs = read_signals()
     m = t >= state["start"]
@@ -463,6 +485,7 @@ def step(notify: bool = True) -> dict:
                     f"[BTC 기록] {NAMES[r]} {side_kr(x['side'])} 끝: {kst(x['t_fill'])} {x['lim']:,.1f} 체결 → "
                     f"{kst(x['t_exit'])} {'목표 +1.5%' if x['win'] else '손절 −1.5%'}, "
                     f"수수료 뺀 1배 {x['net1'] * 100:+.2f}% / 3배 {x['net1'] * 300:+.2f}%"
+                    + probs_text(model_probs(sigs, x["t_sig"]), x["side"])
                 )
             else:
                 msgs.append(
@@ -477,11 +500,13 @@ def step(notify: bool = True) -> dict:
                     msgs.append(
                         f"[BTC 기록] {NAMES[r]} {side_kr(open_['side'])} 신호 {kst(open_['t_sig'] + BAR15)}: "
                         f"{open_['lim']:,.1f}에 지정가 (30분 유효, 주문 안 함)"
+                        + probs_text(model_probs(sigs, open_["t_sig"]), open_["side"])
                     )
                 else:
                     msgs.append(
                         f"[BTC 기록] {NAMES[r]} {side_kr(open_['side'])} 체결 {kst(open_['t_fill'])} "
                         f"{open_['px']:,.1f}, 목표 {open_['tp']:,.1f} / 손절 {open_['sl']:,.1f}"
+                        + probs_text(model_probs(sigs, open_["t_sig"]), open_["side"])
                     )
     state["sent"] = sorted(sent)
     st_path.write_text(json.dumps(state))
@@ -605,12 +630,18 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
             "dn": int(r["dn"]),
             "A": int(r["A"]),
             "B": int(r["B"]),
+            "models": {m: float(r[f"p_{m}"]) for m in E.MODELS if r.get(f"p_{m}")},
         }
         for r in reversed(rows)
     ]
 
     def trade_row(x):
-        row = {"signal_at": kst(x["t_sig"] + BAR15), "side": side_kr(x["side"]), "limit": x["lim"]}
+        row = {
+            "signal_at": kst(x["t_sig"] + BAR15),
+            "side": side_kr(x["side"]),
+            "limit": x["lim"],
+            "models": model_probs(sigs, x["t_sig"]),
+        }
         if x["filled"]:
             row.update(
                 filled_at=kst(x["t_fill"]),
@@ -630,6 +661,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
             "kind": "지정가 대기" if o["kind"] == "order" else "보유 중",
             "side": side_kr(o["side"]),
             "signal_at": kst(o["t_sig"] + BAR15),
+            "models": model_probs(sigs, o["t_sig"]),
         }
         if o["kind"] == "order":
             row["limit"] = o["lim"]
@@ -672,6 +704,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
         "bars": summary["bars"],
         "be": round(M.BE, 4),
         "models": list(E.MODELS),
+        "model_names": LABEL,
         "trained": meta.get("trained"),
         "rules": rules,
         "recent": recent,

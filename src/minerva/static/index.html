@@ -153,6 +153,28 @@
       <p class="mini">점수 = 모델 5개(랜덤포레스트·MLP·XGBoost·LSTM·CNN)가 본 "+1.5%에 먼저 닿을" 확률 평균. 기록만 하고 주문은 나가지 않아요.</p>
     </section>
     <section class="card">
+      <h2>🧠 쓰는 모델과 학습 방법</h2>
+      <p><b>무엇을 맞히나</b>: 15분봉이 끝난 순간, 다음 봉 시가에서 샀다면 <b>+1.5%와 −1.5% 중 어디에 먼저 닿을지</b>.
+        모델은 "+1.5%에 먼저 닿을 확률"을 낸다. 같은 봉에서 둘 다 닿으면 손해(−1.5%)로 친다.</p>
+      <table class="acct"><thead><tr><th>모델</th><th>어떤 방식</th><th>보는 자료</th></tr></thead><tbody>
+        <tr><td>랜덤포레스트</td><td>결정 나무 200개의 투표 (깊이 12)</td><td rowspan="3">지금 봉의 숫자 28개</td></tr>
+        <tr><td>XGBoost</td><td>앞 나무의 실수를 다음 나무가 고치는 나무 300개 (깊이 5)</td></tr>
+        <tr><td>MLP</td><td>작은 신경망 (64→32)</td></tr>
+        <tr><td>LSTM</td><td>순서를 기억하는 신경망</td><td rowspan="2">숫자 28개 + 최근 15분봉 64개(16시간)의 흐름</td></tr>
+        <tr><td>CNN</td><td>모양(패턴)을 찾는 신경망</td></tr>
+      </tbody></table>
+      <p class="mini"><b>숫자 28개</b>: 최근 1~336봉 수익률 8개, 48·336봉 안 위치·변동성·이평 괴리, 거래량 이상치,
+        15분·4시간·일봉 Stoch·CCI·RSI, 일봉 60일선 괴리, 주봉·일봉 추세 상태(SCR).
+        <b>64봉 흐름</b>: 봉마다 수익률·고저폭·거래량·Stoch·CCI·RSI.</p>
+      <p class="mini"><b>학습</b>: 바이낸스 BTCUSDT 현물 2018-01 ~ 2025-12 15분봉으로 한 번 학습(약 9만 3천 개 표본, 겹침을 줄이려고 3봉마다 1개).
+        2026년 시작 직전 600봉(약 6일)은 정답이 2026년 가격에 걸쳐 있어 뺐다. 2026년 자료는 학습에 안 썼다 — 그래서 2026년 백테스트와 지금 기록은 모델이 처음 보는 자료다.
+        학습한 모델이 백테스트 모델과 같은 답을 내는지 확인했다(5개 모두 일치).</p>
+      <p class="mini"><b>점수와 규칙</b>: 점수 = 5개 확률의 평균. 문턱은 2025년 점수 분포에서 정했다 — A 롱 0.595 이상(상위 10%), 숏 0.342 이하;
+        B 롱 0.628 이상(상위 5%), 숏 0.320 이하. 여기에 같은 방향이라고 본 모델 수가 A 4개·B 5개 이상이어야 한다(롱은 확률 0.533 = 수수료 포함 본전 넘는 모델, 숏은 0.467 밑인 모델).
+        모델은 다시 학습하지 않는다. 문턱은 2027년 1월에 2026년 분포로 바꿀 예정.</p>
+      <p class="mini"><b>한계</b>: 비슷한 규칙을 40번 넘게 시험해서 고른 것이라 과거 성적은 부풀려져 있을 수 있다. 펀딩비 미포함, 현물 가격 기준. 3개월 넘게 기록을 보고 판단한다.</p>
+    </section>
+    <section class="card">
       <h2>봉별 상태</h2>
       <div id="btc-frames" class="placeholder">-</div>
     </section>
@@ -308,7 +330,7 @@
   <script src="/static/daily.js?v=20261031b"></script>
   <script src="/static/btc.js?v=20261031"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
-  <script src="/static/btcml.js?v=20261104b"></script>
+  <script src="/static/btcml.js?v=20261104c"></script>
   <script src="/static/account.js?v=20261029b"></script>
   <script src="/static/trade.js?v=20261029"></script>
   <script src="/static/office.js?v=20261029b"></script>

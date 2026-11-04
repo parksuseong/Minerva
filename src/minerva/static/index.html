@@ -126,7 +126,15 @@
       <div id="btc-meta" class="placeholder">불러오는 중…</div>
     </section>
     <section class="card">
-      <h2>🤖 ML 규칙 기록 (15분봉, 주문 없음)</h2>
+      <h2>🤖 ML 규칙 기록 (15분봉, 가상 매매 · 실제 주문 없음)</h2>
+      <div id="btcml-summary"></div>
+      <details class="mini" style="margin:6px 0"><summary>용어 설명</summary>
+        <b>규칙 A·B</b>: 언제 살지 정하는 두 가지 규칙. 15분마다 AI 모델 5개가 "1.5% 먼저 오를 확률"을 계산한다.
+        A = 점수 상위 10% + 5개 중 4개 이상 동의(기회 많음), B = 상위 5% + 5개 전부 동의(깐깐, 기회 적음).<br>
+        <b>롱</b> = 오르면 이익(매수), <b>숏</b> = 내리면 이익. <b>청산</b> = 팔고 끝냄.
+        <b>목표</b> = 산 값에서 1.5% 이익 나면 팔기, <b>손절</b> = 1.5% 손해 나면 팔기. 먼저 닿는 쪽에서 끝난다.<br>
+        <b>3배</b> = 선물 3배 레버리지였다면의 손익. 기록은 1배 기준이다.
+      </details>
       <div id="btcml-meta" class="placeholder">불러오는 중…</div>
       <div id="btcml-rules"></div>
     </section>
@@ -300,7 +308,7 @@
   <script src="/static/daily.js?v=20261031b"></script>
   <script src="/static/btc.js?v=20261031"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
-  <script src="/static/btcml.js?v=20261104"></script>
+  <script src="/static/btcml.js?v=20261104b"></script>
   <script src="/static/account.js?v=20261029b"></script>
   <script src="/static/trade.js?v=20261029"></script>
   <script src="/static/office.js?v=20261029b"></script>

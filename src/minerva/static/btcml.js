@@ -16,7 +16,29 @@
     return `${sideChip(o.side)} 보유 중 · ${esc(o.filled_at)} ${num(o.price)} 체결 · 목표 ${num(o.target)} / 손절 ${num(o.stop)} · 지금 1배 ${pct(o.pnl1)} (3배 ${pct(o.pnl1 * 3)})`;
   };
 
+  // 맨 위 쉬운 요약: 규칙마다 "지금 들고 있나 / 끝난 매매로 번 돈 / 지금 평가손익"을 한눈에.
+  const NICK = { A: "기회 많은 규칙", B: "깐깐한 규칙" };
+  const sideWord = (s) => (s === "롱" ? "롱(오르면 이익)" : "숏(내리면 이익)");
+  const summaryBox = (r) => {
+    const o = r.open;
+    const now = !o ? "들고 있는 것 없음 · 다음 신호 기다리는 중"
+      : o.kind === "지정가 대기" ? `${sideWord(o.side)} 사려고 ${num(o.limit)}에 주문 걸어 둠 (30분 안 닿으면 취소)`
+        : `${sideWord(o.side)} 들고 있음 · ${num(o.price)}에 삼 · 지금 ${pct(o.pnl1)} (3배 ${pct(o.pnl1 * 3)})`
+          + `<br><span class="mini">${num(o.target)} 닿으면 이익 보고 팔고, ${num(o.stop)} 닿으면 손해 보고 팔아요</span>`;
+    const done = r.fills
+      ? `끝난 매매 ${r.fills}번 (이익 ${r.wins} · 손해 ${r.fills - r.wins}) · 합계 ${pct(r.x1)} (3배 ${pct(r.x3)})`
+      : "아직 끝난 매매 없음";
+    return `<div style="flex:1;min-width:260px;border:1px solid var(--line);border-radius:8px;padding:10px">
+      <div><b>규칙 ${esc(r.id)}</b> <span class="mini">${NICK[r.id] || ""}</span></div>
+      <div style="margin-top:6px">지금: ${now}</div>
+      <div style="margin-top:4px">${done}</div></div>`;
+  };
+  const renderSummary = (d) => {
+    $("btcml-summary").innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap">${d.rules.map(summaryBox).join("")}</div>`;
+  };
+
   const renderTables = (d) => {
+    renderSummary(d);
     $("btcml-meta").innerHTML = `<div class="detail">기록 시작 ${esc(d.start)} KST · 마지막 봉 ${esc(d.last_bar)} 마감 · 갱신 ${esc(d.generated_at.slice(11, 16))} · 기록된 봉 ${num(d.bars, 0)}개 · 모델 학습 ${esc(d.trained)}</div>`;
     $("btcml-rules").innerHTML = `<table class="acct"><thead><tr>
         <th>규칙</th><th>진입 조건</th><th>지금</th><th>신호</th><th>체결</th><th>승</th><th>누적 1배</th><th>누적 3배</th><th>과거(2024~, 3배)</th>

@@ -28,7 +28,9 @@
   };
 
   // 맨 위 쉬운 요약: 규칙마다 "지금 들고 있나 / 끝난 매매로 번 돈 / 지금 평가손익"을 한눈에.
-  const NICK = { A: "기회 많은 규칙", B: "깐깐한 규칙" };
+  const NICK = { A: "기회 많은 규칙", B: "깐깐한 규칙", AS: "A와 같은 규칙, 씨드 5벌 평균 모델", BS: "B와 같은 규칙, 씨드 5벌 평균 모델" };
+  const LABEL = { A: "A", B: "B", AS: "A평균", BS: "B평균" };
+  const noteHtml = (r) => (r.note ? `<div class="mini" style="margin-top:4px;color:${r.id === "A" ? RED : "var(--muted)"}">⚑ ${esc(r.note)}</div>` : "");
   const sideWord = (s) => (s === "롱" ? "롱(오르면 이익)" : "숏(내리면 이익)");
   const summaryBox = (r) => {
     const o = r.open;
@@ -41,7 +43,7 @@
       ? `끝난 매매 ${r.fills}번 (이익 ${r.wins} · 손해 ${r.fills - r.wins}) · 합계 ${pct(r.x1)} (3배 ${pct(r.x3)})`
       : "아직 끝난 매매 없음";
     return `<div style="flex:1;min-width:260px;border:1px solid var(--line);border-radius:8px;padding:10px">
-      <div><b>규칙 ${esc(r.id)}</b> <span class="mini">${NICK[r.id] || ""}</span></div>
+      <div><b>규칙 ${esc(LABEL[r.id] || r.id)}</b> <span class="mini">${NICK[r.id] || ""}</span></div>${noteHtml(r)}
       <div style="margin-top:6px">지금: ${now}</div>${why}
       <div style="margin-top:4px">${done}</div></div>`;
   };
@@ -57,7 +59,7 @@
     $("btcml-rules").innerHTML = `<table class="acct"><thead><tr>
         <th>규칙</th><th>진입 조건</th><th>지금</th><th>신호</th><th>체결</th><th>승</th><th>누적 1배</th><th>누적 3배</th><th>과거(2024~, 3배)</th>
       </tr></thead><tbody>${d.rules.map((r) => `<tr>
-        <td><b>${esc(r.id)}</b></td>
+        <td><b>${esc(LABEL[r.id] || r.id)}</b>${noteHtml(r)}</td>
         <td class="mini">점수 ≥ ${num(r.long_above, 3)} + ${r.agree}개 이상 동의 → 롱<br>점수 ≤ ${num(r.short_below, 3)} + ${r.agree}개 이상 동의 → 숏<br>(작년 기준 상위·하위 ${r.top}%)</td>
         <td>${openText(r.open)}</td><td>${r.signals}</td><td>${r.fills}</td>
         <td>${r.fills ? `${r.wins}/${r.fills}` : "-"}</td><td>${pct(r.x1)}</td><td>${pct(r.x3)}</td>
@@ -67,7 +69,7 @@
       .sort((a, b) => (a.signal_at < b.signal_at ? 1 : -1));
     $("btcml-trades").innerHTML = rows.length ? `<table class="acct"><thead><tr>
         <th>규칙</th><th>방향</th><th>신호</th><th>지정가</th><th>체결</th><th>청산</th><th>결과</th><th>1배</th><th>3배</th><th>모델 판단 (+1.5% 먼저 닿을 확률, ✓ = 그 방향 동의)</th>
-      </tr></thead><tbody>${rows.map((x) => `<tr><td>${esc(x.rule)}</td><td>${sideChip(x.side)}</td>
+      </tr></thead><tbody>${rows.map((x) => `<tr><td>${esc(LABEL[x.rule] || x.rule)}</td><td>${sideChip(x.side)}</td>
         <td>${esc(x.signal_at)}</td><td>${num(x.limit)}</td><td>${esc(x.filled_at || "-")}</td><td>${esc(x.exit_at || "-")}</td>
         <td>${esc(x.result)}</td><td>${pct(x.net1)}</td><td>${pct(x.net3)}</td>
         <td class="mini">${votes(x.models, x.side)}</td></tr>`).join("")}</tbody></table>`
@@ -135,7 +137,7 @@
       position: long === open ? "belowBar" : "aboveBar",
       color: green ? GREEN : RED,
       shape: long ? "circle" : (open ? "arrowDown" : "arrowUp"),
-      text: `${m.rule} ${long ? "롱" : "숏"}${open ? " 진입" : " 청산"}${res}`,
+      text: `${LABEL[m.rule] || m.rule} ${long ? "롱" : "숏"}${open ? " 진입" : " 청산"}${res}`,
     };
   };
 

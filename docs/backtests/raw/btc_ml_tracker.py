@@ -34,11 +34,27 @@ HOME = Path("~/.minerva").expanduser()
 BASE5 = HOME / "data/btc/5m.csv"
 ST = Path(os.environ.get("MINERVA_MLTRACK_DIR", HOME / "research/btc-ml-tracker"))
 PRED = HOME / "research/btc-2026-11-04/ml15/pred.npz"
+SEEDS_OUT = HOME / "research/btc-2026-11-04/seeds"
 URL = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1000&startTime={s}"
 BAR15 = 900_000
 YEAR = 2026
-RULES = {"A": (0.90, 4), "B": (0.95, 5)}
-NAMES = {"A": "A(4개 동의·상위10%)", "B": "B(5개 동의·상위5%)"}
+RULES = {"A": (0.90, 4), "B": (0.95, 5), "AS": (0.90, 4), "BS": (0.95, 5)}
+NAMES = {
+    "A": "A(4개 동의·상위10%)",
+    "B": "B(5개 동의·상위5%)",
+    "AS": "A평균(씨드5벌·4개 동의·상위10%)",
+    "BS": "B평균(씨드5벌·5개 동의·상위5%)",
+}
+# AS·BS는 같은 규칙을 씨드 5벌(Y, Y+1000·k) 평균 확률로 계산한다(2026-11-05 사용자 승인,
+# 문서 2026-11-04-btc-ml-seeds-hypotheses.md). 확률 칸 접두어: 씨드 Y는 p_, 평균은 pa_.
+PFX = {"A": "p_", "B": "p_", "AS": "pa_", "BS": "pa_"}
+SEED_K = (1, 2, 3, 4)
+NOTE = {
+    "A": "씨드 시험에서 운으로 판정됨: 기대값 0으로 봐요",
+    "B": "씨드 시험: 작은 우위가 있을 수도, 증명은 안 됨",
+    "AS": "씨드 5벌 평균 모델. 11/05 00시대부터 기록, 앞으로의 기록으로만 판정",
+    "BS": "씨드 5벌 평균 모델. 11/05 00시대부터 기록, 앞으로의 기록으로만 판정",
+}
 
 
 # ---- 자료 ----
@@ -222,7 +238,85 @@ def load_models():
         net.load_state_dict(torch.load(ST / f"{k}.pt", weights_only=True))
         net.eval()
         models[k] = net
+    sm = ST / "seeds_meta.json"
+    if sm.exists():
+        meta["thr"].update({r: tuple(v) for r, v in json.loads(sm.read_text())["thr"].items()})
     return models, meta
+
+
+def seed_dir(k: int) -> Path:
+    return ST / f"seed{k}"
+
+
+def load_seed_models(meta) -> list:
+    """씨드 k=1~4 모델 묶음. 없으면 빈 목록(평균 규칙은 건너뛴다)."""
+    import torch
+
+    out = []
+    for k in SEED_K:
+        dd = seed_dir(k)
+        if not (dd / "tab.pkl").exists():
+            return []
+        models = pickle.loads((dd / "tab.pkl").read_bytes())
+        for kind in ("lstm", "cnn"):
+            net = seq_net(kind, meta["nf"], meta["nt"])
+            net.load_state_dict(torch.load(dd / f"{kind}.pt", weights_only=True))
+            net.eval()
+            models[kind] = net
+        out.append(models)
+    return out
+
+
+def train_seeds() -> None:
+    """씨드 Y+1000·k로 같은 자료를 다시 학습하고, 걸어가기 예측과 같은지 확인한다."""
+    import torch
+
+    meta = pickle.loads((ST / "models.pkl").read_bytes())
+    d5 = load5(BASE5)
+    B, X, seq, t, seq_ok = features(d5)
+    y = barrier_labels(B["d"], M.TP, M.SL)
+    base = (t >= E.ts(2018)) & (t < E.ts(YEAR) - M.EMBARGO * M.BAR) & seq_ok
+    Xn, Sn = norm(X, seq, meta["nz"])
+    tr = np.flatnonzero(base & (y >= 0))[::3]
+    te = np.flatnonzero((t >= E.ts(YEAR)) & seq_ok)
+    rep = {}
+    for k in SEED_K:
+        dd = seed_dir(k)
+        dd.mkdir(parents=True, exist_ok=True)
+        seed = YEAR + 1000 * k
+        tab = {}
+        for name in E.MODELS:
+            if name in ("rf", "mlp", "xgb"):
+                tab[name] = fit_tab(name, Xn[tr], y[tr], seed)
+            else:
+                net = fit_seq(name, Sn, Xn, y, tr, seed)
+                torch.save(net.state_dict(), dd / f"{name}.pt")
+        (dd / "tab.pkl").write_bytes(pickle.dumps(tab))
+        print("seed", k, "trained", flush=True)
+    seeds = load_seed_models(meta)
+    for k, models in zip(SEED_K, seeds):
+        p = predict(models, Xn, Sn, te)
+        z = np.load(SEEDS_OUT / f"pred_s{k}.npz")
+        zi = np.searchsorted(z["t"], t[te])
+        ok = zi < len(z["t"])
+        ref = z["probs"][:, zi[ok]]
+        for mi, name in enumerate(E.MODELS):
+            a, b = p[mi][ok], ref[mi]
+            m = np.isfinite(a) & np.isfinite(b)
+            rep[f"s{k} {name}"] = round(float(np.abs(a[m] - b[m]).max()), 4)
+    # 평균 규칙 문턱: 2025년 씨드 5벌 평균 점수의 분위수(원래 규칙과 같은 방식)
+    z0 = np.load(PRED)
+    ps = [z0["probs"]] + [np.load(SEEDS_OUT / f"pred_s{k}.npz")["probs"] for k in SEED_K]
+    sc = mean_score(np.mean(ps, 0))
+    yr = (z0["t"] >= E.ts(2025)) & (z0["t"] < E.ts(2026)) & np.isfinite(sc)
+    thr = {
+        r: (float(np.quantile(sc[yr], q)), float(np.quantile(sc[yr], 1 - q)))
+        for r, (q, _) in RULES.items()
+        if PFX[r] == "pa_"
+    }
+    rep["thr"] = thr
+    (ST / "seeds_meta.json").write_text(json.dumps(rep, indent=1))
+    print(json.dumps(rep, indent=1), flush=True)
 
 
 def train() -> None:
@@ -301,14 +395,19 @@ def read_signals() -> dict:
         return {int(r["t"]): r for r in csv.DictReader(f)}
 
 
-SIG_COLS = ["t", "c", "score", "up", "dn", "A", "B"] + [f"p_{m}" for m in E.MODELS]
+SIG_COLS = (
+    ["t", "c", "score", "up", "dn", "A", "B"]
+    + [f"p_{m}" for m in E.MODELS]
+    + ["sa", "ua", "da", "AS", "BS"]
+    + [f"pa_{m}" for m in E.MODELS]
+)
 LABEL = {"rf": "랜덤포레스트", "mlp": "MLP", "xgb": "XGBoost", "lstm": "LSTM", "cnn": "CNN"}
 
 
-def model_probs(sigs: dict, t_sig) -> dict:
-    """신호 봉에서 모델마다 낸 '+1.5% 먼저' 확률."""
+def model_probs(sigs: dict, t_sig, pfx: str = "p_") -> dict:
+    """신호 봉에서 모델마다 낸 '+1.5% 먼저' 확률 (pa_ = 씨드 5벌 평균)."""
     r = sigs.get(int(t_sig), {})
-    return {m: float(r[f"p_{m}"]) for m in E.MODELS if r.get(f"p_{m}") not in (None, "")}
+    return {m: float(r[f"{pfx}{m}"]) for m in E.MODELS if r.get(f"{pfx}{m}") not in (None, "")}
 
 
 def probs_text(pr: dict, side: int) -> str:
@@ -420,33 +519,48 @@ def step(notify: bool = True) -> dict:
     state = json.loads(st_path.read_text()) if st_path.exists() else {}
     if "start" not in state:
         state = {"start": float(t[-1]) + BAR15, "sent": []}  # 다음 봉부터 기록
+    seeds = load_seed_models(meta) if "AS" in meta["thr"] else []
+    if seeds and "start_s" not in state:
+        state["start_s"] = float(t[-1]) + BAR15  # 평균 규칙은 추가한 다음 봉부터 기록
     sigs = read_signals()
-    if sigs and "p_rf" not in next(iter(sigs.values())):
-        # 모델별 확률 칸이 없던 옛 파일: 같은 모델로 처음부터 다시 매긴다(결과는 같다)
-        sig_path().replace(ST / "signals.v1.csv")
+    if sigs and (
+        "pa_rf" not in next(iter(sigs.values()))
+        or (seeds and any(not r.get("sa") for r in sigs.values()))
+    ):
+        # 칸이 모자란 옛 파일: 같은 모델로 처음부터 다시 매긴다(씨드 Y 결과는 같다)
+        sig_path().replace(ST / f"signals.old{int(time.time())}.csv")
         sigs = {}
     need = np.flatnonzero((t >= state["start"]) & seq_ok)
     need = [i for i in need if int(t[i]) not in sigs]
     if need:
         Xn, Sn = norm(X, seq, meta["nz"])
         p = predict(models, Xn, Sn, need)
-        sc = p.mean(0)
+        pa = np.mean([p] + [predict(sm, Xn, Sn, need) for sm in seeds], 0) if seeds else None
         new = not sig_path().exists()
         with sig_path().open("a", newline="") as f:
             w = csv.writer(f)
             if new:
                 w.writerow(SIG_COLS)
-            for k, i in enumerate(need):
-                up, dn = int((p[:, k] > M.BE).sum()), int((p[:, k] < 1 - M.BE).sum())
-                row = [int(t[i]), B["d"]["c"][i], round(float(sc[k]), 5), up, dn]
-                for r, (_q, kk) in RULES.items():
+            def flags(pp, k, rules):
+                v = pp[:, k]
+                sck = float(v.mean())
+                up, dn = int((v > M.BE).sum()), int((v < 1 - M.BE).sum())
+                out = []
+                for r in rules:
                     hi, lo = meta["thr"][r]
-                    row.append(
-                        1
-                        if (sc[k] >= hi and up >= kk)
-                        else (-1 if (sc[k] <= lo and dn >= kk) else 0)
-                    )
+                    kk = RULES[r][1]
+                    out.append(1 if (sck >= hi and up >= kk) else (-1 if (sck <= lo and dn >= kk) else 0))
+                return [round(sck, 5), up, dn], out
+
+            for k, i in enumerate(need):
+                head, fl = flags(p, k, ("A", "B"))
+                row = [int(t[i]), B["d"]["c"][i], *head, *fl]
                 row += [round(float(p[mi, k]), 4) for mi in range(len(E.MODELS))]
+                if pa is not None:
+                    head, fl = flags(pa, k, ("AS", "BS"))
+                    row += [*head, *fl] + [round(float(pa[mi, k]), 4) for mi in range(len(E.MODELS))]
+                else:
+                    row += [""] * (5 + len(E.MODELS))
                 w.writerow(row)
         sigs = read_signals()
     m = t >= state["start"]
@@ -462,7 +576,10 @@ def step(notify: bool = True) -> dict:
     trades = {}
     sent = set(state["sent"])
     for r in RULES:
-        sig = np.array([int(sigs.get(int(x), {}).get(r, 0)) for x in bars["t"]])
+        s0 = state["start"] if PFX[r] == "p_" else state.get("start_s", float("inf"))
+        sig = np.array(
+            [int(sigs.get(int(x), {}).get(r) or 0) if x >= s0 else 0 for x in bars["t"]]
+        )
         done, open_ = paper(bars, sig, r)
         trades[r] = done
         fills = [x for x in done if x["filled"]]
@@ -485,7 +602,7 @@ def step(notify: bool = True) -> dict:
                     f"[BTC 기록] {NAMES[r]} {side_kr(x['side'])} 끝: {kst(x['t_fill'])} {x['lim']:,.1f} 체결 → "
                     f"{kst(x['t_exit'])} {'목표 +1.5%' if x['win'] else '손절 −1.5%'}, "
                     f"수수료 뺀 1배 {x['net1'] * 100:+.2f}% / 3배 {x['net1'] * 300:+.2f}%"
-                    + probs_text(model_probs(sigs, x["t_sig"]), x["side"])
+                    + probs_text(model_probs(sigs, x["t_sig"], PFX[r]), x["side"])
                 )
             else:
                 msgs.append(
@@ -500,13 +617,13 @@ def step(notify: bool = True) -> dict:
                     msgs.append(
                         f"[BTC 기록] {NAMES[r]} {side_kr(open_['side'])} 신호 {kst(open_['t_sig'] + BAR15)}: "
                         f"{open_['lim']:,.1f}에 지정가 (30분 유효, 주문 안 함)"
-                        + probs_text(model_probs(sigs, open_["t_sig"]), open_["side"])
+                        + probs_text(model_probs(sigs, open_["t_sig"], PFX[r]), open_["side"])
                     )
                 else:
                     msgs.append(
                         f"[BTC 기록] {NAMES[r]} {side_kr(open_['side'])} 체결 {kst(open_['t_fill'])} "
                         f"{open_['px']:,.1f}, 목표 {open_['tp']:,.1f} / 손절 {open_['sl']:,.1f}"
-                        + probs_text(model_probs(sigs, open_["t_sig"]), open_["side"])
+                        + probs_text(model_probs(sigs, open_["t_sig"], PFX[r]), open_["side"])
                     )
     state["sent"] = sorted(sent)
     st_path.write_text(json.dumps(state))
@@ -540,6 +657,9 @@ def step(notify: bool = True) -> dict:
 BACKTEST = {  # 2026-11-04 문서의 2024-01~ 결과 (3배, 수수료 포함, 펀딩 포함)
     "A": {"per_year": 267, "win": 55.1, "x3": 236.4, "mdd": -61.6, "y2023": 7.5},
     "B": {"per_year": 142, "win": None, "x3": 60.0, "mdd": -37.0, "y2023": 64.8},
+    # 씨드 5벌 평균 걸어가기, 이미 본 자료라 증거 아님 (2026-11-05 seeds 문서)
+    "AS": {"per_year": 279, "win": 53.1, "x3": -13.4, "mdd": -80.4, "y2023": -7.3},
+    "BS": {"per_year": 151, "win": 54.9, "x3": 85.5, "mdd": -55.3, "y2023": 21.2},
 }
 
 
@@ -635,12 +755,12 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
         for r in reversed(rows)
     ]
 
-    def trade_row(x):
+    def trade_row(x, pfx="p_"):
         row = {
             "signal_at": kst(x["t_sig"] + BAR15),
             "side": side_kr(x["side"]),
             "limit": x["lim"],
-            "models": model_probs(sigs, x["t_sig"]),
+            "models": model_probs(sigs, x["t_sig"], pfx),
         }
         if x["filled"]:
             row.update(
@@ -654,14 +774,14 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
             row["result"] = "미체결 취소"
         return row
 
-    def open_row(o):
+    def open_row(o, pfx="p_"):
         if not o:
             return None
         row = {
             "kind": "지정가 대기" if o["kind"] == "order" else "보유 중",
             "side": side_kr(o["side"]),
             "signal_at": kst(o["t_sig"] + BAR15),
-            "models": model_probs(sigs, o["t_sig"]),
+            "models": model_probs(sigs, o["t_sig"], pfx),
         }
         if o["kind"] == "order":
             row["limit"] = o["lim"]
@@ -678,6 +798,8 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
 
     rules = []
     for r, (q, k) in RULES.items():
+        if r not in meta["thr"]:
+            continue
         s = summary[r]
         rules.append(
             {
@@ -692,9 +814,11 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "wins": s["wins"],
                 "x1": s["x1"],
                 "x3": s["x3"],
-                "open": open_row(s["open"]),
+                "open": open_row(s["open"], PFX[r]),
+                "note": NOTE[r],
+                "seed_avg": PFX[r] == "pa_",
                 "backtest": BACKTEST[r],
-                "trades": [trade_row(x) for x in reversed(trades[r])][:50],
+                "trades": [trade_row(x, PFX[r]) for x in reversed(trades[r])][:50],
             }
         )
     view = {
@@ -722,10 +846,10 @@ def report() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=("train", "step", "report"))
+    ap.add_argument("cmd", choices=("train", "train-seeds", "step", "report"))
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args()
-    {"train": train, "step": lambda: step(not a.quiet), "report": report}[a.cmd]()
+    {"train": train, "train-seeds": train_seeds, "step": lambda: step(not a.quiet), "report": report}[a.cmd]()
 
 
 if __name__ == "__main__":

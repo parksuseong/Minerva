@@ -38,23 +38,56 @@ SEEDS_OUT = HOME / "research/btc-2026-11-04/seeds"
 URL = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1000&startTime={s}"
 BAR15 = 900_000
 YEAR = 2026
-RULES = {"A": (0.90, 4), "B": (0.95, 5), "AS": (0.90, 4), "BS": (0.95, 5)}
+RULES = {"A": (0.90, 4), "B": (0.95, 5), "AS": (0.90, 4), "BS": (0.95, 5), "AS4": (0.90, 4)}
 NAMES = {
     "A": "A(4개 동의·상위10%)",
     "B": "B(5개 동의·상위5%)",
     "AS": "A평균(씨드5벌·4개 동의·상위10%)",
     "BS": "B평균(씨드5벌·5개 동의·상위5%)",
+    "AS4": "A평균+4시간 추세(EMA50)",
 }
 # AS·BS는 같은 규칙을 씨드 5벌(Y, Y+1000·k) 평균 확률로 계산한다(2026-11-05 사용자 승인,
 # 문서 2026-11-04-btc-ml-seeds-hypotheses.md). 확률 칸 접두어: 씨드 Y는 p_, 평균은 pa_.
-PFX = {"A": "p_", "B": "p_", "AS": "pa_", "BS": "pa_"}
+PFX = {"A": "p_", "B": "p_", "AS": "pa_", "BS": "pa_", "AS4": "pa_"}
+# AS4는 AS 신호 중 4시간봉 추세(종가>EMA50, EMA50이 5봉 전보다 위; 숏은 반대)와 같은 방향만 남긴다
+# (2026-11-05 사용자 "가장 최고의 것으로만 넣어", 문서 2026-11-05-btc-ml-mtf-trend-hypotheses.md).
+# 문턱은 AS 것을 쓴다. 4시간봉은 받아 둔 5분봉을 UTC 4시간 단위로 묶어 만든다.
+BASE_RULE = {"AS4": "AS"}
+H4 = 4 * 3_600_000
+EMA_N, SLOPE = 50, 5
 SEED_K = (1, 2, 3, 4)
 NOTE = {
     "A": "씨드 시험에서 운으로 판정됨: 기대값 0으로 봐요",
     "B": "씨드 시험: 작은 우위가 있을 수도, 증명은 안 됨",
     "AS": "씨드 5벌 평균 모델. 11/05 00시대부터 기록, 앞으로의 기록으로만 판정",
     "BS": "씨드 5벌 평균 모델. 11/05 00시대부터 기록, 앞으로의 기록으로만 판정",
+    "AS4": "A평균 중 4시간봉 추세와 같은 방향만. "
+    "최근 1년 백테스트는 필터 없음보다 나빴음(+30% vs +165%). 100회 넘게 쌓였을 때 A평균보다 못하거나 숏 거래당 손익이 0 이하면 폐기",
 }
+
+
+def trend4h(d5: dict, t15: np.ndarray) -> np.ndarray:
+    """15분 신호 봉이 마감될 때 이미 마감된 마지막 4시간봉의 추세(1, -1, 0)."""
+    g = (d5["t"] // H4).astype(np.int64)
+    cut = np.flatnonzero(np.diff(g)) + 1
+    starts = np.r_[0, cut]
+    ends = np.r_[cut, len(g)] - 1
+    full = (ends - starts + 1) == H4 // 300_000
+    c = d5["c"][ends][full]
+    ct = (g[starts][full] + 1) * H4 - 1
+    a = 2 / (EMA_N + 1)
+    ema = np.empty_like(c)
+    ema[0] = c[0]
+    for i in range(1, len(c)):
+        ema[i] = a * c[i] + (1 - a) * ema[i - 1]
+    tr = np.zeros(len(c))
+    prev = np.r_[np.full(SLOPE, np.nan), ema[:-SLOPE]]
+    with np.errstate(invalid="ignore"):
+        tr[(c > ema) & (ema > prev)] = 1
+        tr[(c < ema) & (ema < prev)] = -1
+    tr[:EMA_N] = 0
+    j = np.searchsorted(ct, t15 + BAR15 - 1, side="right") - 1
+    return np.where(j >= 0, tr[np.maximum(j, 0)], 0.0)
 
 
 # ---- 자료 ----
@@ -312,7 +345,7 @@ def train_seeds() -> None:
     thr = {
         r: (float(np.quantile(sc[yr], q)), float(np.quantile(sc[yr], 1 - q)))
         for r, (q, _) in RULES.items()
-        if PFX[r] == "pa_"
+        if PFX[r] == "pa_" and r not in BASE_RULE
     }
     rep["thr"] = thr
     (ST / "seeds_meta.json").write_text(json.dumps(rep, indent=1))
@@ -352,6 +385,7 @@ def train() -> None:
     thr = {
         k: (float(np.quantile(sc[yr], q)), float(np.quantile(sc[yr], 1 - q)))
         for k, (q, _) in RULES.items()
+        if k not in BASE_RULE
     }
     meta = {
         "tab": tab,
@@ -575,11 +609,15 @@ def step(notify: bool = True) -> dict:
     msgs = []
     trades = {}
     sent = set(state["sent"])
+    tr4 = trend4h(d5, bars["t"])
     for r in RULES:
         s0 = state["start"] if PFX[r] == "p_" else state.get("start_s", float("inf"))
+        col = BASE_RULE.get(r, r)
         sig = np.array(
-            [int(sigs.get(int(x), {}).get(r) or 0) if x >= s0 else 0 for x in bars["t"]]
+            [int(sigs.get(int(x), {}).get(col) or 0) if x >= s0 else 0 for x in bars["t"]]
         )
+        if r == "AS4":
+            sig = np.where(sig == tr4, sig, 0)
         done, open_ = paper(bars, sig, r)
         trades[r] = done
         fills = [x for x in done if x["filled"]]
@@ -660,6 +698,8 @@ BACKTEST = {  # 2026-11-04 문서의 2024-01~ 결과 (3배, 수수료 포함, �
     # 씨드 5벌 평균 걸어가기, 이미 본 자료라 증거 아님 (2026-11-05 seeds 문서)
     "AS": {"per_year": 279, "win": 53.1, "x3": -13.4, "mdd": -80.4, "y2023": -7.3},
     "BS": {"per_year": 151, "win": 54.9, "x3": 85.5, "mdd": -55.3, "y2023": 21.2},
+    # 2026-11-05 mtf 문서, 이미 본 자료 포함. 최근 1년은 +29.8%(필터 없음 +165.5%)
+    "AS4": {"per_year": 167, "win": 58.0, "x3": 645.2, "mdd": -44.5, "y2023": 142.3},
 }
 
 
@@ -798,7 +838,8 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
 
     rules = []
     for r, (q, k) in RULES.items():
-        if r not in meta["thr"]:
+        thr = meta["thr"].get(BASE_RULE.get(r, r))
+        if thr is None:
             continue
         s = summary[r]
         rules.append(
@@ -807,8 +848,8 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "name": NAMES[r],
                 "top": round((1 - q) * 100),
                 "agree": k,
-                "long_above": round(meta["thr"][r][0], 4),
-                "short_below": round(meta["thr"][r][1], 4),
+                "long_above": round(thr[0], 4),
+                "short_below": round(thr[1], 4),
                 "signals": s["signals"],
                 "fills": s["fills"],
                 "wins": s["wins"],

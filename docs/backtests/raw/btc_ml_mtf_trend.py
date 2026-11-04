@@ -15,7 +15,7 @@ import btc_ml_barrier_freq as F
 import btc_ml_ensemble as E
 import numpy as np
 from btc_futures_compare import load_funding
-from btc_ml_edge_cost import mean_score, rest_sim, summ_net
+from btc_ml_edge_cost import rest_sim, summ_net
 from btc_ml_seeds import RULES, SEEDS, rule_masks
 
 FRAMES = ("30m", "1h", "4h")

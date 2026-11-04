@@ -8,6 +8,17 @@
   const pct = (v) => (v == null ? "-" : `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${num(v, 2)}%</span>`);
   const sideChip = (s) => `<span class="chip ${s === "롱" ? "good" : "warn"}">${esc(s)}</span>`;
   const GREEN = "#26a69a", RED = "#ef5350";
+  const MODEL_ORDER = ["rf", "mlp", "xgb", "lstm", "cnn"];
+  let NAMES = { rf: "랜덤포레스트", mlp: "MLP", xgb: "XGBoost", lstm: "LSTM", cnn: "CNN" };
+  let BE = 0.5333;
+  // 모델별 "+1.5% 먼저" 확률. 롱은 본전(BE) 넘으면, 숏은 1−BE 밑이면 그 방향에 동의한 것.
+  const votes = (m, side) => {
+    if (!m || !Object.keys(m).length) return "";
+    const ok = (v) => (side === "숏" ? v < 1 - BE : v > BE);
+    return MODEL_ORDER.filter((k) => k in m).map((k) =>
+      `<span class="${ok(m[k]) ? "up" : "mini"}" title="${esc(NAMES[k])}">${esc(NAMES[k])} ${num(m[k] * 100, 0)}%${ok(m[k]) ? "✓" : ""}</span>`)
+      .join(" · ");
+  };
   const css = (k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
 
   const openText = (o) => {
@@ -25,12 +36,13 @@
       : o.kind === "지정가 대기" ? `${sideWord(o.side)} 사려고 ${num(o.limit)}에 주문 걸어 둠 (30분 안 닿으면 취소)`
         : `${sideWord(o.side)} 들고 있음 · ${num(o.price)}에 삼 · 지금 ${pct(o.pnl1)} (3배 ${pct(o.pnl1 * 3)})`
           + `<br><span class="mini">${num(o.target)} 닿으면 이익 보고 팔고, ${num(o.stop)} 닿으면 손해 보고 팔아요</span>`;
+    const why = o && o.models ? `<div class="mini" style="margin-top:4px">신호 때 모델 판단: ${votes(o.models, o.side)}</div>` : "";
     const done = r.fills
       ? `끝난 매매 ${r.fills}번 (이익 ${r.wins} · 손해 ${r.fills - r.wins}) · 합계 ${pct(r.x1)} (3배 ${pct(r.x3)})`
       : "아직 끝난 매매 없음";
     return `<div style="flex:1;min-width:260px;border:1px solid var(--line);border-radius:8px;padding:10px">
       <div><b>규칙 ${esc(r.id)}</b> <span class="mini">${NICK[r.id] || ""}</span></div>
-      <div style="margin-top:6px">지금: ${now}</div>
+      <div style="margin-top:6px">지금: ${now}</div>${why}
       <div style="margin-top:4px">${done}</div></div>`;
   };
   const renderSummary = (d) => {
@@ -38,6 +50,8 @@
   };
 
   const renderTables = (d) => {
+    if (d.model_names) NAMES = d.model_names;
+    if (d.be) BE = d.be;
     renderSummary(d);
     $("btcml-meta").innerHTML = `<div class="detail">기록 시작 ${esc(d.start)} KST · 마지막 봉 ${esc(d.last_bar)} 마감 · 갱신 ${esc(d.generated_at.slice(11, 16))} · 기록된 봉 ${num(d.bars, 0)}개 · 모델 학습 ${esc(d.trained)}</div>`;
     $("btcml-rules").innerHTML = `<table class="acct"><thead><tr>
@@ -52,15 +66,17 @@
     const rows = d.rules.flatMap((r) => r.trades.map((x) => ({ rule: r.id, ...x })))
       .sort((a, b) => (a.signal_at < b.signal_at ? 1 : -1));
     $("btcml-trades").innerHTML = rows.length ? `<table class="acct"><thead><tr>
-        <th>규칙</th><th>방향</th><th>신호</th><th>지정가</th><th>체결</th><th>청산</th><th>결과</th><th>1배</th><th>3배</th>
+        <th>규칙</th><th>방향</th><th>신호</th><th>지정가</th><th>체결</th><th>청산</th><th>결과</th><th>1배</th><th>3배</th><th>모델 판단 (+1.5% 먼저 닿을 확률, ✓ = 그 방향 동의)</th>
       </tr></thead><tbody>${rows.map((x) => `<tr><td>${esc(x.rule)}</td><td>${sideChip(x.side)}</td>
         <td>${esc(x.signal_at)}</td><td>${num(x.limit)}</td><td>${esc(x.filled_at || "-")}</td><td>${esc(x.exit_at || "-")}</td>
-        <td>${esc(x.result)}</td><td>${pct(x.net1)}</td><td>${pct(x.net3)}</td></tr>`).join("")}</tbody></table>`
+        <td>${esc(x.result)}</td><td>${pct(x.net1)}</td><td>${pct(x.net3)}</td>
+        <td class="mini">${votes(x.models, x.side)}</td></tr>`).join("")}</tbody></table>`
       : "아직 끝난 매매가 없어요";
     const sig = (v) => (v > 0 ? sideChip("롱") : v < 0 ? sideChip("숏") : "-");
-    $("btcml-recent").innerHTML = `<table class="acct"><thead><tr><th>봉 마감</th><th>종가</th><th>점수</th><th>오른다/내린다(5개 중)</th><th>A</th><th>B</th></tr></thead>
+    $("btcml-recent").innerHTML = `<table class="acct"><thead><tr><th>봉 마감</th><th>종가</th><th>점수</th><th>오른다/내린다(5개 중)</th><th>A</th><th>B</th><th>모델별 오를 확률</th></tr></thead>
       <tbody>${d.recent.slice(0, 12).map((r) => `<tr><td>${esc(r.at)}</td><td>${num(r.close)}</td><td>${num(r.score, 3)}</td>
-        <td>${r.up} / ${r.dn}</td><td>${sig(r.A)}</td><td>${sig(r.B)}</td></tr>`).join("")}</tbody></table>`;
+        <td>${r.up} / ${r.dn}</td><td>${sig(r.A)}</td><td>${sig(r.B)}</td>
+        <td class="mini">${votes(r.models, r.dn > r.up ? "숏" : "롱")}</td></tr>`).join("")}</tbody></table>`;
   };
 
   const pad = (n) => String(n).padStart(2, "0");

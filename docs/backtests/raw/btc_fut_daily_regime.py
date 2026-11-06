@@ -79,12 +79,20 @@ def main() -> None:
     ap.add_argument("--data", default=str(Path("~/.minerva/data/btc").expanduser()))
     ap.add_argument("--day-shift", type=int, default=0)
     ap.add_argument("--perm", action="store_true")
+    ap.add_argument("--spot", action="store_true", help="108번: 현물 5분봉, 펀딩 없음")
+    ap.add_argument("--end", default="", help="YYYY-MM-DD 전까지만")
+    ap.add_argument("--circ", type=int, default=0, help="방향 시계열 원형 이동 대조 횟수")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     base = Path(args.data)
-    d5 = load5(base / "futures/klines_5m.csv")
-    fund = load_funding(base / "futures/funding.csv")
+    d5 = load5(base / ("5m.csv" if args.spot else "futures/klines_5m.csv"))
+    fund = None if args.spot else load_funding(base / "futures/funding.csv")
+    if args.end:
+        from datetime import datetime, timezone
+        cut = datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000
+        keep = d5["t"] < cut
+        d5 = {k: v[keep] for k, v in d5.items()}
     d = bars(d5, 0)
     t = d["t"]
     reg, newday = regime(d5, d, args.day_shift)
@@ -119,6 +127,17 @@ def main() -> None:
             rng = np.random.default_rng(7)
             hits = sum(1 for _ in range(2000) if np.where(rng.random(len(g)) < 0.5, g, a).mean() >= actual)
             r["perm_p"] = round(hits / 2000, 4)
+        if args.circ and tr:
+            rng = np.random.default_rng(7)
+            nl = len(reg)
+            null = []
+            for _ in range(args.circ):
+                k = int(rng.integers(30 * 96, nl - 30 * 96))
+                tt2 = run(d, np.roll(reg, k), np.roll(newday, k), start, stop, fund)
+                null.append(summ(tt2).get("ev", 0.0))
+            null = np.array(null)
+            r["circ_null_ev"] = round(float(null.mean()), 3)
+            r["circ_p"] = round(float((null >= r["all"]["ev"]).mean()), 4)
         rep[name] = r
     (out / "result.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1))
 

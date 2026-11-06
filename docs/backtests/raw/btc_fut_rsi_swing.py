@@ -95,5 +95,116 @@ def main() -> None:
     (out / "result.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1))
 
 
+
+
+def bd_signals(h, l, r):
+    """BalintDavid RSI Swing Indicator 상태 기계. (봉, +1/−1, 확정된 스윙 가격, 스윙 극점 봉)."""
+    laststate, hh, ll = 0, l[0], h[0]
+    hh_i = ll_i = 0
+    out = []
+    for i in range(len(r)):
+        if np.isnan(r[i]):
+            continue
+        ob, os_ = r[i] >= 70, r[i] <= 30
+        if laststate == 2 and ob:
+            out.append((i, 1, ll, ll_i))
+            hh, hh_i = h[i], i
+        if laststate == 1 and os_:
+            out.append((i, -1, hh, hh_i))
+            ll, ll_i = l[i], i
+        if ob:
+            if h[i] >= hh:
+                hh, hh_i = h[i], i
+            laststate = 1
+        if os_:
+            if l[i] <= ll:
+                ll, ll_i = l[i], i
+            laststate = 2
+        if laststate == 1 and h[i] >= hh:
+            hh, hh_i = h[i], i
+        if laststate == 2 and l[i] <= ll:
+            ll, ll_i = l[i], i
+    return out
+
+
+def bd_run(d, sig, stop_kind, gate, fund):
+    o, h, l, t = d["o"], d["h"], d["l"], d["t"]
+    n = len(o)
+    nxt = {}
+    sig = [s for s in sig if s[0] >= 6000 and s[0] < n - 2]
+    tr = []
+    for k, (i, side, sw, _) in enumerate(sig):
+        if tr and i < tr[-1][3]:
+            continue
+        if gate is not None and gate[i] != side:
+            continue
+        e = i + 1
+        px = o[e]
+        stop = sw * (1 - 0.001 * side) if stop_kind == "s" else px * (1 - 0.01 * side)
+        if (side > 0 and stop >= px) or (side < 0 and stop <= px):
+            continue
+        opp = next((s[0] for s in sig[k + 1:] if s[1] != side), None)
+        end = n - 2 if opp is None else opp + 1
+        res = None
+        for j in range(e, end):
+            if (side > 0 and l[j] <= stop) or (side < 0 and h[j] >= stop):
+                fill = min(o[j], stop) if side > 0 else max(o[j], stop)
+                res = ((fill / px - 1) * side, j, True)
+                break
+        if res is None:
+            if opp is None:
+                continue
+            res = ((o[end] / px - 1) * side, end, False)
+        g = with_funding(res[0], d, i, res[1], side, fund)
+        tr.append((i, side, float(g), int(res[1]), float(t[i]), res[2], abs(stop / px - 1)))
+    return tr
+
+
+def bd_main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--data", default=str(Path("~/.minerva/data/btc").expanduser()))
+    ap.add_argument("--offset", type=int, default=0)
+    args = ap.parse_args()
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    base = Path(args.data)
+    d5 = load5(base / "futures/klines_5m.csv")
+    fund = load_funding(base / "futures/funding.csv")
+    d = bars(d5, args.offset)
+    t = d["t"]
+    sig = bd_signals(d["h"], d["l"], rsi(d["c"], 7))
+    reg = upper_dir(d5, d, 288)
+    days_old = (ystart(2024) - t[6000]) / DAY
+    days_new = (t[-1] - ystart(2024)) / DAY
+    rep: dict = {"offset": args.offset, "signals": len(sig)}
+    for sk in ("s", "1"):
+        for gn, g in (("G0", None), ("GD", reg)):
+            tr = bd_run(d, sig, sk, g, fund)
+            old = [z for z in tr if z[4] < ystart(2024)]
+            new = [z for z in tr if z[4] >= ystart(2024)]
+            rep[f"SW{sk}-{gn}"] = {
+                "all": summ(tr), "old": summ(old), "new": summ(new),
+                "long": summ([z for z in tr if z[1] > 0]), "short": summ([z for z in tr if z[1] < 0]),
+                "per_day_old": round(len(old) / days_old, 2), "per_day_new": round(len(new) / days_new, 2),
+                "trades": [[z[0], z[1], round(z[2], 5), z[3], z[5]] for z in tr]}
+    # 사후 표시 기준: 표시된 저점에서 사서 다음 표시된 고점에서 판다(실제로는 불가능)
+    s6 = [s for s in sig if s[0] >= 6000]
+    hind = []
+    for a, b in zip(s6, s6[1:]):
+        if a[1] > 0 and b[1] < 0:
+            hind.append((b[2] / a[2] - 1, a[0]))
+        elif a[1] < 0 and b[1] > 0:
+            hind.append((-(b[2] / a[2] - 1), a[0]))
+    hn = np.array([x[0] for x in hind]) - 0.001
+    rep["hindsight"] = {"n": len(hn), "win": round(float((hn > 0).mean() * 100), 1), "ev": round(float(hn.mean() * 100), 3)}
+    (out / "result.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1))
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--bd" in sys.argv:
+        sys.argv.remove("--bd")
+        bd_main()
+    else:
+        main()

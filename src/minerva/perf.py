@@ -129,13 +129,17 @@ def account_returns(account: dict, history: dict, capital: dict, bot: float) -> 
     today = account["updated_at"][:10]
     deposits = capital.get("deposits", [])
     invested = capital["base"] + sum(d["amount"] for d in deposits)
+    # 전액 출금 뒤에는 순투입액이 0 이하가 되므로 넣은 돈 합계로 나눈다
+    base = invested if invested > 0 else capital["base"] + sum(
+        d["amount"] for d in deposits if d["amount"] > 0
+    )
     out = {
         "since": capital["since"],
         "invested": invested,
         "total": equity - invested,
-        "total_pct": (equity - invested) / invested * 100,
+        "total_pct": (equity - invested) / base * 100,
         "bot": bot,
-        "bot_pct": bot / invested * 100,
+        "bot_pct": bot / base * 100,
     }
     prev_days = [d for d in history if capital["since"] <= d < today]
     # 시작일 당일은 전날 마감 대신 시작 평가액과 비교한다
@@ -144,8 +148,8 @@ def account_returns(account: dict, history: dict, capital: dict, bot: float) -> 
         if prev_days
         else (capital["base"] if today == capital["since"] else None)
     )
-    if prev:
-        added = sum(d["amount"] for d in deposits if d["date"] == today)
+    added = sum(d["amount"] for d in deposits if d["date"] == today)
+    if prev and prev + added > 0:
         out["today"] = equity - prev - added
         out["today_pct"] = out["today"] / (prev + added) * 100
     return out

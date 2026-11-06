@@ -59,3 +59,13 @@ def test_account_api_adds_returns(tmp_path, monkeypatch):
     monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(tmp_path / "none"))
     r = TestClient(app).get("/api/account").json()["returns"]
     assert r["total"] == 0 and r["today"] == 0 and r["bot"] == 0
+
+
+def test_full_withdrawal_keeps_sign():
+    account = {"equity": 0.0, "updated_at": "2026-11-06 09:12:30"}
+    capital = {"since": "2026-10-29", "base": 10_002_669,
+               "deposits": [{"date": "2026-11-06", "amount": -10_004_864}]}
+    r = perf.account_returns(account, {"2026-11-05": 9_796_508.0}, capital, 0.0)
+    assert r["total"] == 2_195
+    assert r["total_pct"] > 0
+    assert "today" not in r

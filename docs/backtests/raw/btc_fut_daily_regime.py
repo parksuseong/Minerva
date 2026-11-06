@@ -22,14 +22,22 @@ DAY = 86_400_000
 STOP = 0.01
 
 
-def regime(d5: dict, d: dict, shift_h: int, frame: int = 288):
+def regime(d5: dict, d: dict, shift_h: int, frame: int = 288, ma: int = 0):
     sh = dict(d5)
     sh["t"] = d5["t"] - shift_h * 3_600_000
     u = resample(sh, frame)
     close = u["t"] + shift_h * 3_600_000 + frame * M5
     j = np.searchsorted(close, d["t"] + BAR, side="right") - 1
     reg = np.zeros(len(d["t"]), int)
-    reg[j >= 0] = direction(u)[j[j >= 0]]
+    dr = direction(u)
+    if ma:  # 111번: 롱은 종가 > ma일선, 숏은 종가 < ma일선일 때만
+        c = u["c"]
+        cs = np.cumsum(np.r_[0.0, c])
+        sma = np.full(len(c), np.nan)
+        sma[ma - 1:] = (cs[ma:] - cs[:-ma]) / ma
+        with np.errstate(invalid="ignore"):
+            dr = np.where((dr == 1) & (c > sma), 1, np.where((dr == -1) & (c < sma), -1, 0))
+    reg[j >= 0] = dr[j[j >= 0]]
     newday = np.r_[False, j[1:] != j[:-1]]
     return reg, newday
 
@@ -82,6 +90,7 @@ def main() -> None:
     ap.add_argument("--spot", action="store_true", help="108번: 현물 5분봉, 펀딩 없음")
     ap.add_argument("--end", default="", help="YYYY-MM-DD 전까지만")
     ap.add_argument("--frame", type=int, default=288, help="상위 봉 크기(5분봉 개수): 48=4시간, 2016=주")
+    ap.add_argument("--ma200", action="store_true", help="111번: 200일선 문")
     ap.add_argument("--warm-days", type=int, default=60)
     ap.add_argument("--circ", type=int, default=0, help="방향 시계열 원형 이동 대조 횟수")
     args = ap.parse_args()
@@ -97,7 +106,7 @@ def main() -> None:
         d5 = {k: v[keep] for k, v in d5.items()}
     d = bars(d5, 0)
     t = d["t"]
-    reg, newday = regime(d5, d, args.day_shift, args.frame)
+    reg, newday = regime(d5, d, args.day_shift, args.frame, 200 if args.ma200 else 0)
     start = int(np.searchsorted(t, t[0] + args.warm_days * DAY))
     rep: dict = {"day_shift": args.day_shift, "frame": args.frame}
     bh = (d["o"][-1] / d["o"][start + 1] - 1) * 100

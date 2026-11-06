@@ -22,11 +22,11 @@ DAY = 86_400_000
 STOP = 0.01
 
 
-def regime(d5: dict, d: dict, shift_h: int):
+def regime(d5: dict, d: dict, shift_h: int, frame: int = 288):
     sh = dict(d5)
     sh["t"] = d5["t"] - shift_h * 3_600_000
-    u = resample(sh, 288)
-    close = u["t"] + shift_h * 3_600_000 + DAY
+    u = resample(sh, frame)
+    close = u["t"] + shift_h * 3_600_000 + frame * M5
     j = np.searchsorted(close, d["t"] + BAR, side="right") - 1
     reg = np.zeros(len(d["t"]), int)
     reg[j >= 0] = direction(u)[j[j >= 0]]
@@ -81,6 +81,8 @@ def main() -> None:
     ap.add_argument("--perm", action="store_true")
     ap.add_argument("--spot", action="store_true", help="108번: 현물 5분봉, 펀딩 없음")
     ap.add_argument("--end", default="", help="YYYY-MM-DD 전까지만")
+    ap.add_argument("--frame", type=int, default=288, help="상위 봉 크기(5분봉 개수): 48=4시간, 2016=주")
+    ap.add_argument("--warm-days", type=int, default=60)
     ap.add_argument("--circ", type=int, default=0, help="방향 시계열 원형 이동 대조 횟수")
     args = ap.parse_args()
     out = Path(args.out)
@@ -95,9 +97,9 @@ def main() -> None:
         d5 = {k: v[keep] for k, v in d5.items()}
     d = bars(d5, 0)
     t = d["t"]
-    reg, newday = regime(d5, d, args.day_shift)
-    start = int(np.searchsorted(t, t[0] + 60 * DAY))
-    rep: dict = {"day_shift": args.day_shift}
+    reg, newday = regime(d5, d, args.day_shift, args.frame)
+    start = int(np.searchsorted(t, t[0] + args.warm_days * DAY))
+    rep: dict = {"day_shift": args.day_shift, "frame": args.frame}
     bh = (d["o"][-1] / d["o"][start + 1] - 1) * 100
     rep["buy_hold_pct"] = round(float(bh), 1)
     for name, stop in (("R0", False), ("R1", True)):

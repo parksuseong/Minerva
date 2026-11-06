@@ -53,6 +53,29 @@ def features(d5: dict, d: dict, bar_ms: int) -> np.ndarray:
     return np.hstack(cols)
 
 
+def direction(b: dict) -> np.ndarray:
+    """CCI20>0·RSI14>50 = +1, 둘 다 아래 = −1, 나머지 0."""
+    c, r = cci(b["h"], b["l"], b["c"]), rsi(b["c"])
+    with np.errstate(invalid="ignore"):
+        return np.where((c > 0) & (r > 50), 1, np.where((c < 0) & (r < 50), -1, 0))
+
+
+def gate(d5: dict, d: dict, kind: str) -> np.ndarray:
+    """15분봉 마감 때 마감된 15분·4시간·일봉 방향. G1 = 셋 다 아래, G2 = 셋 다 같은 방향."""
+    dirs = [direction(d)]
+    close15 = d["t"] + 900_000
+    for k in (48, 288):
+        u = resample(d5, k)
+        j = np.searchsorted(u["t"] + k * M5, close15, side="right") - 1
+        v = np.zeros(len(close15), int)
+        v[j >= 0] = direction(u)[j[j >= 0]]
+        dirs.append(v)
+    a, b, c = dirs
+    if kind == "G1":
+        return (a == -1) & (b == -1) & (c == -1)
+    return (a == b) & (b == c) & (a != 0)
+
+
 def target(d: dict) -> np.ndarray:
     o = d["o"]
     n = len(o)
@@ -109,6 +132,7 @@ def main() -> None:
     ap.add_argument("--perm", action="store_true")
     ap.add_argument("--q", type=float, default=95, help="진입 문턱 백분위")
     ap.add_argument("--hold", type=int, default=16, help="보유 봉 수")
+    ap.add_argument("--gate", default="", help="G1 또는 G2. 켜진 15분봉에서만 진입")
     args = ap.parse_args()
     Q, H = args.q, args.hold
     out = Path(args.out)
@@ -140,9 +164,16 @@ def main() -> None:
     else:
         dt, pr = d, pred
     tt = dt["t"]
+    gon = np.ones(len(tt), bool)
+    if args.gate:
+        gs = gate(s5, d, args.gate)
+        if args.futures:
+            gon = np.array([bool(gs[pos[v]]) if v in pos else False for v in tt])
+        else:
+            gon = gs
     yr_of = np.array([datetime.fromtimestamp(v / 1000, timezone.utc).year for v in tt])
     q_of = np.array([qs.get(v, np.inf) for v in yr_of])
-    side = np.where(pr > q_of, 1, np.where(pr < -q_of, -1, 0))
+    side = np.where(pr > q_of, 1, np.where(pr < -q_of, -1, 0)) * gon
     cands = []
     for i in np.flatnonzero(side != 0):
         res = trade(dt, int(i), int(side[i]))
@@ -163,7 +194,8 @@ def main() -> None:
         plan = []
         for yr in YEARS:
             zs = [z for z in trs if ystart(yr) <= z[4] < ystart(yr + 1)]
-            pool = np.flatnonzero((tt >= ystart(yr)) & (tt < ystart(yr + 1)))[:-H - 2]
+            pool = np.flatnonzero((tt >= ystart(yr)) & (tt < ystart(yr + 1)) & gon)
+            pool = pool[pool < len(tt) - H - 2]
             plan.append((pool, sum(1 for z in zs if z[1] > 0), sum(1 for z in zs if z[1] < 0)))
         hits = 0
         for _ in range(2000):

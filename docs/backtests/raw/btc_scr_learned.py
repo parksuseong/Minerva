@@ -100,13 +100,17 @@ def bars(d5: dict, offset: int) -> dict:
 
 
 def main() -> None:
+    global Q, H
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--data", default=str(Path("~/.minerva/data/btc").expanduser()))
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--futures", action="store_true")
     ap.add_argument("--perm", action="store_true")
+    ap.add_argument("--q", type=float, default=95, help="진입 문턱 백분위")
+    ap.add_argument("--hold", type=int, default=16, help="보유 봉 수")
     args = ap.parse_args()
+    Q, H = args.q, args.hold
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     base = Path(args.data)

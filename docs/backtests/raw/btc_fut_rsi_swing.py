@@ -134,7 +134,7 @@ def bd_run(d, sig, stop_kind, gate, fund):
     sig = [s for s in sig if s[0] >= 6000 and s[0] < n - 2]
     tr = []
     for k, (i, side, sw, _) in enumerate(sig):
-        if tr and i < tr[-1][3]:
+        if tr and i + 1 < tr[-1][3]:  # 뒤집기: 반대 신호 다음 시가에 청산과 진입이 같다
             continue
         if gate is not None and gate[i] != side:
             continue

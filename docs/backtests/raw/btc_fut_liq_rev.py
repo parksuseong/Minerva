@@ -40,6 +40,7 @@ def main() -> None:
     ap.add_argument("--data", default=str(Path("~/.minerva/data/btc").expanduser()))
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--perm", action="store_true")
+    ap.add_argument("--follow", action="store_true", help="106번: 방향을 반대로(따라가기)")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -55,13 +56,14 @@ def main() -> None:
     with np.errstate(invalid="ignore"):
         oidrop = oi <= oil
         raw = {"RV": (r1 <= lo, r1 >= hi), "LQ": ((r1 <= lo) & oidrop, (r1 >= hi) & oidrop)}
-    rep: dict = {"offset": args.offset}
+    rep: dict = {"offset": args.offset, "follow": args.follow}
     years = range(2022, 2027)
     for name, (lv, sv) in raw.items():
         on_l = lv & ~np.r_[False, lv[:-1]]
         on_s = sv & ~np.r_[False, sv[:-1]]
         cands = []
-        for side, on in ((1, on_l), (-1, on_s)):
+        sgn = -1 if args.follow else 1
+        for side, on in ((sgn, on_l), (-sgn, on_s)):
             for i in np.flatnonzero(on):
                 res = L.trade(d, int(i), side)
                 if res is None:

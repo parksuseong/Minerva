@@ -118,6 +118,14 @@ def test_btc_endpoint_pending_then_data(tmp_path, monkeypatch):
     assert client.get("/static/btc.js").status_code == 200
 
 
+def test_today_tab_has_btc_daily_card():
+    client = TestClient(app)
+    page = client.get("/").text
+    today = page.split('id="tab-today"', 1)[1].split('class="panel"', 1)[0]
+    assert 'id="btcday-body"' in today and "/static/btcday.js" in page
+    assert client.get("/static/btcday.js").status_code == 200
+
+
 def test_daily_endpoint_pending_then_data(tmp_path, monkeypatch):
     out = tmp_path / "latest.json"
     monkeypatch.setenv("MINERVA_DAILY_OUT", str(out))

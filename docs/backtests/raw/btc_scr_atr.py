@@ -35,6 +35,9 @@ def atr(d: dict, n: int = 14) -> np.ndarray:
 
 def states(d: dict) -> dict:
     c, v = d["c"], d["v"]
+    obv = np.cumsum(np.r_[0.0, np.sign(np.diff(c)) * v[1:]])
+    od = np.zeros(len(c))
+    od[N:] = np.sign(obv[N:] - obv[:-N])
     a = atr(d)
     n = len(c)
     p = np.full(n, 0.0)
@@ -51,20 +54,28 @@ def states(d: dict) -> dict:
         ref = a[i - N]
         win = a[i - N - LOW_WIN:i - N]
         low[i] = ref <= np.percentile(win, LOW_Q)
-    return {"p": p, "vr": vr, "ar": ar, "atr": a, "low": low}
+    ma_all = np.ones(len(c), bool)
+    for m in (5, 10, 60, 120, 200):
+        cs = np.cumsum(np.r_[0.0, c])
+        sm = np.full(len(c), np.inf)
+        sm[m - 1:] = (cs[m:] - cs[:-m]) / m
+        ma_all &= c > sm
+    return {"p": p, "vr": vr, "ar": ar, "atr": a, "low": low, "od": od, "ma_all": ma_all}
 
 
-def signals(d: dict, st: dict) -> tuple:
+def signals(d: dict, st: dict, v2: bool = False) -> tuple:
     s = stoch(d["h"], d["l"], d["c"])
     up20 = crossed(s, 20, True)
     dn80 = crossed(s, 80, False)
     _, on_s, *_ = scr3(d)
     p, vr, ar, low = st["p"], st["vr"], st["ar"], st["low"]
     with np.errstate(invalid="ignore"):
-        l1 = up20 & (p < 0) & (vr > 1) & (ar < 1)
-        l2 = up20 & (p > 0) & (vr > 1) & (ar > 1) & low
+        vup = (st["od"] > 0) if v2 else (vr > 1)  # 2판: 거래량 방향은 OBV(이미지의 화살표)
+        l1 = up20 & (p < 0) & vup & (ar < 1)
+        l2 = up20 & (p > 0) & vup & (ar > 1) & low
         sh = on_s & (p > 0) & (vr >= 2) & (ar >= 2)
-    return l1, l2, sh, up20, dn80
+        l3 = up20 & st["ma_all"] if v2 else np.zeros(len(up20), bool)  # 2판: 모든 이평선 위 + SCR 1단
+    return l1, l2, sh, up20, dn80, l3
 
 
 def trade(d: dict, i: int, side: int, kind: str, st: dict, up20, dn80):
@@ -94,6 +105,7 @@ def main() -> None:
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--futures", action="store_true")
     ap.add_argument("--perm", action="store_true")
+    ap.add_argument("--v2", action="store_true", help="이미지 반영판: OBV 거래량 방향, 이평선 돌파 눌림 롱 추가")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -101,13 +113,13 @@ def main() -> None:
     d = bars(load5(base / ("futures/klines_5m.csv" if args.futures else "5m.csv")), args.offset)
     fund = load_funding(base / "futures/funding.csv") if args.futures else None
     st = states(d)
-    l1, l2, sh, up20, dn80 = signals(d, st)
+    l1, l2, sh, up20, dn80, l3 = signals(d, st, args.v2)
     n = len(d["c"])
     rep: dict = {"offset": args.offset, "futures": args.futures,
-                 "n_signals": {"L1": int(l1[6000:].sum()), "L2": int(l2[6000:].sum()), "S": int(sh[6000:].sum())}}
+                 "n_signals": {"L1": int(l1[6000:].sum()), "L2": int(l2[6000:].sum()), "S": int(sh[6000:].sum()), "L3": int(l3[6000:].sum())}}
     for kind in VARIANTS:
         cands = []
-        for tag, side, on in (("L1", 1, l1), ("L2", 1, l2), ("S", -1, sh)):
+        for tag, side, on in (("L1", 1, l1), ("L2", 1, l2), ("L3", 1, l3), ("S", -1, sh)):
             for i in np.flatnonzero(on):
                 if i < 6000 or i >= n - 2:
                     continue
@@ -120,7 +132,7 @@ def main() -> None:
         tr = walk(cands)
         res = {"all": summ(tr), "all_c10": summ(tr, 0.001),
                "old": summ([z for z in tr if z[4] < SPLIT]), "new": summ([z for z in tr if z[4] >= SPLIT]),
-               "by_tag": {t: summ([z for z in tr if z[7] == t]) for t in ("L1", "L2", "S")},
+               "by_tag": {t: summ([z for z in tr if z[7] == t]) for t in ("L1", "L2", "L3", "S")},
                "trades": [[z[0], z[1], round(z[2], 5), z[3], z[5], z[7]] for z in tr]}
         if args.perm and tr:
             rng = np.random.default_rng(7)

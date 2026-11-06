@@ -135,6 +135,7 @@ def main() -> None:
     ap.add_argument("--gate", default="", help="G1 또는 G2. 켜진 15분봉에서만 진입")
     ap.add_argument("--extra", default="", help="flow 또는 flow_oi: 특징 추가 (btc_flow_feats)")
     ap.add_argument("--start-year", type=int, default=2020)
+    ap.add_argument("--sym", action="store_true", help="롱은 학습 예측 상위, 숏은 하위 꼬리에서 같은 비율로")
     args = ap.parse_args()
     Q, H = args.q, args.hold
     YEARS = range(args.start_year, 2027)
@@ -153,14 +154,17 @@ def main() -> None:
     y = target(d)
     t = d["t"]
     pred = np.full(len(t), np.nan)
-    qs, weights = {}, {}
+    qs, weights, qhl = {}, {}, {}
     for yr in YEARS:
         a, b = ystart(yr), ystart(yr + 1)
         tr = np.flatnonzero((t < a - H * 900_000) & ~np.isnan(X).any(1) & ~np.isnan(y))[::4]
         te = np.flatnonzero((t >= a) & (t < b) & ~np.isnan(X).any(1))
         m = ridge(X[tr], y[tr])
         pred[te] = predict(m, X[te])
-        qs[yr] = float(np.percentile(np.abs(predict(m, X[tr])), Q))
+        ptr = predict(m, X[tr])
+        qs[yr] = float(np.percentile(np.abs(ptr), Q))
+        tail = (100 - Q) / 2
+        qhl[yr] = (float(np.percentile(ptr, 100 - tail)), float(np.percentile(ptr, tail)))
         weights[yr] = [round(float(v), 6) for v in m[2]]
     # 매매할 가격: 현물 또는 선물(같은 시각의 예측을 씀)
     fund = None
@@ -182,7 +186,12 @@ def main() -> None:
             gon = gs
     yr_of = np.array([datetime.fromtimestamp(v / 1000, timezone.utc).year for v in tt])
     q_of = np.array([qs.get(v, np.inf) for v in yr_of])
-    side = np.where(pr > q_of, 1, np.where(pr < -q_of, -1, 0)) * gon
+    if args.sym:
+        hi = np.array([qhl.get(v, (np.inf, -np.inf))[0] for v in yr_of])
+        lo = np.array([qhl.get(v, (np.inf, -np.inf))[1] for v in yr_of])
+        side = np.where(pr > hi, 1, np.where(pr < lo, -1, 0)) * gon
+    else:
+        side = np.where(pr > q_of, 1, np.where(pr < -q_of, -1, 0)) * gon
     cands = []
     for i in np.flatnonzero(side != 0):
         res = trade(dt, int(i), int(side[i]))
@@ -192,7 +201,7 @@ def main() -> None:
         g = with_funding(g, dt, int(i), x, int(side[i]), fund)
         cands.append((int(i), int(side[i]), float(g), int(x), float(tt[i]), stopped, STOP))
     trs = walk(cands)
-    rep: dict = {"offset": args.offset, "futures": args.futures, "q": qs, "weights": weights,
+    rep: dict = {"offset": args.offset, "futures": args.futures, "q": qs, "q_hi_lo": qhl, "weights": weights,
                  "all": summ(trs), "all_c10": summ(trs, 0.001),
                  "years": {yr: summ([z for z in trs if ystart(yr) <= z[4] < ystart(yr + 1)]) for yr in YEARS},
                  "trades": [[z[0], z[1], round(z[2], 5), z[3], z[5]] for z in trs]}

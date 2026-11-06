@@ -136,20 +136,30 @@ def main() -> None:
     ap.add_argument("--extra", default="", help="flow 또는 flow_oi: 특징 추가 (btc_flow_feats)")
     ap.add_argument("--start-year", type=int, default=2020)
     ap.add_argument("--sym", action="store_true", help="롱은 학습 예측 상위, 숏은 하위 꼬리에서 같은 비율로")
+    ap.add_argument("--base", default="spot", help="futures: 봉·특징·매매를 모두 선물 5분봉에서 (103번)")
     args = ap.parse_args()
     Q, H = args.q, args.hold
     YEARS = range(args.start_year, 2027)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     base = Path(args.data)
-    s5 = load5(base / "5m.csv")
+    src5 = base / ("futures/klines_5m.csv" if args.base == "futures" else "5m.csv")
+    s5 = load5(src5)
     d = bars(s5, args.offset)
     X = features(s5, d, 900_000)
     if args.extra:
         import btc_flow_feats as FF
-        V, K = FF.taker15(base / "5m.csv", d, args.offset)
-        X = np.hstack([X, FF.flow(V, K)])
-        if args.extra == "flow_oi":
+        V, K = FF.taker15(src5, d, args.offset)
+        fl = FF.flow(V, K)
+        if args.base == "futures":  # OKX로 채운 봉(시장가 매수량 nan)이 낀 창은 비운다
+            nk = FF.roll(np.isnan(K).astype(float), 16) > 0
+            fl[nk] = np.nan
+        X = np.hstack([X, fl])
+        if args.extra.startswith("fut"):
+            import btc_fut_feats as FU
+            X = np.hstack([X, FU.premium(base / "futures/premium_5m.csv", d),
+                           FU.funding(base / "futures/funding.csv", d)])
+        if args.extra in ("flow_oi", "fut_oi"):
             X = np.hstack([X, FF.oi_feats(base / "futures/metrics.csv", d)])
     y = target(d)
     t = d["t"]
@@ -168,7 +178,10 @@ def main() -> None:
         weights[yr] = [round(float(v), 6) for v in m[2]]
     # 매매할 가격: 현물 또는 선물(같은 시각의 예측을 씀)
     fund = None
-    if args.futures:
+    if args.base == "futures":
+        fund = load_funding(base / "futures/funding.csv")
+        dt, pr = d, pred
+    elif args.futures:
         f5 = load5(base / "futures/klines_5m.csv")
         fund = load_funding(base / "futures/funding.csv")
         dt = bars(f5, args.offset)
@@ -180,7 +193,7 @@ def main() -> None:
     gon = np.ones(len(tt), bool)
     if args.gate:
         gs = gate(s5, d, args.gate)
-        if args.futures:
+        if args.futures and args.base != "futures":
             gon = np.array([bool(gs[pos[v]]) if v in pos else False for v in tt])
         else:
             gon = gs

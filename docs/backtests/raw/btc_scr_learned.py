@@ -123,7 +123,7 @@ def bars(d5: dict, offset: int) -> dict:
 
 
 def main() -> None:
-    global Q, H
+    global Q, H, YEARS
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--data", default=str(Path("~/.minerva/data/btc").expanduser()))
@@ -133,14 +133,23 @@ def main() -> None:
     ap.add_argument("--q", type=float, default=95, help="진입 문턱 백분위")
     ap.add_argument("--hold", type=int, default=16, help="보유 봉 수")
     ap.add_argument("--gate", default="", help="G1 또는 G2. 켜진 15분봉에서만 진입")
+    ap.add_argument("--extra", default="", help="flow 또는 flow_oi: 특징 추가 (btc_flow_feats)")
+    ap.add_argument("--start-year", type=int, default=2020)
     args = ap.parse_args()
     Q, H = args.q, args.hold
+    YEARS = range(args.start_year, 2027)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     base = Path(args.data)
     s5 = load5(base / "5m.csv")
     d = bars(s5, args.offset)
     X = features(s5, d, 900_000)
+    if args.extra:
+        import btc_flow_feats as FF
+        V, K = FF.taker15(base / "5m.csv", d, args.offset)
+        X = np.hstack([X, FF.flow(V, K)])
+        if args.extra == "flow_oi":
+            X = np.hstack([X, FF.oi_feats(base / "futures/metrics.csv", d)])
     y = target(d)
     t = d["t"]
     pred = np.full(len(t), np.nan)

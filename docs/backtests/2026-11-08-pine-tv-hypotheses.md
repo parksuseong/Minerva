@@ -312,3 +312,20 @@ S70 결선 10개(설계 10배 순, 칸: 거래 / 승률 / 10배 손익분기 승
 - 16번 기본값(N3 3512, BB 10.2σ 등)은 원문 작성자가 맞춘 값으로 보인다. 그대로 썼다.
 - 현물 H-6D-T1은 펀딩이 없다(선물이면 롱이 보통 더 냄). 빈 구간은 채우지 않았다.
 - 봉 안 순서를 모를 때 손절 먼저, 5분봉으로 다시 보지 않음(직전과 같음).
+
+## 재현
+```
+R=~/.minerva/research/btc-2026-11-04; OUT=~/.minerva/research/pine-tv-2026-11-08
+P="systemd-run --user --scope -p MemoryMax=1200M nice -n 10 env PYTHONPATH=$R/pyml:$R/pylib:docs/backtests/raw python3"
+$P docs/backtests/raw/pine_data.py --out $OUT
+$P docs/backtests/raw/pine_tv_ports_check.py
+$P docs/backtests/raw/pine_tv_eval.py --out $OUT grid
+$P docs/backtests/raw/pine_tv_eval.py --out $OUT holdout
+$P docs/backtests/raw/pine_tv_eval.py --out $OUT s70
+$P docs/backtests/raw/pine_tv_eval.py --out $OUT s70hold
+$P docs/backtests/raw/pine_tv_eval.py --out $OUT random --nsim 2000 --items T10:P/S0 T05H:T1/S1 T03H:O/S0 X2:O/S0 \
+  "T10|G0|K1/0" "T06H|G10|K1/0" "T22H|G0|K0.5/0"
+$P docs/backtests/raw/pine_tv_eval.py --out $OUT hyp6d --nsim 2000
+$P docs/backtests/raw/pine_tv_chart.py --out $OUT --prefix fin --long "T10:P/S0:(finalist 1)" "T05H:T1/S1:(finalist 2)"
+```
+원문 받기는 저장소 밖 `~/.minerva/research/pine-tv/tools/`(목록 파싱·pine-facade 요청, 3.5초 간격).

@@ -108,7 +108,8 @@ def oi_cols(tc: np.ndarray) -> list:
     t, oi = t[order], np.array(oi)[order]
     cols = []
     for h in (1, 4):
-        a, b = last_idx(t, tc), last_idx(t, tc - h * 3_600_000)
+        # metrics create_time은 5분 구간 시작이다(레드팀 11/7). 값은 create_time+5분에 정해진다.
+        a, b = last_idx(t + M5, tc), last_idx(t + M5, tc - h * 3_600_000)
         ok = (a >= 0) & (b >= 0)
         ok &= (tc - t[np.maximum(a, 0)] <= 1800_000) & (tc - h * 3_600_000 - t[np.maximum(b, 0)] <= 1800_000)
         with np.errstate(invalid="ignore", divide="ignore"):

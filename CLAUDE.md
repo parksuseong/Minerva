@@ -26,7 +26,8 @@ Minerva/
 - 린트/포맷: `.venv/bin/ruff check . && .venv/bin/ruff format .`
 - 서버: systemd 서비스 `minerva`로 HTTPS 443에서 상시 실행 (부팅 시 자동 시작, `deploy/minerva.service`)
   - 코드 반영: `sudo systemctl restart minerva` / 상태·로그: `systemctl status minerva`, `journalctl -u minerva -n 50`
-  - 주소: https://minerva-ai.duckdns.org/ (DuckDNS → 3.210.65.41). 인증서는 Let's Encrypt, `certbot-renew.timer`가 갱신하고 `deploy/certbot-deploy-hook.sh`가 저장소 밖 `~/.minerva/tls/`로 복사·재시작한다 (커밋 금지).
+  - 주소: https://minerva-ai.duckdns.org/ (DuckDNS → 54.116.174.170, 서울 리전, 2026-11-07 이전). 인증서는 Let's Encrypt, `certbot-renew.timer`가 갱신하고 `deploy/certbot-deploy-hook.sh`가 저장소 밖 `~/.minerva/tls/`로 복사·재시작한다 (커밋 금지).
+  - 포트 80: `minerva-redirect` 서비스(`deploy/minerva-redirect.service`, `scripts/http_redirect.py`)가 https로 301 리다이렉트한다. certbot standalone도 80번을 쓰므로 `deploy/certbot-{pre,post}-hook.sh`를 `/etc/letsencrypt/renewal-hooks/{pre,post}/`에 깔아 갱신 중에는 멈춘다.
 
 ## 작업 원칙
 - 변경 전에 관련 코드를 먼저 읽고, 기존 스타일을 따른다.

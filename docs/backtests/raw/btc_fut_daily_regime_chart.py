@@ -1,6 +1,6 @@
 """R1(일봉 방향 보유, 1% 손절) 최근 거래 차트, 진행 중인 포지션 포함.
 
-실행: PYTHONPATH=<numpy·matplotlib 경로>:src:docs/backtests/raw python <이 파일> <result.json> <일수> <출력 png>
+실행: PYTHONPATH=<numpy·matplotlib 경로>:src:docs/backtests/raw python <이 파일> <result.json> <일수> <출력 png> [변형, 기본 R1]
 """
 
 from __future__ import annotations
@@ -29,17 +29,18 @@ COST = 0.0005
 
 def main() -> None:
     res, days, out = Path(sys.argv[1]), int(sys.argv[2]), Path(sys.argv[3])
+    var = sys.argv[4] if len(sys.argv) > 4 else "R1"
     d5 = load5(Path("~/.minerva/data/btc/futures/klines_5m.csv").expanduser())
     d = bars(d5, 0)
     t, c = d["t"], d["c"]
     reg, newday = R.regime(d5, d, 0)
-    tr = [z for z in json.loads(res.read_text())["R1"]["trades"]]
+    tr = [z for z in json.loads(res.read_text())[var]["trades"]]
     lo = int(np.searchsorted(t, t[-1] - days * 86_400_000))
     tr = [z for z in tr if z[0] >= lo]
     # run()은 끝나지 않은 다리에서 멈춘다. 마지막 청산 뒤 첫 방향 봉이 진행 중인 진입이다.
     last_x = tr[-1][3] if tr else lo
     nz = [i for i in range(last_x - 1, len(t) - 2) if reg[i]]
-    opened = (nz[0], int(reg[nz[0]])) if nz else None
+    opened = (nz[0], int(reg[nz[0]])) if nz and var == "R1" else None  # 다른 변형은 방향이 R1과 달라 생략
     x = mdates.date2num([datetime.fromtimestamp(v / 1000, KST) for v in t])
     u = resample(d, 96, base_ms=900_000)
     ux = mdates.date2num([datetime.fromtimestamp((v + 86_400_000) / 1000, KST) for v in u["t"]])
@@ -76,7 +77,7 @@ def main() -> None:
                    (x[e], px_in), xytext=(6, 10), textcoords="offset points", fontsize=10, color=INK)
         note = f" | open {'long' if side > 0 else 'short'} since " + \
             datetime.fromtimestamp(t[e] / 1000, KST).strftime("%m-%d %H:%M")
-    p.set_title(f"BTCUSDT futures 15m, last {days} days: R1 hold daily direction (shade), 1% stop  |  "
+    p.set_title(f"BTCUSDT futures 15m, last {days} days: {var} (shade = daily direction), 1% stop  |  "
                 f"{wins}/{len(tr)} closed wins, net of 0.1% round trip + funding{note} (KST)",
                 loc="left", color=INK, fontsize=11)
     handles = [

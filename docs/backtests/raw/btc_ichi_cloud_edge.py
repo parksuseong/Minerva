@@ -15,7 +15,6 @@ from itertools import product
 from pathlib import Path
 
 import numpy as np
-
 from btc_fractal import cci, crossed, recent, rsi, stoch
 from btc_scr_gate15 import load_funding
 from btc_scr_macd_ichi import bh, mid, norm_sf, shift
@@ -41,12 +40,12 @@ def first_hit(arr: np.ndarray, e: np.ndarray, lvl: np.ndarray, w: int, below: bo
     step = max(1, int(1.5e7 // max(w, 1)))
     ar = np.arange(w)
     for a in range(0, len(e), step):
-        ee = e[a:a + step]
+        ee = e[a : a + step]
         pos = ee[:, None] + ar[None, :]
         v = arr[np.minimum(pos, n - 1)]
-        hit = (v <= lvl[a:a + step, None]) if below else (v >= lvl[a:a + step, None])
+        hit = (v <= lvl[a : a + step, None]) if below else (v >= lvl[a : a + step, None])
         hit &= pos < n
-        out[a:a + step] = np.where(hit.any(1), hit.argmax(1), w)
+        out[a : a + step] = np.where(hit.any(1), hit.argmax(1), w)
     return out
 
 
@@ -90,7 +89,9 @@ class Frame:
         for k in (2, 3):
             for side in (1, -1):
                 up = side > 0
-                a = recent(crossed(s, 20 if up else 80, up), 3) & recent(crossed(cc, -100 if up else 100, up), 3)
+                a = recent(crossed(s, 20 if up else 80, up), 3) & recent(
+                    crossed(cc, -100 if up else 100, up), 3
+                )
                 if k == 3:
                     a &= recent(crossed(r, 30 if up else 70, up), 3)
                 self.conf[(f"scr{k}", side)] = recent(a, 3)
@@ -165,7 +166,17 @@ def trades_for(F: Frame, X: Exec, ich, interp, conf, tgt, mask_shift: int = 0, l
             tp = px + side * 2 * d * px
         g, x, why = X.run(e, side, sp, tp, w)
         for j in range(len(fi)):
-            rows.append((int(e[j]), side, float(g[j]), int(x[j]), float(d[j]), float(X.t[e[j]]), int(why[j])))
+            rows.append(
+                (
+                    int(e[j]),
+                    side,
+                    float(g[j]),
+                    int(x[j]),
+                    float(d[j]),
+                    float(X.t[e[j]]),
+                    int(why[j]),
+                )
+            )
     rows.sort()
     keep, busy = [], -1
     for r in rows:
@@ -187,10 +198,18 @@ def stats(tr: list, cost: float = COST) -> dict:
     t = float(R.mean() / (s / math.sqrt(len(R)))) if s > 0 else 0.0
     eq = np.cumprod(1 + net)
     pk = np.maximum.accumulate(np.r_[1.0, eq])
-    out = {"n": len(tr), "R": round(float(R.mean()), 4), "t": round(t, 2), "ev": round(float(net.mean() * 100), 4),
-           "win": round(float((net > 0).mean() * 100), 1), "ret": round(float((eq[-1] - 1) * 100), 1),
-           "mdd": round(float((eq / pk[1:] - 1).min() * 100), 1), "d_med": round(float(np.median(d) * 100), 2),
-           "nl": int((sd > 0).sum()), "ns": int((sd < 0).sum())}
+    out = {
+        "n": len(tr),
+        "R": round(float(R.mean()), 4),
+        "t": round(t, 2),
+        "ev": round(float(net.mean() * 100), 4),
+        "win": round(float((net > 0).mean() * 100), 1),
+        "ret": round(float((eq[-1] - 1) * 100), 1),
+        "mdd": round(float((eq / pk[1:] - 1).min() * 100), 1),
+        "d_med": round(float(np.median(d) * 100), 2),
+        "nl": int((sd > 0).sum()),
+        "ns": int((sd < 0).sum()),
+    }
     out["R_long"] = round(float(R[sd > 0].mean()), 4) if (sd > 0).any() else None
     out["R_short"] = round(float(R[sd < 0].mean()), 4) if (sd < 0).any() else None
     return out
@@ -198,9 +217,16 @@ def stats(tr: list, cost: float = COST) -> dict:
 
 def describe(key) -> str:
     fr, ich, interp, conf, tgt = key
-    a = "구름 안에서 하단(롱)·상단(숏)에 닿고 되돌아 마감" if interp == "I1" else \
-        "구름 위(롱)·아래(숏)에서 상단(롱)·하단(숏)까지 눌렸다 지지·저항 마감"
-    c = {"none": "확인 없음", "scr2": "SCR 2단 같은 방향 3봉 안", "scr3": "SCR 3단 같은 방향 3봉 안"}[conf]
+    a = (
+        "구름 안에서 하단(롱)·상단(숏)에 닿고 되돌아 마감"
+        if interp == "I1"
+        else "구름 위(롱)·아래(숏)에서 상단(롱)·하단(숏)까지 눌렸다 지지·저항 마감"
+    )
+    c = {
+        "none": "확인 없음",
+        "scr2": "SCR 2단 같은 방향 3봉 안",
+        "scr3": "SCR 3단 같은 방향 3봉 안",
+    }[conf]
     tg = {"T1": "목표 = 구름 두께", "T2": "목표 1R", "T3": "목표 2R"}[tgt]
     return f"{fr}, 이치모쿠 {ich}, {a}, {c}, 손절 구름 반대편 −0.1%, {tg}"
 
@@ -225,7 +251,12 @@ def main() -> None:
         tr, sk = trades_for(frames[fn], X, ich, interp, conf, tgt)
         disc = [r for r in tr if r[5] < SPLIT]
         hold = [r for r in tr if r[5] >= SPLIT]
-        cells[key] = {"disc": stats(disc), "hold": stats(hold), "hold_c10": stats(hold, 0.001), "skipped": sk}
+        cells[key] = {
+            "disc": stats(disc),
+            "hold": stats(hold),
+            "hold_c10": stats(hold, 0.001),
+            "skipped": sk,
+        }
         trades[key] = tr
     print("cells", len(cells), round(time.time() - t0), flush=True)
     keys = list(cells)
@@ -233,13 +264,23 @@ def main() -> None:
     p = np.array([norm_sf(cells[k]["disc"]["t"]) for k in elig])
     surv = bh(p, 0.10) if len(p) else np.zeros(0, bool)
     survivors = [k for k, s in zip(elig, surv) if s]
-    rep = {"n_cells": len(keys), "n_eligible": len(elig), "min_p": round(float(p.min()), 5) if len(p) else None,
-           "survivors": [], "top10": []}
+    rep = {
+        "n_cells": len(keys),
+        "n_eligible": len(elig),
+        "min_p": round(float(p.min()), 5) if len(p) else None,
+        "survivors": [],
+        "top10": [],
+    }
     for k in survivors:
         c = cells[k]
         h = c["hold"]
-        ok = (h.get("n", 0) >= 25 and h.get("R", -1) > 0 and (h.get("R_long") or 0) >= 0
-              and (h.get("R_short") or 0) >= 0 and c["hold_c10"].get("R", -1) > 0)
+        ok = (
+            h.get("n", 0) >= 25
+            and h.get("R", -1) > 0
+            and (h.get("R_long") or 0) >= 0
+            and (h.get("R_short") or 0) >= 0
+            and c["hold_c10"].get("R", -1) > 0
+        )
         nullp = None
         if ok and a.null:
             F = frames[k[0]]
@@ -253,13 +294,30 @@ def main() -> None:
                 null.append(stats(tr).get("R", 0.0))
             nullp = round(float((np.array(null) >= h["R"]).mean()), 4)
             ok = ok and nullp < 0.05
-        rep["survivors"].append({"key": str(k), "rule": describe(k), "disc": c["disc"], "hold": h,
-                                 "hold_c10": c["hold_c10"], "null_p": nullp, "pass": bool(ok)})
+        rep["survivors"].append(
+            {
+                "key": str(k),
+                "rule": describe(k),
+                "disc": c["disc"],
+                "hold": h,
+                "hold_c10": c["hold_c10"],
+                "null_p": nullp,
+                "pass": bool(ok),
+            }
+        )
     order = sorted(elig, key=lambda k: -cells[k]["disc"]["t"])
     for k in order[:10]:
         c = cells[k]
-        rep["top10"].append({"key": str(k), "rule": describe(k), "disc": c["disc"], "hold": c["hold"],
-                             "hold_c10": c["hold_c10"], "skipped": c["skipped"]})
+        rep["top10"].append(
+            {
+                "key": str(k),
+                "rule": describe(k),
+                "disc": c["disc"],
+                "hold": c["hold"],
+                "hold_c10": c["hold_c10"],
+                "skipped": c["skipped"],
+            }
+        )
     rep["all"] = {str(k): v for k, v in cells.items()}
     (out / "result.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1))
     (out / "trades.json").write_text(json.dumps({str(k): v for k, v in trades.items()}))

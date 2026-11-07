@@ -92,7 +92,8 @@ def run(m: Mkt, reg: np.ndarray, newday: np.ndarray, atr: np.ndarray, risk: floa
         seg = np.arange(e, xb)
         if len(seg):
             k = np.searchsorted(ft, t[seg] + BAR, side="right")
-            paid = np.where(k > 0, cum[np.maximum(k - 1, 0)], 0.0)
+            cz = np.r_[0.0, cum]  # 정산이 없으면 0
+            paid = cz[k]
             eq[seg] = E0 - N * FEE + qty * (c[seg] - px) - paid
             inpos[seg] = True
         fund_all = float(cum[-1]) if len(cum) else 0.0

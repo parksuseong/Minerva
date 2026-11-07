@@ -13,9 +13,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import numpy as np
-
 import btc_fut_daily_regime as R
+import numpy as np
 from btc_fractal import load5
 from btc_futures_compare import load_funding
 from btc_ml_seeds import rule_masks
@@ -29,8 +28,13 @@ FEE = 0.0005
 RES = Path("~/.minerva/research/btc-2026-11-04").expanduser()
 TRK = Path("~/.minerva/research/btc-ml-tracker").expanduser()
 FUT5 = Path("~/.minerva/data/btc/futures/klines_5m.csv").expanduser()
-RULES = {"A": ("one", 0.90, 4), "B": ("one", 0.95, 5), "AS": ("mean", 0.90, 4),
-         "BS": ("mean", 0.95, 5), "AS4": ("mean", 0.90, 4)}
+RULES = {
+    "A": ("one", 0.90, 4),
+    "B": ("one", 0.95, 5),
+    "AS": ("mean", 0.90, 4),
+    "BS": ("mean", 0.95, 5),
+    "AS4": ("mean", 0.90, 4),
+}
 
 
 def load_spot5() -> dict:
@@ -78,8 +82,12 @@ def signals(t15: np.ndarray) -> tuple:
     for k in RULES:
         src["backtest"][k] = int((out[k][t15 <= last_bt] != 0).sum())
         src["tracker"][k] = int((out[k][t15 > last_bt] != 0).sum())
-    seam = {"backtest_last": last_bt, "tracker_first": float(tt.min()), "gap_bars": int(
-        ((t15 > last_bt) & (t15 < tt.min())).sum()), "tracker_rows_used": int(okt.sum())}
+    seam = {
+        "backtest_last": last_bt,
+        "tracker_first": float(tt.min()),
+        "gap_bars": int(((t15 > last_bt) & (t15 < tt.min())).sum()),
+        "tracker_rows_used": int(okt.sum()),
+    }
     return out, src, seam
 
 
@@ -110,11 +118,33 @@ def ml_trades(d, sig, a, b) -> list:
                 x = (j, fill, "익절", t[j] + BAR)
                 break
         if x is None:
-            tr.append({"i": i, "s": s, "px": px, "x": len(c) - 1, "xp": c[-1], "why": "보유 중",
-                       "t0": t[i] + BAR, "t1": t[-1] + BAR, "open": True})
+            tr.append(
+                {
+                    "i": i,
+                    "s": s,
+                    "px": px,
+                    "x": len(c) - 1,
+                    "xp": c[-1],
+                    "why": "보유 중",
+                    "t0": t[i] + BAR,
+                    "t1": t[-1] + BAR,
+                    "open": True,
+                }
+            )
             break
-        tr.append({"i": i, "s": s, "px": px, "x": x[0], "xp": x[1], "why": x[2], "t0": t[i] + BAR,
-                   "t1": x[3], "open": False})
+        tr.append(
+            {
+                "i": i,
+                "s": s,
+                "px": px,
+                "x": x[0],
+                "xp": x[1],
+                "why": x[2],
+                "t0": t[i] + BAR,
+                "t1": x[3],
+                "open": False,
+            }
+        )
         i = x[0]
     return tr
 
@@ -145,8 +175,19 @@ def r1_trades(d, reg, newday, a, b) -> list:
         s = int(reg[i])
         if s and can:
             x, xp, why, t1, op = r1_leg(d, reg, i, s, c[i])
-            tr.append({"i": i, "s": s, "px": c[i], "x": x, "xp": xp, "why": why, "t0": t[i] + BAR,
-                       "t1": t1, "open": op})
+            tr.append(
+                {
+                    "i": i,
+                    "s": s,
+                    "px": c[i],
+                    "x": x,
+                    "xp": xp,
+                    "why": why,
+                    "t0": t[i] + BAR,
+                    "t1": t1,
+                    "open": op,
+                }
+            )
             if op:
                 break
             if why == "손절":
@@ -166,8 +207,19 @@ def k2_trades(d, reg, sig, a, b) -> list:
         s = int(reg[i])
         if s and int(sig[i]) == s:
             x, xp, why, t1, op = r1_leg(d, reg, i, s, c[i])
-            tr.append({"i": i, "s": s, "px": c[i], "x": x, "xp": xp, "why": why, "t0": t[i] + BAR,
-                       "t1": t1, "open": op})
+            tr.append(
+                {
+                    "i": i,
+                    "s": s,
+                    "px": c[i],
+                    "x": x,
+                    "xp": xp,
+                    "why": why,
+                    "t0": t[i] + BAR,
+                    "t1": t1,
+                    "open": op,
+                }
+            )
             if op:
                 break
             i = x
@@ -218,10 +270,15 @@ def summary(d, tr, a, days, cost) -> dict:
         r[f"ret{int(lev)}"] = round((e[-1] - 1) * 100, 2)
         r[f"mdd{int(lev)}"] = round(float((e / pk - 1).min()) * 100, 2)
     return {
-        "n": len(allz), "closed": len(done), "open": len(allz) - len(done),
-        "long": sum(z["s"] > 0 for z in allz), "short": sum(z["s"] < 0 for z in allz),
-        "win": round(float((net > 0).mean() * 100), 1), "avg": round(float(net.mean() * 100), 3),
-        "best": round(float(net.max() * 100), 2), "worst": round(float(net.min() * 100), 2),
+        "n": len(allz),
+        "closed": len(done),
+        "open": len(allz) - len(done),
+        "long": sum(z["s"] > 0 for z in allz),
+        "short": sum(z["s"] < 0 for z in allz),
+        "win": round(float((net > 0).mean() * 100), 1),
+        "avg": round(float(net.mean() * 100), 3),
+        "best": round(float(net.max() * 100), 2),
+        "worst": round(float(net.min() * 100), 2),
         "per_day": round(len(allz) / days, 2),
         "hold_h": round(float(np.mean([(z["t1"] - z["t0"]) / 3_600_000 for z in allz])), 1),
         **r,
@@ -245,10 +302,14 @@ def main() -> None:
     a = int(np.searchsorted(t, t0))
     b = len(t) - 1
     days = (t[-1] + BAR - t[a]) / 86_400_000
-    rep = {"start_kst": datetime.fromtimestamp(t[a] / 1000, KST).isoformat(),
-           "end_kst": datetime.fromtimestamp((t[-1] + BAR) / 1000, KST).isoformat(),
-           "days": round(days, 2), "sources": src, "seam": seam,
-           "buy_hold_pct": round((d["c"][-1] / d["c"][a - 1] - 1) * 100, 2)}
+    rep = {
+        "start_kst": datetime.fromtimestamp(t[a] / 1000, KST).isoformat(),
+        "end_kst": datetime.fromtimestamp((t[-1] + BAR) / 1000, KST).isoformat(),
+        "days": round(days, 2),
+        "sources": src,
+        "seam": seam,
+        "buy_hold_pct": round((d["c"][-1] / d["c"][a - 1] - 1) * 100, 2),
+    }
     a_r1 = a + int(np.flatnonzero(newday[a:])[0])  # 첫 일봉 마감부터
     trades = {}
     for name in ("A", "B", "AS", "BS", "AS4", "K2", "R1"):
@@ -264,9 +325,19 @@ def main() -> None:
             res["cost" if cost else "free"] = summary(d, tr, a, days, cost)
         finish(tr, ft, fr, True)
         rep[name] = res
-        trades[name] = [{k: (float(v) if isinstance(v, (np.floating, float)) else
-                             int(v) if isinstance(v, (np.integer,)) else v) for k, v in z.items()}
-                        for z in tr]
+        trades[name] = [
+            {
+                k: (
+                    float(v)
+                    if isinstance(v, (np.floating, float))
+                    else int(v)
+                    if isinstance(v, (np.integer,))
+                    else v
+                )
+                for k, v in z.items()
+            }
+            for z in tr
+        ]
     (out / "result.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1))
     (out / "trades.json").write_text(json.dumps(trades, ensure_ascii=False))
     print(json.dumps(rep, ensure_ascii=False, indent=1))

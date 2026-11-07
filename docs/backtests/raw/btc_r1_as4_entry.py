@@ -295,12 +295,17 @@ def main() -> None:
     # 무작위 대조: AS4 신호 시각만 원형 이동, 모형 bc, 씨드 평균
     Lm, Sm = seeds["mean"]
     rng = np.random.default_rng(7)
-    shifts = rng.integers(96 * 7, G.n - 96 * 7, size=a.null)
+    # 레드팀 128: 신호가 있는 2023~ 구간 안에서만 원형으로 민다(전체 배열을 밀면 신호가 시험 밖으로 빠진다)
+    i0 = int(np.searchsorted(G.t, ts(2023)))
+    span = G.n - i0
+    shifts = rng.integers(96 * 7, span - 96 * 7, size=a.null)
     for var in ("K1", "K2", "K3"):
         act = net_mean(keep[f"{var}|bc|mean"], tp, ts(2023))
         null = []
         for k in shifts:
-            g = run(var, models["bc"], (np.roll(Lm, int(k)), np.roll(Sm, int(k))))
+            Lr, Sr = Lm.copy(), Sm.copy()
+            Lr[i0:], Sr[i0:] = np.roll(Lm[i0:], int(k)), np.roll(Sm[i0:], int(k))
+            g = run(var, models["bc"], (Lr, Sr))
             null.append(net_mean(g, tp, ts(2023)))
         null = np.array(null)
         rep[f"null|{var}"] = {"actual_net_pct": round(act * 100, 4), "null_mean_pct": round(float(null.mean()) * 100, 4),

@@ -11,9 +11,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
-
 import btc_fut_daily_regime as R
+import numpy as np
 from btc_fractal import load5, resample
 from btc_scr_learned import bars
 

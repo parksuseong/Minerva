@@ -145,6 +145,25 @@
       .catch(() => { $("acct-status").textContent = "계좌 정보를 불러오지 못했어요"; });
   }
 
+  // 주식/비트코인 중 하나만 보인다. 고른 쪽은 이 기기에 기억한다.
+  const PICK = "minerva-account-pick";
+  function pick(which) {
+    $("acct-kr").hidden = which !== "kr";
+    $("acct-bn").hidden = which !== "bn";
+    document.querySelectorAll("#acct-pick button").forEach((b) => {
+      const on = b.dataset.acct === which;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", String(on));
+    });
+    try { localStorage.setItem(PICK, which); } catch (e) { /* 저장이 막혀도 전환은 된다 */ }
+  }
+  document.querySelectorAll("#acct-pick button").forEach((b) => {
+    b.onclick = () => pick(b.dataset.acct);
+  });
+  let saved = "kr";
+  try { saved = localStorage.getItem(PICK) === "bn" ? "bn" : "kr"; } catch (e) { /* 기본 주식 */ }
+  pick(saved);
+
   fetch("/api/profile").then((r) => r.json()).then((p) => { boss = p.boss || boss; })
     .catch(() => { /* 기본 호칭 유지 */ });
   load();

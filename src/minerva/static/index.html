@@ -239,6 +239,11 @@
   </div>
 
   <div class="panel" id="tab-account" hidden>
+    <div class="filters" id="acct-pick" role="group" aria-label="계좌 선택">
+      <button type="button" data-acct="kr" class="on" aria-pressed="true">📈 주식</button>
+      <button type="button" data-acct="bn" aria-pressed="false">₿ 비트코인</button>
+    </div>
+    <div id="acct-kr">
     <section class="card">
       <h2>💼 계좌</h2>
       <div id="acct-status" class="placeholder">불러오는 중…</div>
@@ -246,6 +251,8 @@
     <section class="card"><h2>잔고</h2><div id="acct-balance" class="placeholder">-</div></section>
     <section class="card"><h2>주문</h2><div id="acct-orders" class="placeholder">-</div></section>
     <section class="card"><h2>거래내역</h2><div id="acct-trades" class="placeholder">-</div></section>
+    </div>
+    <div id="acct-bn" hidden>
     <section class="card">
       <h2>₿ 바이낸스 선물</h2>
       <div id="bn-status" class="placeholder">불러오는 중…</div>
@@ -253,6 +260,7 @@
     <section class="card"><h2>선물 포지션</h2><div id="bn-positions" class="placeholder">-</div></section>
     <section class="card"><h2>선물 미체결 주문</h2><div id="bn-orders" class="placeholder">-</div></section>
     <section class="card"><h2>선물 체결내역</h2><div id="bn-trades" class="placeholder">-</div></section>
+    </div>
   </div>
 
   <div class="panel" id="tab-office" hidden>
@@ -342,7 +350,7 @@
   <script src="/static/btcday.js?v=20261106"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
   <script src="/static/btcml.js?v=20261105a"></script>
-  <script src="/static/account.js?v=20261107a"></script>
+  <script src="/static/account.js?v=20261107b"></script>
   <script src="/static/trade.js?v=20261029"></script>
   <script src="/static/office.js?v=20261029b"></script>
 </body>

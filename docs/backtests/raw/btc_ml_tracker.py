@@ -67,6 +67,10 @@ NAMES = {
     "AS4": "A평균+4시간 추세(EMA50)",
     "K2": "K2(R1 일봉 방향 + AS4 진입 + R1식 청산)",
     "R1": "R1(일봉 방향 보유, 1% 손절)",
+    "AS4T75": "AS4 + 짧은 익절(+0.75% / −1.5%)",
+    "K2B": "K2B(R1 방향 첫 AS4 + ±1.5%)",
+    "AS4G4": "AS4 + 추세장 문(일봉 ER·4시간 CI)",
+    "TH1": "TH1(일봉 방향 롱만, ATR 비중, 1% 손절)",
 }
 # AS·BS는 같은 규칙을 씨드 5벌(Y, Y+1000·k) 평균 확률로 계산한다(2026-11-05 사용자 승인,
 # 문서 2026-11-04-btc-ml-seeds-hypotheses.md). 확률 칸 접두어: 씨드 Y는 p_, 평균은 pa_.
@@ -89,6 +93,12 @@ NOTE = {
     "레드팀: 새 자료로 추적할 후보",
     "R1": "R1: 일봉 CCI20·RSI14 방향 보유, 1% 손절. 107번 통과(조건부), "
     "2024~ 1배 연 +6~10%, 낙폭 −41~46%",
+    "AS4T75": "149번 탈락: 승률 70.4%지만 무작위(약 67%)와 구분 안 되고 비용 1.5배면 0. "
+    "선물 지정가 체결 모형은 추적기 것(관통 0.02%). 100회 쌓이면 승률 70%·거래당 플러스 확인",
+    "K2B": "134번 사후 후보: 2024~ 33회 승률 72.7%, 거래당 +0.63%. 진입이 드물다(1년 약 12회)",
+    "AS4G4": "135번 조건부: 낙폭이 준 것의 절반은 거래 수가 준 효과. 100회 쌓이면 AS4와 비교",
+    "TH1": "145번: 2024~ 연 +15.9%, 낙폭 −18.5%(1배 기준 자금, 평균 명목 약 0.5배). 승률 약 11%, "
+    "새 알트 8개에서는 실패. 40회 쌓였을 때 연수익/낙폭 0.5 미만이거나 낙폭 −25%보다 나쁘면 폐기",
 }
 # K2(2026-11-07 사용자 "응", 문서 2026-11-07-btc-r1-as4-entry-hypotheses.md):
 # 방향은 마감된 일봉(UTC 0시) CCI20>0·RSI14>50이면 +1, 둘 다 아래면 −1(R1).
@@ -100,6 +110,14 @@ FUT_HIST = HOME / "data/btc/futures/klines_5m.csv"
 K2_STOP = 0.01
 # R1(107번) 기록 시작: 2026-11-06 00:00 UTC 일봉 마감에 숏 방향이 나온 봉부터
 R1_START = 1793923200000.0
+# 2026-11-07 사용자 "추가해": 후보 넷을 추가한 다음 봉부터 기록(문서 145·134·135·149번)
+# AS4T75: AS4 신호, +0.75% 익절 / −1.5% 손절(149번 탈락, 승률 70% 근처 후보)
+# K2B: R1 방향 구간마다 첫 같은 방향 AS4 신호, ±1.5%(134번 사후 후보)
+# AS4G4: AS4 중 일봉 ER10 ≥ 0.30이고 4시간 CI14 < 50일 때만, ±1.5%(135번 조건부)
+# TH1: R1 방향 롱만, 비중 min(3, 2% ÷ 일봉 ATR%), 1% 손절, 방향이 바뀌면 청산(145번)
+EXTRA = ("AS4T75", "K2B", "AS4G4", "TH1")
+T75 = (0.0075, 0.015)
+TH1_RISK, TH1_CAP = 0.02, 3.0
 
 
 def trend4h(d5: dict, t15: np.ndarray) -> np.ndarray:
@@ -430,7 +448,7 @@ def fut5_bars() -> dict:
     }
 
 
-def paper_delay(bars, sig, decided, b5):
+def paper_delay(bars, sig, decided, b5, tp=TP, sl=SL):
     """paper()와 같은 규칙. 다만 판단 시각을 5분 단위로 올린 시각 뒤의 선물 5분봉에서만
     체결·청산한다.
 
@@ -475,7 +493,7 @@ def paper_delay(bars, sig, decided, b5):
             i += 1
             continue
         px = lim
-        up, dn = px * (1 + TP), px * (1 - SL)
+        up, dn = (px * (1 + tp), px * (1 - sl)) if s > 0 else (px * (1 + sl), px * (1 - tp))
         res, b = None, j
         while b < len(t5):
             first = b == j
@@ -484,13 +502,13 @@ def paper_delay(bars, sig, decided, b5):
                     fill = min(o5[b], dn) if not first else dn
                     res = (fill * (1 - SLIP) / px - 1 - MAKER - TAKER, 0)
                 elif not first and h5[b] >= up * (1 + THRU):
-                    res = (TP - 2 * MAKER, 1)
+                    res = (tp - 2 * MAKER, 1)
             else:
                 if h5[b] >= up:
                     fill = max(o5[b], up) if not first else up
                     res = (-(fill * (1 + SLIP) / px - 1) - MAKER - TAKER, 0)
                 elif not first and l5[b] <= dn * (1 - THRU):
-                    res = (SL - 2 * MAKER, 1)
+                    res = (tp - 2 * MAKER, 1)
             if res:
                 break
             b += 1
@@ -848,8 +866,11 @@ def probs_text(pr: dict, side: int) -> str:
     )
 
 
-def paper(bars, sig, rule):
-    """rest_sim과 같은 체결·청산. 끝까지 안 끝난 주문·포지션도 돌려준다."""
+def paper(bars, sig, rule, tp=TP, sl=SL):
+    """rest_sim과 같은 체결·청산. 끝까지 안 끝난 주문·포지션도 돌려준다.
+
+    tp·sl: 익절·손절 거리(기본 ±1.5%). 숏은 위가 손절, 아래가 익절이다.
+    """
     t, o, h, l, c = (bars[k] for k in "tohlc")  # noqa: E741
     n = len(t)
     out, i, state = [], 0, None
@@ -875,7 +896,7 @@ def paper(bars, sig, rule):
             i += 1
             continue
         px = lim
-        up, dn = px * (1 + TP), px * (1 - SL)
+        up, dn = (px * (1 + tp), px * (1 - sl)) if s > 0 else (px * (1 + sl), px * (1 - tp))
         res, b = None, j
         while b < n:
             first = b == j
@@ -886,7 +907,7 @@ def paper(bars, sig, rule):
                         0,
                     )
                 elif not first and h[b] >= up * (1 + THRU):
-                    res = (TP - 2 * MAKER, 1)
+                    res = (tp - 2 * MAKER, 1)
             else:
                 if h[b] >= up:
                     res = (
@@ -896,7 +917,7 @@ def paper(bars, sig, rule):
                         0,
                     )
                 elif not first and l[b] <= dn * (1 - THRU):
-                    res = (SL - 2 * MAKER, 1)
+                    res = (tp - 2 * MAKER, 1)
             if res:
                 break
             b += 1
@@ -1348,6 +1369,127 @@ def step(notify: bool = True) -> dict:
                     f"진입 {kst(open_['t_fill'])} {open_['px']:,.1f} (시장가 가정), "
                     f"손절 {open_['sl']:,.1f}, 일봉 방향이 바뀌면 청산"
                 )
+    # ---- 추가 후보 넷 (2026-11-07 사용자 "추가해") ----
+    if "start_x" not in state:
+        state["start_x"] = float(t[-1]) + BAR15
+    if len(bars["t"]) and "AS" in meta["thr"]:
+        import btc_fut_daily_regime as R1M
+        from btc_best_entry_vote import k2_first
+        from btc_ml_regime_gate import gate_g1, gate_g2
+        from trend_hold_cross_market import daily_atr
+
+        fd5 = fut_daily_d5()
+        regx, ndx = R1M.regime(fd5, {"t": bars["t"]}, 0)
+        sx = state["start_x"]
+        as4x = np.array(
+            [int(sigs.get(int(x), {}).get("AS") or 0) if x >= sx else 0 for x in bars["t"]]
+        )
+        as4x = np.where(as4x == tr4, as4x, 0)
+        g4 = gate_g1(fd5, bars["t"]) & gate_g2(fd5, bars["t"])
+        i0x = int(np.searchsorted(bars["t"], sx))
+        xsig = {
+            "AS4T75": (as4x, T75),
+            "K2B": (k2_first(regx, as4x == 1, as4x == -1, i0x), (TP, SL)),
+            "AS4G4": (np.where(g4, as4x, 0), (TP, SL)),
+        }
+        for r, (sig, (tp_, sl_)) in xsig.items():
+            done, open_ = paper(bars, sig, r, tp_, sl_)
+            funding_cut(done)
+            trades[r] = done
+            fills = [x for x in done if x["filled"]]
+            net = np.array([x["net1"] for x in fills]) if fills else np.zeros(0)
+            done_d, open_d = paper_delay(bars, sig, decided, b5, tp_, sl_)
+            funding_cut(done_d)
+            summary[r] = {
+                "signals": int((sig != 0).sum()),
+                "fills": len(fills),
+                "wins": int(sum(x["win"] for x in fills)),
+                "x1": round(float((np.prod(1 + net) - 1) * 100), 2),
+                "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
+                "open": open_,
+                "delay": delay_summary(done_d, open_d),
+                "tp_sl": [tp_, sl_],
+            }
+            for x in done:
+                ok = f"{r}:{int(x['t_sig'])}"
+                outs[ok] = outcome(x)
+                key = f"{r}:{int(x['t_sig'])}:{'x' if x['filled'] else 'n'}"
+                if key in sent:
+                    continue
+                sent.add(key)
+                if x["filled"]:
+                    res = f"목표 +{tp_ * 100:g}%" if x["win"] else f"손절 −{sl_ * 100:g}%"
+                    msgs.append(
+                        f"[BTC 기록] {NAMES[r]} {side_kr(x['side'])} 끝: {kst(x['t_fill'])} "
+                        f"{x['lim']:,.1f} 체결 → {kst(x['t_exit'])} {res}, "
+                        f"수수료 뺀 1배 {x['net1'] * 100:+.2f}% / 3배 {x['net1'] * 300:+.2f}%"
+                    )
+                else:
+                    msgs.append(
+                        f"[BTC 기록] {NAMES[r]} {side_kr(x['side'])} 신호 "
+                        f"{kst(x['t_sig'] + BAR15)}, {x['lim']:,.1f} 지정가 30분 안 닿아 취소"
+                    )
+            if open_:
+                key = f"{r}:{int(open_['t_sig'])}:{open_['kind']}"
+                if key not in sent:
+                    sent.add(key)
+                    if open_["kind"] == "order":
+                        msgs.append(
+                            f"[BTC 기록] {NAMES[r]} {side_kr(open_['side'])} 신호 "
+                            f"{kst(open_['t_sig'] + BAR15)}: {open_['lim']:,.1f}에 지정가 "
+                            "(30분 유효, 주문 안 함)"
+                        )
+                    else:
+                        msgs.append(
+                            f"[BTC 기록] {NAMES[r]} {side_kr(open_['side'])} 체결 "
+                            f"{kst(open_['t_fill'])} {open_['px']:,.1f}, 목표 {open_['tp']:,.1f} / "
+                            f"손절 {open_['sl']:,.1f}"
+                        )
+        # TH1: R1 방향 중 롱만. 비중은 진입 신호 봉에서 마감된 일봉 ATR로 정한다.
+        long_reg = np.where(regx > 0, regx, 0)
+        atr = daily_atr(fd5, {"t": bars["t"]}, 0)
+        tr_th, open_th = r1_paper(bars, b5, long_reg, ndx, i0x, delay=True)
+        funding_cut(tr_th)
+        ix = {float(v): k for k, v in enumerate(bars["t"])}
+        eq = 1.0
+        for x in tr_th:
+            a = atr[ix[float(x["t_sig"])]]
+            x["w"] = float(min(TH1_CAP, TH1_RISK / a)) if a > 0 else 0.0
+            x["net_w"] = x["w"] * x["net1"]
+            eq *= 1 + x["net_w"]
+        if open_th:
+            open_th["last"] = float(bars["c"][-1])
+            a = atr[ix[float(open_th["t_sig"])]]
+            open_th["w"] = float(min(TH1_CAP, TH1_RISK / a)) if a > 0 else 0.0
+        trades["TH1"] = tr_th
+        summary["TH1"] = {
+            "signals": len(tr_th) + (1 if open_th else 0),
+            "fills": len(tr_th),
+            "wins": int(sum(x["win"] for x in tr_th)),
+            "x1": round((eq - 1) * 100, 2),  # 비중을 반영한 자금 기준 수익
+            "x3": None,
+            "open": open_th,
+            "direction": int(regx[-1]),
+        }
+        for x in tr_th:
+            key = f"TH1:{int(x['t_sig'])}:x"
+            if key in sent:
+                continue
+            sent.add(key)
+            why = "1% 손절" if x["stopped"] else "일봉 방향 바뀜"
+            msgs.append(
+                f"[BTC 기록] {NAMES['TH1']} 롱 끝: {kst(x['t_fill'])} {x['lim']:,.1f} 진입 → "
+                f"{kst(x['t_exit'])} {why}, 비중 {x['w']:.2f}배, 자금 대비 {x['net_w'] * 100:+.2f}%"
+            )
+        if open_th:
+            key = f"TH1:{int(open_th['t_sig'])}:pos"
+            if key not in sent:
+                sent.add(key)
+                msgs.append(
+                    f"[BTC 기록] {NAMES['TH1']} 롱 진입 {kst(open_th['t_fill'])} "
+                    f"{open_th['px']:,.1f} (시장가 가정), 비중 {open_th['w']:.2f}배, "
+                    f"손절 {open_th['sl']:,.1f}, 일봉 방향이 바뀌면 청산"
+                )
     if migrate:
         msgs = []
         state["price"] = "futures_okx"
@@ -1394,7 +1536,7 @@ def step(notify: bool = True) -> dict:
             meta,
             trades,
             state["start"],
-            {r: summary[r]["open"] for r in list(RULES) + ["K2", "R1"] if r in summary},
+            {r: summary[r]["open"] for r in list(RULES) + ["K2", "R1", *EXTRA] if r in summary},
         ),
     )
     if notify:
@@ -1419,6 +1561,14 @@ BACKTEST = {  # 2026-11-04 문서의 2024-01~ 결과 (3배, 수수료 포함, �
     # 107번 R1, 2024~ 거래 마감 기준(선물+펀딩): 약 2.85년 195회, 승률 12.3%,
     # 3배 −11.9%, 낙폭 −73.7%
     "R1": {"per_year": 68, "win": 12.3, "x3": -11.9, "mdd": -73.7, "y2023": None},
+    # 149번 AS4 T75 2024~ 669회(약 2.84년): 3배 연 +7.4% → 누적 약 +22%, 낙폭 −45.9%
+    "AS4T75": {"per_year": 236, "win": 70.4, "x3": 22.5, "mdd": -45.9, "y2023": 24.0},
+    # 134번 K2 진입 + ±1.5%: 2024~ 33회, 3배 낙폭 −14%(누적 수익은 문서에 없음)
+    "K2B": {"per_year": 12, "win": 72.7, "x3": None, "mdd": -14.0, "y2023": None},
+    # 135번 AS4-G4: 2024~ 1배 낙폭 −8%(누적·승률은 문서 표 기준 없음)
+    "AS4G4": {"per_year": 65, "win": None, "x3": None, "mdd": -8.0, "y2023": None},
+    # 145번 TH1 r=2%: 2024~ 연 +15.9% → 약 2.85년 누적 +52%, 낙폭 −18.5%(배율 없음, 비중 방식)
+    "TH1": {"per_year": 14, "win": 11.0, "x3": 52.0, "mdd": -18.5, "y2023": None},
 }
 
 
@@ -1638,6 +1788,39 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "seed_avg": False,
                 "backtest": BACKTEST["R1"],
                 "trades": [trade_row(x, "none_") for x in reversed(trades.get("R1", []))][:50],
+            }
+        )
+    for r in EXTRA:
+        if r not in summary:
+            continue
+        s = summary[r]
+        pfx = "none_" if r == "TH1" else "pa_"
+        extra_note = ""
+        if r == "TH1":
+            extra_note = " 지금 일봉 방향: " + {1: "위(롱)", -1: "아래(쉼)", 0: "없음(쉼)"}[
+                s.get("direction", 0)
+            ] + ". 수익은 비중을 반영한 자금 기준(3배 칸 없음)."
+        rules.append(
+            {
+                "id": r,
+                "name": NAMES[r],
+                "top": "-" if r == "TH1" else 10,
+                "agree": "-" if r == "TH1" else 4,
+                "long_above": None,
+                "short_below": None,
+                "signals": s["signals"],
+                "fills": s["fills"],
+                "wins": s["wins"],
+                "x1": s["x1"],
+                "x3": s["x3"],
+                "delay": s.get("delay"),
+                "x3_delay": (s.get("delay") or {}).get("x3"),
+                "direction": s.get("direction"),
+                "open": open_row(s["open"], pfx),
+                "note": f"{PRICE_BASIS}. {NOTE[r]}.{extra_note} 기록 시작 {kst(state['start_x'])}",
+                "seed_avg": r != "TH1",
+                "backtest": BACKTEST[r],
+                "trades": [trade_row(x, pfx) for x in reversed(trades.get(r, []))][:50],
             }
         )
     view = {

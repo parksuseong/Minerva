@@ -252,6 +252,8 @@ def simulate(B: Bars, S: dict, var: tuple, a: int, z: int, sig=None, epx=None) -
         r = p["real"] - FEE
         fund = funding(B, p["d"], p["ep"], p["tin"], t_out, p["half_t"])
         r -= fund
+        # 청산 판정: 펀딩·청산 수수료로 줄어든 증거금도 넣는다(최종 손익이 최악점보다 나쁠 수 있음)
+        p["worst"] = min(p["worst"], r)
         trades.append(
             {
                 "d": p["d"],
@@ -563,13 +565,14 @@ def cmd_holdout(out: Path) -> None:
         print(name, g["best"][name], s["n"], s["win"], s["x10"], s["x1"]["ret"])
 
 
-def cmd_random(out: Path, nsim: int) -> None:
+def cmd_random(out: Path, nsim: int, items=None, fname: str = "random.json") -> None:
     b, S, B, _ = load_all(out)
     g = json.loads((out / "grid.json").read_text())
     rng = np.random.default_rng(20261108)
     res: dict = {}
-    for name in g["finalists"]:
-        v = parse_v(g["best"][name])
+    todo = items or [(n, g["best"][n]) for n in g["finalists"]]
+    for name, vs in todo:
+        v = parse_v(vs)
         if v[0] == "N":
             raise SystemExit("자체 청산 결선은 무작위 기준 정의가 다름: 문서에 따로 적을 것")
         res[name] = {}
@@ -610,13 +613,32 @@ def cmd_random(out: Path, nsim: int) -> None:
                 "sec": time.time() - t0,
             }
             print(name, w, res[name][w], flush=True)
-    (out / "random.json").write_text(json.dumps(res, indent=1))
+    (out / fname).write_text(json.dumps(res, indent=1))
+
+
+def cmd_check(out: Path, items: list) -> None:
+    """설계에서 이미 센 변형(예: 결선의 손절 있는 판)을 모든 기간에 다시 계산(새 선택 아님)."""
+    b, S, B, _ = load_all(out)
+    res: dict = {}
+    for name, vs in items:
+        v = parse_v(vs)
+        r: dict = {}
+        for w in ("design", "holdout", "last30", "long"):
+            if w == "last30":
+                z = len(b["t"])
+                a = int(np.searchsorted(b["t"], b["t"][-1] + M15 - 30 * DAY))
+            else:
+                a, z = win_idx(b["t"], w)
+            r[w] = summarize(simulate(B, S[name], v, a, z))
+        res[f"{name}:{vs}"] = r
+    (out / "check.json").write_text(json.dumps(res, indent=1))
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
-    ap.add_argument("cmd", choices=["grid", "holdout", "random"])
+    ap.add_argument("cmd", choices=["grid", "holdout", "random", "check"])
+    ap.add_argument("--items", nargs="*", default=None, help="이름:변형 (check·random)")
     ap.add_argument("--nsim", type=int, default=2000)
     a = ap.parse_args()
     o = Path(a.out).expanduser()
@@ -624,5 +646,8 @@ if __name__ == "__main__":
         cmd_grid(o)
     elif a.cmd == "holdout":
         cmd_holdout(o)
+    elif a.cmd == "check":
+        cmd_check(o, [tuple(x.split(":", 1)) for x in a.items])
     else:
-        cmd_random(o, a.nsim)
+        its = [tuple(x.split(":", 1)) for x in a.items] if a.items else None
+        cmd_random(o, a.nsim, its, "random_extra.json" if its else "random.json")

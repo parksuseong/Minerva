@@ -131,11 +131,25 @@ def binance_account(x_minerva_token: str = Header("")) -> dict:
     capital = _read(folder / "binance_capital.json")
     if capital and data.get("status") == "ok":
         history = _read(folder / "binance_equity.json") or {}
-        returns = perf.account_returns(data, history, capital, 0.0)
+        # 수익률은 수수료(낸 것 + 닫을 때 낼 추정치)를 뺀 순평가액으로 낸다
+        net = {**data, "equity": data.get("net_equity", data["equity"])}
+        returns = perf.account_returns(net, history, capital, 0.0)
         returns.pop("bot", None)
         returns.pop("bot_pct", None)
         data["returns"] = returns
     return data
+
+
+@router.get("/api/account/binance/series")
+def binance_series(x_minerva_token: str = Header("")) -> dict:
+    """자산 차트: 5분 단위 순평가액(USDT)과 시드."""
+    want = account_view_token()
+    if want and not hmac.compare_digest(x_minerva_token, want):
+        raise HTTPException(status_code=403, detail="invalid token")
+    folder = account_path().parent
+    capital = _read(folder / "binance_capital.json") or {}
+    points = (_read(folder / "binance_series.json") or {}).get("points", [])
+    return {"seed": capital.get("base"), "points": points}
 
 
 def profile_path() -> Path:

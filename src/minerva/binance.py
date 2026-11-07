@@ -4,8 +4,9 @@
 읽는다. 웹 서버는 결과 파일 `~/.minerva/account/binance.json`만 읽는다. 주문 API는 부르지 않는다
 (GET만 보낸다).
 
-수익률: `binance_capital.json`(시드·입출금, USDT)과 `binance_equity.json`(날짜별 마지막 평가액).
-평가액 = 지갑 잔고 + 미실현 손익(totalMarginBalance).
+수익률: `binance_capital.json`(시드·입출금, USDT)과 `binance_equity.json`(날짜별 마지막 순평가액).
+순평가액 = 지갑 잔고 + 미실현 손익 - 지금 시장가로 닫을 때 낼 수수료(테이커 요율 추정).
+지갑 잔고에는 이미 낸 수수료·펀딩이 빠져 있다. 자산 차트는 `binance_series.json`(5분 단위).
 
 실행: `python -m minerva.binance` (minerva-binance.timer가 1분마다 실행)
 """
@@ -35,6 +36,8 @@ ENV_FILE = Path(os.environ.get("MINERVA_BINANCE_ENV", "~/.minerva/binance.env"))
 STATE_DIR = Path(os.environ.get("MINERVA_ACCOUNT_DIR", "~/.minerva/account")).expanduser()
 SYMBOL = "BTCUSDT"
 TRADES = 30
+SERIES_STEP = 300  # 자산 차트 점 간격(초). 1분마다 돌지만 5분에 한 점만 남긴다.
+KST_SHIFT = 9 * 3600  # 차트 라이브러리는 UTC로 그려서 KST 시각으로 옮겨 저장한다
 INCOME_TYPES = {"REALIZED_PNL": "realized", "FUNDING_FEE": "funding", "COMMISSION": "commission"}
 
 
@@ -149,6 +152,11 @@ def sum_income(rows: list[dict]) -> dict:
     return out
 
 
+def close_fee(positions: list[dict], taker: float) -> float:
+    """열린 포지션을 지금 시장가로 닫을 때 낼 수수료 추정(현재가 × 수량 × 테이커 요율)."""
+    return sum(p["qty"] * (p["mark"] or p["entry"]) * taker for p in positions)
+
+
 def _since_ms(capital: dict | None) -> int | None:
     """시드 시각. 시드를 잡은 날에도 그 전 거래가 있을 수 있어 `since_at`(분 단위)을 먼저 쓴다."""
     if not capital or not capital.get("since"):
@@ -171,6 +179,13 @@ def snapshot(cfg: dict, now: datetime, capital: dict | None = None) -> dict:
         **parse_account(acct, risk),
         "orders": parse_orders(_get(cfg, "/fapi/v1/openOrders")),
     }
+    rate = _get(cfg, "/fapi/v1/commissionRate", symbol=SYMBOL)
+    data["fee_rate"] = {
+        "maker": float(rate["makerCommissionRate"]),
+        "taker": float(rate["takerCommissionRate"]),
+    }
+    data["close_fee_est"] = close_fee(data["positions"], data["fee_rate"]["taker"])
+    data["net_equity"] = data["equity"] - data["close_fee_est"]
     since = _since_ms(capital)
     trades = _get(cfg, "/fapi/v1/userTrades", symbol=SYMBOL, limit=100)
     # 시드 전 거래는 시드 금액에 이미 들어가 있으니 보여주지 않는다 (사용자 요청 2026-11-07)
@@ -191,8 +206,22 @@ def record_equity(path: Path, data: dict) -> None:
     if data.get("status") != "ok":
         return
     history = _read(path) or {}
-    history[data["updated_at"][:10]] = data["equity"]
+    history[data["updated_at"][:10]] = data.get("net_equity", data["equity"])
     _write_private(path, json.dumps(history, sort_keys=True))
+
+
+def record_series(path: Path, data: dict, now: datetime) -> None:
+    """자산 차트용 순평가액. 5분 칸마다 한 점, 같은 칸이면 최신 값으로 덮는다."""
+    if data.get("status") != "ok":
+        return
+    points = (_read(path) or {}).get("points", [])
+    t = int(now.timestamp()) // SERIES_STEP * SERIES_STEP + KST_SHIFT
+    point = {"t": t, "v": round(data.get("net_equity", data["equity"]), 4)}
+    if points and points[-1]["t"] == t:
+        points[-1] = point
+    else:
+        points.append(point)
+    _write_private(path, json.dumps({"points": points}))
 
 
 def run(out: Path) -> dict:
@@ -209,6 +238,7 @@ def run(out: Path) -> dict:
         raise
     _write_private(out, json.dumps(data, ensure_ascii=False))
     record_equity(out.parent / "binance_equity.json", data)
+    record_series(out.parent / "binance_series.json", data, now)
     return data
 
 
@@ -222,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     except (BinanceError, OSError, KeyError, ValueError):
         return 1
     print(
-        f"ok {data['updated_at']} 평가 {data['equity']:.2f} USDT "
+        f"ok {data['updated_at']} 순평가 {data['net_equity']:.2f} USDT "
         f"포지션 {len(data['positions'])} 주문 {len(data['orders'])} 체결 {len(data['trades'])}"
     )
     return 0

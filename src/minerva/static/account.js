@@ -93,21 +93,32 @@
     }
     const r = d.returns;
     const err = d.error ? `<div class="state hold">⚠️ 최근 갱신 실패 (${esc(d.error_at)}): ${esc(d.error)}</div>` : "";
-    const inc = d.income ? `<div class="row"><span>시드 이후 실현손익 · 펀딩 · 수수료</span>
-      <span class="px">${signed(d.income.realized, usdt(d.income.realized))} · ${signed(d.income.funding,
-        usdt(d.income.funding))} · ${signed(d.income.commission, usdt(d.income.commission))}</span></div>` : "";
     const ret = r ? `
-      <div class="row"><span>누적 수익률 (${esc(r.since)}~, 시드 ${usdt(r.invested)})</span>
+      <div class="row"><span>누적 수익률 (수수료 차감, ${esc(r.since)}~, 시드 ${usdt(r.invested)})</span>
         <b class="px">${ugain(r.total, r.total_pct)}</b></div>
-      <div class="row"><span>오늘 수익률 (전일 마지막 대비, KST)</span>
+      <div class="row"><span>오늘 수익률 (수수료 차감, 전일 마지막 대비, KST)</span>
         <span class="px">${r.today == null ? "-" : ugain(r.today, r.today_pct)}</span></div>` : "";
+    const fr = d.fee_rate;
+    const closeFee = d.close_fee_est || 0;
+    let breakdown = "";
+    if (d.income) {
+      const gross = d.income.realized + (d.unrealized || 0);
+      const fees = d.income.commission - closeFee;
+      breakdown = `
+      <div class="row"><span>매매손익 (수수료 전, 실현+미실현)</span>
+        <span class="px">${signed(gross, usdt(gross))}</span></div>
+      <div class="row"><span>수수료 (낸 것 ${usdt(-d.income.commission)} + 닫을 때 예상 ${usdt(closeFee)})</span>
+        <span class="px">${signed(fees, usdt(fees))}</span></div>
+      <div class="row"><span>펀딩비</span><span class="px">${signed(d.income.funding, usdt(d.income.funding))}</span></div>`;
+    }
+    const rate = fr ? `<div class="mini">수수료 요율: 지정가(메이커) ${num(fr.maker * 100)}% · 시장가(테이커)
+      ${num(fr.taker * 100)}% · 순평가액 = 지갑 + 미실현 − 지금 닫을 때 수수료(테이커)</div>` : "";
     $("bn-status").innerHTML = `
       <div class="mini">${esc(d.broker)} · ${esc(d.market)} · 기준 ${esc(d.updated_at)}</div>
-      <div class="row"><span>평가액 (지갑 + 미실현)</span><b class="px">${usdt(d.equity)}</b></div>
+      <div class="row"><span>순평가액 (수수료 차감)</span><b class="px">${usdt(d.net_equity ?? d.equity)}</b></div>
       <div class="row"><span>지갑 잔고 · 주문 가능</span>
         <span class="px">${usdt(d.wallet)} · ${usdt(d.available)}</span></div>
-      <div class="row"><span>미실현 손익</span><span class="px">${signed(d.unrealized, usdt(d.unrealized))}</span></div>
-      ${ret}${inc}${err}`;
+      ${ret}${breakdown}${rate}${err}`;
     $("bn-positions").innerHTML = table([["symbol", "종목"], ["side", "방향"], ["qty", "수량"],
       ["entry", "진입가"], ["mark", "현재가"], ["liq", "청산가"],
       ["leverage", "레버리지", (v, x) => `${v}배 ${esc(x.margin_type)}`],
@@ -119,7 +130,62 @@
       ["price", "체결가"], ["realized", "실현손익", (v) => signed(v, num(v))], ["fee", "수수료"]], d.trades);
   }
 
+  // 자산 차트: 시드 위는 상승색, 아래는 하락색. 시각은 서버가 KST로 옮겨 둔다(UTC로 그린다).
+  const pad = (n) => String(n).padStart(2, "0");
+  const kst = (t, withDate) => {
+    const x = new Date(t * 1000);
+    const hm = `${pad(x.getUTCHours())}:${pad(x.getUTCMinutes())}`;
+    return withDate ? `${pad(x.getUTCMonth() + 1)}/${pad(x.getUTCDate())} ${hm}` : hm;
+  };
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  let chart = null;
+  let line = null;
+  let seedLine = null;
+
+  function drawSeries(d) {
+    const LC = window.LightweightCharts;
+    const pts = (d.points || []).map((p) => ({ time: p.t, value: p.v }));
+    $("bn-chart-note").textContent = pts.length < 2
+      ? "기록이 쌓이는 중이에요 (5분마다 한 점)"
+      : `5분마다 한 점 · 가로선 = 시드 ${usdt(d.seed)} · 수수료를 뺀 순평가액`;
+    if (!LC || !pts.length || !$("bn-chart").clientWidth) return;
+    const up = css("--up") || "#dc2626", down = css("--down") || "#2563eb";
+    const text = css("--muted") || "#6b7280", grid = css("--line") || "#e5e7eb";
+    const look = {
+      layout: { background: { type: "solid", color: css("--card") || "#fff" }, textColor: text, fontSize: 11 },
+      grid: { vertLines: { visible: false }, horzLines: { color: grid } },
+      rightPriceScale: { borderColor: grid },
+      timeScale: { borderColor: grid },
+    };
+    if (!chart) {
+      chart = LC.createChart($("bn-chart"), { autoSize: true, ...look,
+        localization: { locale: "ko-KR", timeFormatter: (t) => kst(t, true),
+          priceFormatter: (v) => `${num(v)}` },
+        crosshair: { mode: LC.CrosshairMode.Magnet },
+        timeScale: { ...look.timeScale, timeVisible: true, secondsVisible: false,
+          tickMarkFormatter: (t, type) => (type <= 2 ? kst(t, true).slice(0, 5) : kst(t, false)) } });
+      line = chart.addSeries(LC.BaselineSeries, { lineWidth: 2, priceLineVisible: false });
+    }
+    chart.applyOptions(look);
+    const seed = d.seed ?? pts[0].value;
+    line.applyOptions({ baseValue: { type: "price", price: seed },
+      topLineColor: up, topFillColor1: `${up}33`, topFillColor2: `${up}05`,
+      bottomLineColor: down, bottomFillColor1: `${down}05`, bottomFillColor2: `${down}33` });
+    if (seedLine) line.removePriceLine(seedLine);
+    seedLine = line.createPriceLine({ price: seed, color: text, lineWidth: 1, lineStyle: 2,
+      axisLabelVisible: true, title: "시드" });
+    line.setData(pts);
+  }
+
+  function loadSeries() {
+    fetch("/api/account/binance/series", { headers: { "X-Minerva-Token": store("get") } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d) drawSeries(d); })
+      .catch(() => { $("bn-chart-note").textContent = "자산 기록을 불러오지 못했어요"; });
+  }
+
   function loadBinance() {
+    loadSeries();
     fetch("/api/account/binance", { headers: { "X-Minerva-Token": store("get") } })
       .then((r) => (r.status === 403 ? null : r.json()))
       .then((d) => {
@@ -156,6 +222,8 @@
       b.setAttribute("aria-pressed", String(on));
     });
     try { localStorage.setItem(PICK, which); } catch (e) { /* 저장이 막혀도 전환은 된다 */ }
+    // 숨겨진 채로 그린 차트는 폭이 0이라 보일 때 다시 그린다
+    if (which === "bn") loadSeries();
   }
   document.querySelectorAll("#acct-pick button").forEach((b) => {
     b.onclick = () => pick(b.dataset.acct);
@@ -163,6 +231,14 @@
   let saved = "kr";
   try { saved = localStorage.getItem(PICK) === "bn" ? "bn" : "kr"; } catch (e) { /* 기본 주식 */ }
   pick(saved);
+
+  const tabBtn = document.querySelector('[data-tab="account"]');
+  if (tabBtn) tabBtn.addEventListener("click", () => setTimeout(loadSeries, 0));
+
+  // 계좌 탭이 보일 때만 30초마다 다시 불러온다(서버는 1분마다 갱신).
+  setInterval(() => {
+    if (!document.hidden && !$("tab-account").hidden) load();
+  }, 30000);
 
   fetch("/api/profile").then((r) => r.json()).then((p) => { boss = p.boss || boss; })
     .catch(() => { /* 기본 호칭 유지 */ });

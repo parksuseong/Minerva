@@ -130,6 +130,10 @@ def test_snapshot_only_sends_get(monkeypatch):
             "/fapi/v1/openOrders": [],
             "/fapi/v1/userTrades": [],
             "/fapi/v1/income": [],
+            "/fapi/v1/commissionRate": {
+                "makerCommissionRate": "0.0002",
+                "takerCommissionRate": "0.0005",
+            },
         }[path]
 
     monkeypatch.setattr(binance, "_get", fake_get)
@@ -195,8 +199,80 @@ def test_snapshot_hides_trades_before_seed(monkeypatch):
         "/fapi/v1/openOrders": [],
         "/fapi/v1/userTrades": rows,
         "/fapi/v1/income": [],
+        "/fapi/v1/commissionRate": {
+            "makerCommissionRate": "0.0002",
+            "takerCommissionRate": "0.0005",
+        },
     }
     monkeypatch.setattr(binance, "_get", lambda cfg, path, **p: pages[path])
     capital = {"since": "2026-11-07", "since_at": "2026-11-07 23:13"}
     data = binance.snapshot(CFG, NOW, capital)
     assert [t["time"] for t in data["trades"]] == ["2026-11-07 23:14:00"]
+
+
+def test_net_equity_subtracts_estimated_close_fee():
+    positions = [{"qty": 0.1, "mark": 80000.0, "entry": 76000.0}]
+    assert binance.close_fee(positions, 0.0005) == pytest.approx(4.0)
+    assert binance.close_fee([{"qty": 0.1, "mark": None, "entry": 76000.0}], 0.0005) == pytest.approx(3.8)
+
+
+def test_snapshot_reports_fee_rate_and_net_equity(monkeypatch):
+    pages = {
+        "/fapi/v2/account": ACCOUNT,
+        "/fapi/v2/positionRisk": RISK,
+        "/fapi/v1/openOrders": [],
+        "/fapi/v1/userTrades": [],
+        "/fapi/v1/income": [],
+        "/fapi/v1/commissionRate": {
+            "makerCommissionRate": "0.0002",
+            "takerCommissionRate": "0.0005",
+        },
+    }
+    monkeypatch.setattr(binance, "_get", lambda cfg, path, **p: pages[path])
+    data = binance.snapshot(CFG, NOW, None)
+    assert data["fee_rate"] == {"maker": 0.0002, "taker": 0.0005}
+    assert data["close_fee_est"] == pytest.approx(0.03 * 76416.6 * 0.0005)
+    assert data["net_equity"] == pytest.approx(987.5 - data["close_fee_est"])
+
+
+def test_record_series_one_point_per_five_minutes(tmp_path):
+    path = tmp_path / "series.json"
+    ok = {"status": "ok", "equity": 100.0, "net_equity": 99.0}
+    binance.record_series(path, ok, datetime(2026, 11, 8, 10, 1, tzinfo=binance.KST))
+    binance.record_series(
+        path, {**ok, "net_equity": 98.0}, datetime(2026, 11, 8, 10, 4, tzinfo=binance.KST)
+    )
+    binance.record_series(path, ok, datetime(2026, 11, 8, 10, 5, tzinfo=binance.KST))
+    binance.record_series(
+        path, {"status": "error"}, datetime(2026, 11, 8, 10, 11, tzinfo=binance.KST)
+    )
+    pts = json.loads(path.read_text())["points"]
+    assert [p["v"] for p in pts] == [98.0, 99.0]
+    # 차트용으로 KST 시각을 UTC 자리에 저장한다: 10:00 KST → 10:00로 보인다
+    assert datetime.utcfromtimestamp(pts[0]["t"]).strftime("%H:%M") == "10:00"
+
+
+def test_returns_use_net_equity_and_series_api(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_ACCOUNT_OUT", str(tmp_path / "latest.json"))
+    monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(tmp_path / "none"))
+    monkeypatch.delenv("MINERVA_ACCOUNT_TOKEN", raising=False)
+    (tmp_path / "binance.json").write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "updated_at": "2026-11-08 10:00",
+                "equity": 1010.0,
+                "net_equity": 1006.0,
+            }
+        )
+    )
+    (tmp_path / "binance_capital.json").write_text(
+        json.dumps({"since": "2026-11-08", "base": 1000.0, "deposits": []})
+    )
+    (tmp_path / "binance_series.json").write_text(json.dumps({"points": [{"t": 1, "v": 1006.0}]}))
+    client = TestClient(app)
+    assert client.get("/api/account/binance").json()["returns"]["total"] == 6.0
+    assert client.get("/api/account/binance/series").json() == {
+        "seed": 1000.0,
+        "points": [{"t": 1, "v": 1006.0}],
+    }

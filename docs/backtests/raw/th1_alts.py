@@ -17,7 +17,6 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -63,56 +62,76 @@ def months(a: date, b: date) -> list:
 
 
 def fetch_sym(sym: str) -> dict:
+    """한 코인씩, 받은 파일의 행을 바로 디스크 CSV에 이어 쓴다(메모리 3.8GB 서버, 이전 다운로드가 메모리 부족으로 죽음).
+
+    이어 받기: 끝난 월·일 이름을 done.txt에 적고 다시 실행하면 건너뛴다.
+    """
     d = HOME / sym
     d.mkdir(parents=True, exist_ok=True)
+    kp, fp, dp = d / "klines_5m.csv", d / "funding.csv", d / "done.txt"
+    done = set(dp.read_text().split()) if dp.exists() else set()
+    if not kp.exists():
+        kp.write_text("open_time,open,high,low,close,volume,close_time,quote_volume,count,"
+                      "taker_buy_volume,taker_buy_quote_volume,ignore\n")
+    if not fp.exists():
+        fp.write_text("calc_time,funding_interval_hours,last_funding_rate\n")
     today = datetime.now(timezone.utc).date()
     last_month = (today.replace(day=1) - timedelta(days=1))
-    ms_ = months(date(2019, 9, 1), last_month)
-    k_rows, f_rows, found = {}, {}, False
-    for ym in ms_:
+    found = any(x.startswith("m") for x in done)
+    for ym in months(date(2019, 9, 1), last_month):
+        if f"m{ym}" in done or f"x{ym}" in done:
+            continue
         rows = vision(f"{BNV}/monthly/klines/{sym}/5m/{sym}-5m-{ym}.zip")
         if rows is None:
             if found:
                 print(sym, "missing month", ym, file=sys.stderr)
+            else:
+                with dp.open("a") as f:
+                    f.write(f"x{ym}\n")  # 상장 전
             continue
         found = True
-        for r in rows:
-            k_rows[int(r[0])] = r[:12]
+        with kp.open("a", newline="") as f:
+            csv.writer(f).writerows(r[:12] for r in rows)
         fr = vision(f"{BNV}/monthly/fundingRate/{sym}/{sym}-fundingRate-{ym}.zip")
-        for r in fr or []:
-            f_rows[int(r[0])] = r[:3]
-        time.sleep(0.2)
+        with fp.open("a", newline="") as f:
+            csv.writer(f).writerows(r[:3] for r in (fr or []))
+        with dp.open("a") as f:
+            f.write(f"m{ym}\n")
+        del rows, fr
+        time.sleep(0.3)
     day = today.replace(day=1)
     while day < today:
-        rows = vision(f"{BNV}/daily/klines/{sym}/5m/{sym}-5m-{day.isoformat()}.zip")
-        for r in rows or []:
-            k_rows[int(r[0])] = r[:12]
+        key = f"d{day.isoformat()}"
+        if key not in done:
+            rows = vision(f"{BNV}/daily/klines/{sym}/5m/{sym}-5m-{day.isoformat()}.zip")
+            if rows:
+                with kp.open("a", newline="") as f:
+                    csv.writer(f).writerows(r[:12] for r in rows)
+                with dp.open("a") as f:
+                    f.write(key + "\n")
+            time.sleep(0.3)
         day += timedelta(days=1)
-        time.sleep(0.2)
-    with (d / "klines_5m.csv").open("w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["open_time", "open", "high", "low", "close", "volume", "close_time", "quote_volume",
-                    "count", "taker_buy_volume", "taker_buy_quote_volume", "ignore"])
-        for t in sorted(k_rows):
-            w.writerow(k_rows[t])
-    with (d / "funding.csv").open("w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["calc_time", "funding_interval_hours", "last_funding_rate"])
-        for t in sorted(f_rows):
-            w.writerow(f_rows[t])
-    ts = sorted(k_rows)
+    # 정렬·중복 점검만 (한 번에 시각 열만 읽는다)
+    ts = []
+    with kp.open() as f:
+        next(f)
+        for line in f:
+            ts.append(int(line.split(",", 1)[0]))
+    srt = all(a < b for a, b in zip(ts, ts[1:]))
     gaps = sum(1 for a, b in zip(ts, ts[1:]) if b - a != 300_000)
+    nf = sum(1 for _ in fp.open()) - 1
     return {"sym": sym, "rows": len(ts), "first": ts[0] if ts else None, "last": ts[-1] if ts else None,
-            "funding": len(f_rows), "gaps": gaps}
+            "funding": nf, "gaps": gaps, "sorted": srt}
 
 
 def do_fetch() -> None:
-    with ThreadPoolExecutor(3) as ex:
-        res = list(ex.map(fetch_sym, SYMS))
-    for r in res:
+    res = []
+    for sym in SYMS:  # 한 번에 하나씩 (메모리)
+        r = fetch_sym(sym)
         r["first"] = datetime.fromtimestamp(r["first"] / 1000, timezone.utc).strftime("%Y-%m-%d")
         r["last"] = datetime.fromtimestamp(r["last"] / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M")
-        print(json.dumps(r))
+        print(json.dumps(r), flush=True)
+        res.append(r)
     (HOME / "coverage.json").write_text(json.dumps(res, indent=1))
 
 

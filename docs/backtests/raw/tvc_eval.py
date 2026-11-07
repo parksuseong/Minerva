@@ -135,7 +135,13 @@ def load_strats(out: Path):
     return b, W, g, S, comp
 
 
-def cmd_random(out: Path, nsim: int, items: list | None) -> None:
+def cmd_random(
+    out: Path,
+    nsim: int,
+    items: list | None,
+    fname: str = "random.json",
+    wins: tuple = ("design", "val"),
+) -> None:
     b, W, g, S, _ = load_strats(out)
     B = bars(b)
     if not items:
@@ -145,7 +151,7 @@ def cmd_random(out: Path, nsim: int, items: list | None) -> None:
     for it in items:
         base = S[it]
         out_w = {}
-        for w in ("design", "val"):
+        for w in wins:
             a, z = W[w]
             tr = T.simulate(B, base, ("N",), a, z)
             real = summ(tr)
@@ -183,7 +189,46 @@ def cmd_random(out: Path, nsim: int, items: list | None) -> None:
         print(it, {w: (v["n"], v["win"], round(v["p1"], 4), round(v["pwin"], 4),
                        round(v["p1_bonf"], 3), round(v["pwin_binom_bonf"], 3))
                    for w, v in out_w.items()}, flush=True)  # fmt: skip
-    (out / "random.json").write_text(json.dumps(res, indent=1))
+    (out / fname).write_text(json.dumps(res, indent=1))
+
+
+def cmd_detail(out: Path, items: list) -> None:
+    """결선 자세히(계산 뒤 추가, 판정 아님): 연도별, 롱·숏, 청산 이유, 최악 거래, 진입 1봉 늦춤, 수수료 1.5배."""
+    b, W, g, S, _ = load_strats(out)
+    B = bars(b)
+    res = {}
+    for it in items:
+        base = S[it]
+        d: dict = {}
+        for w in ("design", "val", "seen"):
+            a, z = W[w]
+            tr = T.simulate(B, base, ("N",), a, z)
+            yrs: dict = {}
+            for x in tr:
+                y = time.strftime("%Y", time.gmtime(b["t"][x["e"]] / 1000))
+                yrs.setdefault(y, []).append(x)
+            why: dict = {}
+            for x in tr:
+                why[x["why"]] = why.get(x["why"], 0) + 1
+            worst = sorted(tr, key=lambda x: x["r"])[:3]
+            sh = dict(base)
+            sh["sig"] = np.r_[0, base["sig"][:-1]].astype(np.int8)
+            fee0 = T.FEE
+            T.FEE = E.FEE * 1.5
+            f15 = summ(T.simulate(B, base, ("N",), a, z))
+            T.FEE = fee0
+            d[w] = {
+                "all": summ(tr), "why": why,
+                "years": {y: {k: v for k, v in summ(v).items() if k in ("n", "win", "x1", "x10")}
+                          for y, v in yrs.items()},
+                "worst": [{"t": int(b["t"][x["e"]]), "d": x["d"], "r": x["r"], "worst": x["worst"],
+                           "bars": x["x"] - x["e"], "why": x["why"]} for x in worst],
+                "delay1": summ(T.simulate(B, sh, ("N",), a, z)), "fee1.5": f15,
+            }  # fmt: skip
+        res[it] = d
+        print(it, {w: (v["all"]["n"], v["all"]["win"], round(v["all"]["x10"]["ret"], 2),
+                       round(v["all"]["x10"]["mdd"], 2), v["why"]) for w, v in d.items()})  # fmt: skip
+    (out / "detail.json").write_text(json.dumps(res, indent=1))
 
 
 def binom_sf(k: int, n: int, p: float) -> float:
@@ -227,14 +272,18 @@ def cmd_spot(out: Path, items: list | None) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
-    ap.add_argument("cmd", choices=("grid", "random", "spot"))
+    ap.add_argument("cmd", choices=("grid", "random", "spot", "detail"))
     ap.add_argument("--nsim", type=int, default=2000)
     ap.add_argument("--items", nargs="*")
+    ap.add_argument("--fname", default="random.json")
+    ap.add_argument("--wins", nargs="*", default=["design", "val"])
     a_ = ap.parse_args()
     o = Path(a_.out).expanduser()
     if a_.cmd == "grid":
         cmd_grid(o)
     elif a_.cmd == "random":
-        cmd_random(o, a_.nsim, a_.items)
+        cmd_random(o, a_.nsim, a_.items, a_.fname, tuple(a_.wins))
+    elif a_.cmd == "detail":
+        cmd_detail(o, a_.items)
     else:
         cmd_spot(o, a_.items)

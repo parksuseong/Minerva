@@ -27,16 +27,22 @@ EXIT_DESC = {
 }
 DS = 0.07
 R_MIN, R_MAX = 0.003, 0.03  # 구조 손절 거리(진입가 대비) 하한·상한
+_CACHE: dict = {}
+
+
+def _lists(*arrs) -> tuple:
+    """변형 210개가 같은 배열을 파이썬 리스트로 각자 바꾸면 메모리가 넘친다(11/08 첫 실행 OOM). 한 번만 바꾼다."""
+    key = tuple(id(a) for a in arrs)
+    if key not in _CACHE:
+        _CACHE[key] = (tuple(a.tolist() for a in arrs), arrs)
+    return _CACHE[key][0]
 
 
 def make_native(shape: str, atr: np.ndarray, st_l: np.ndarray, st_s: np.ndarray,
                 own_l: np.ndarray | None = None, own_s: np.ndarray | None = None) -> dict:  # fmt: skip
     """st_l/st_s: 신호 봉 j 마감에 아는 구조 손절가(롱/숏). own_*: 신호 자체 중립 청산 조건(봉 마감)."""
-    n = len(atr)
-    nat: dict = {"reverse": True, "sl": np.full(n, np.nan)}
-    atr_l = atr.tolist()
-    sl_l = st_l.tolist()
-    sl_s = st_s.tolist()
+    nat: dict = {"reverse": True}
+    atr_l, sl_l, sl_s = _lists(atr, st_l, st_s)
 
     def struct_r(j: int, ep: float, dr: int) -> float:
         lvl = sl_l[j] if dr == 1 else sl_s[j]

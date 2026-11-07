@@ -318,6 +318,7 @@ def main() -> None:
     import xgboost as xgb
     names = list(F)
     X = np.column_stack([F[k] for k in names]).astype(np.float32)
+    X[~np.isfinite(X)] = np.nan  # OI 0 등으로 생긴 inf는 결측으로
     score = np.full(n, np.nan)
     for Y in range(2021, 2027):
         tr = (t >= t[start]) & (t < ts(Y) - 32 * BAR) & valid

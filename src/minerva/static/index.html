@@ -6,11 +6,10 @@
   <meta name="theme-color" content="#0f1115">
   <title>Minerva</title>
   <script>
-    // 첫 페인트 전에 저장된 테마를 적용한다 (깜빡임 방지). 값이 없으면 시스템 설정을 따른다.
-    try {
-      const t = localStorage.getItem("minerva-theme");
-      if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
-    } catch (e) {}
+    // 첫 페인트 전에 저장된 테마를 적용한다 (깜빡임 방지). 값이 없으면 다크 모드가 기본이다.
+    let t = null;
+    try { t = localStorage.getItem("minerva-theme"); } catch (e) {}
+    if (t !== "system") document.documentElement.dataset.theme = t === "light" ? "light" : "dark";
   </script>
   <link rel="stylesheet" href="/static/office.css?v=20261029">
   <style>
@@ -309,8 +308,7 @@
       const apply = (mode) => {
         if (mode === "system") delete root.dataset.theme; else root.dataset.theme = mode;
         try {
-          if (mode === "system") localStorage.removeItem("minerva-theme");
-          else localStorage.setItem("minerva-theme", mode);
+          localStorage.setItem("minerva-theme", mode);
         } catch (e) {}
         sync();
       };

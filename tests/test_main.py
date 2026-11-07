@@ -20,6 +20,11 @@ def test_index_has_theme_switch():
     assert ':root[data-theme="dark"]' in page
 
 
+def test_index_defaults_to_dark():
+    page = client.get("/").text
+    assert 't === "light" ? "light" : "dark"' in page
+
+
 def test_health():
     response = client.get("/api/health")
     assert response.status_code == 200

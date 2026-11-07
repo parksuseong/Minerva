@@ -114,12 +114,76 @@
   <nav class="tabs" role="tablist">
     <button role="tab" data-tab="today" aria-selected="true">🎯 오늘 할 일</button>
     <button role="tab" data-tab="analysis" aria-selected="false">📈 종목 분석</button>
-    <button role="tab" data-tab="btc" aria-selected="false">₿ 비트코인</button>
     <button role="tab" data-tab="account" aria-selected="false">💼 계좌</button>
     <button role="tab" data-tab="office" aria-selected="false">🏢 오피스</button>
   </nav>
 
-  <div class="panel" id="tab-btc" hidden>
+  <div class="panel" id="tab-today">
+    <div class="filters" data-pick="today" role="group" aria-label="주식/비트코인 선택">
+      <button type="button" data-show="today-kr" class="on" aria-pressed="true">📈 주식</button>
+      <button type="button" data-show="today-bn" aria-pressed="false">₿ 비트코인</button>
+    </div>
+    <div id="today-kr">
+    <section class="card" id="trade-memo" hidden>
+      <h2>📌 미네르바 요약</h2>
+      <ul id="trade-memo-list" style="margin:0 0 0 16px;padding:0"></ul>
+      <div id="trade-plan-box" hidden>
+        <h3 style="margin:12px 0 6px;font-size:14px">앞으로의 매매 계획</h3>
+        <ul id="trade-plan-list" style="margin:0 0 0 16px;padding:0"></ul>
+      </div>
+    </section>
+    <section class="card" id="daily">
+      <h2>🎯 오늘 할 일</h2>
+      <div id="daily-meta" class="placeholder">불러오는 중…</div>
+      <div id="today-actions"></div>
+    </section>
+    <section class="card" id="trade">
+      <h2>🤖 자동매매 <span class="mini" id="trade-mode"></span></h2>
+      <div id="trade-positions" class="placeholder">불러오는 중…</div>
+      <div id="trade-orders"></div>
+    </section>
+    <section class="card">
+      <h2>🔵 보유 중 (규칙상)</h2>
+      <div id="today-holds" class="placeholder">-</div>
+    </section>
+    <section class="card">
+      <h2>👀 임박 (검증된 규칙, 조건 1개 남음)</h2>
+      <div id="today-near" class="placeholder">-</div>
+    </section>
+    </div>
+    <div id="today-bn" hidden>
+    <section class="card" id="btcday">
+      <h2>₿ 비트코인 일일 분석 <span class="mini">BTCUSDT · 주문 없음</span></h2>
+      <div id="btcday-body" class="placeholder">불러오는 중…</div>
+    </section>
+    </div>
+    <section class="card">
+      <h2>서버 상태</h2>
+      <div class="status"><span id="dot" class="dot"></span><span id="status">확인 중…</span></div>
+    </section>
+  </div>
+
+  <div class="panel" id="tab-analysis" hidden>
+    <div class="filters" data-pick="an" role="group" aria-label="주식/비트코인 선택">
+      <button type="button" data-show="an-kr" class="on" aria-pressed="true">📈 주식</button>
+      <button type="button" data-show="an-bn" aria-pressed="false">₿ 비트코인</button>
+    </div>
+    <div id="an-kr">
+    <section class="card">
+      <h2>📈 종목 분석 <span class="mini" id="an-count"></span></h2>
+      <div class="filters" id="an-filters">
+        <button data-m="all" class="on">전체</button>
+        <button data-m="KR">국내</button>
+        <button data-m="US">미국</button>
+        <button data-m="CRYPTO">코인</button>
+        <button data-m="etf">ETF</button>
+        <label><input type="checkbox" id="an-verified"> 검증된 규칙만</label>
+      </div>
+      <div id="daily-list"></div>
+      <p class="placeholder" id="daily-note"></p>
+    </section>
+    </div>
+    <div id="an-bn" hidden>
     <section class="card">
       <h2>₿ BTCUSDT 롱/숏 분석</h2>
       <div id="btc-meta" class="placeholder">불러오는 중…</div>
@@ -183,59 +247,7 @@
       <div id="btc-last" class="placeholder">-</div>
       <p class="mini">분석 전용이에요. 자동매매와 연결되지 않고 주문은 나가지 않아요.</p>
     </section>
-  </div>
-
-  <div class="panel" id="tab-today">
-    <section class="card" id="btcday">
-      <h2>₿ 비트코인 일일 분석 <span class="mini">BTCUSDT · 주문 없음</span></h2>
-      <div id="btcday-body" class="placeholder">불러오는 중…</div>
-    </section>
-    <section class="card" id="trade-memo" hidden>
-      <h2>📌 미네르바 요약</h2>
-      <ul id="trade-memo-list" style="margin:0 0 0 16px;padding:0"></ul>
-      <div id="trade-plan-box" hidden>
-        <h3 style="margin:12px 0 6px;font-size:14px">앞으로의 매매 계획</h3>
-        <ul id="trade-plan-list" style="margin:0 0 0 16px;padding:0"></ul>
-      </div>
-    </section>
-    <section class="card" id="daily">
-      <h2>🎯 오늘 할 일</h2>
-      <div id="daily-meta" class="placeholder">불러오는 중…</div>
-      <div id="today-actions"></div>
-    </section>
-    <section class="card" id="trade">
-      <h2>🤖 자동매매 <span class="mini" id="trade-mode"></span></h2>
-      <div id="trade-positions" class="placeholder">불러오는 중…</div>
-      <div id="trade-orders"></div>
-    </section>
-    <section class="card">
-      <h2>🔵 보유 중 (규칙상)</h2>
-      <div id="today-holds" class="placeholder">-</div>
-    </section>
-    <section class="card">
-      <h2>👀 임박 (검증된 규칙, 조건 1개 남음)</h2>
-      <div id="today-near" class="placeholder">-</div>
-    </section>
-    <section class="card">
-      <h2>서버 상태</h2>
-      <div class="status"><span id="dot" class="dot"></span><span id="status">확인 중…</span></div>
-    </section>
-  </div>
-
-  <div class="panel" id="tab-analysis" hidden>
-    <section class="card">
-      <h2>📈 종목 분석 <span class="mini" id="an-count"></span></h2>
-      <div class="filters" id="an-filters">
-        <button data-m="all" class="on">전체</button>
-        <button data-m="KR">국내</button>
-        <button data-m="US">미국</button>
-        <button data-m="CRYPTO">코인</button>
-        <button data-m="etf">ETF</button>
-        <label><input type="checkbox" id="an-verified"> 검증된 규칙만</label>
-      </div>
-      <div id="daily-list"></div>
-      <p class="placeholder" id="daily-note"></p>
-    </section>
+    </div>
   </div>
 
   <div class="panel" id="tab-account" hidden>
@@ -338,9 +350,39 @@
     })();
   </script>
   <script>
+    // 오늘 할 일·종목 분석의 주식/비트코인 선택. 고른 쪽은 이 기기에 기억한다.
+    (() => {
+      const pick = (name, show) => {
+        const group = document.querySelector(`[data-pick="${name}"]`);
+        if (!group) return;
+        group.querySelectorAll("button").forEach((b) => {
+          const on = b.dataset.show === show;
+          b.classList.toggle("on", on);
+          b.setAttribute("aria-pressed", String(on));
+          const box = document.getElementById(b.dataset.show);
+          if (box) box.hidden = !on;
+        });
+        try { localStorage.setItem(`minerva-pick-${name}`, show); } catch (e) { /* 저장 막혀도 전환은 된다 */ }
+      };
+      window.minervaPick = pick;
+      document.querySelectorAll("[data-pick]").forEach((g) => {
+        const name = g.dataset.pick;
+        g.querySelectorAll("button").forEach((b) => { b.onclick = () => pick(name, b.dataset.show); });
+        let saved = null;
+        try { saved = localStorage.getItem(`minerva-pick-${name}`); } catch (e) { /* 기본 주식 */ }
+        const ok = [...g.querySelectorAll("button")].some((b) => b.dataset.show === saved);
+        pick(name, ok ? saved : `${name}-kr`);
+      });
+    })();
+  </script>
+  <script>
     (() => {
       const tabs =[...document.querySelectorAll(".tabs button")];
       const show = (name) => {
+        if (name === "btc") {
+          window.minervaPick && window.minervaPick("an", "an-bn");
+          name = "analysis";
+        }
         if (!document.getElementById(`tab-${name}`)) name = "today";
         tabs.forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
         document.querySelectorAll(".panel").forEach((p) => { p.hidden = p.id !== `tab-${name}`; });

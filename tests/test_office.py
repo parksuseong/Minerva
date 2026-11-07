@@ -114,7 +114,10 @@ def test_btc_endpoint_pending_then_data(tmp_path, monkeypatch):
     out.write_text(json.dumps({"symbol": "BTCUSDT", "frames": []}))
     assert client.get("/api/btc").json()["symbol"] == "BTCUSDT"
     page = client.get("/").text
-    assert 'id="tab-btc"' in page and "/static/btc.js" in page
+    # 비트코인 분석은 종목 분석 탭의 비트코인 쪽에 있다 (2026-11-07)
+    analysis = page.split('id="tab-analysis"', 1)[1].split('class="panel"', 1)[0]
+    assert 'id="an-bn"' in analysis and 'id="btc-meta"' in analysis
+    assert "/static/btc.js" in page
     assert client.get("/static/btc.js").status_code == 200
 
 

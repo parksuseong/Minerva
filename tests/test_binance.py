@@ -213,7 +213,9 @@ def test_snapshot_hides_trades_before_seed(monkeypatch):
 def test_net_equity_subtracts_estimated_close_fee():
     positions = [{"qty": 0.1, "mark": 80000.0, "entry": 76000.0}]
     assert binance.close_fee(positions, 0.0005) == pytest.approx(4.0)
-    assert binance.close_fee([{"qty": 0.1, "mark": None, "entry": 76000.0}], 0.0005) == pytest.approx(3.8)
+    assert binance.close_fee(
+        [{"qty": 0.1, "mark": None, "entry": 76000.0}], 0.0005
+    ) == pytest.approx(3.8)
 
 
 def test_snapshot_reports_fee_rate_and_net_equity(monkeypatch):

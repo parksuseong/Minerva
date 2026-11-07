@@ -380,7 +380,7 @@ def main() -> None:
         up_d=up_d,
         dn_d=dn_d,
     )
-    print(json.dumps(crit), round(time.time() - t0), flush=True)
+    print(json.dumps(crit, default=bool), round(time.time() - t0), flush=True)
 
 
 if __name__ == "__main__":

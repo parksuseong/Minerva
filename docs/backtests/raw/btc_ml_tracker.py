@@ -123,6 +123,9 @@ R1_START = 1793923200000.0
 # AS4G4: AS4 중 일봉 ER10 ≥ 0.30이고 4시간 CI14 < 50일 때만, ±1.5%(135번 조건부)
 # TH1: R1 방향 롱만, 비중 min(3, 2% ÷ 일봉 ATR%), 1% 손절, 방향이 바뀌면 청산(145번)
 EXTRA = ("AS4T75", "K2B", "AS4G4", "TH1")
+# 화면에서 뺀 규칙(사용자 승인 2026-11-07 23:55 KST, 장기 결과로 탈락: A 씨드 시험 운, K2 128번,
+# AS4T75 149번·10배 손익분기 미달, R1 단독 2024~ 낙폭 −74%). R1 방향 계산은 K2B·TH1이 쓰므로 안에서 계속 돈다.
+HIDDEN = ("A", "K2", "R1", "AS4T75")
 T75 = (0.0075, 0.015)
 TH1_RISK, TH1_CAP = 0.02, 3.0
 
@@ -1637,6 +1640,8 @@ def chart_data(B, X, seq, t, seq_ok, models, meta, trades, start, opens=None) ->
     ]
     marks = []
     for r, done in trades.items():
+        if r in HIDDEN:
+            continue
         for x in done:
             if not x["filled"]:
                 continue
@@ -1660,7 +1665,7 @@ def chart_data(B, X, seq, t, seq_ok, models, meta, trades, start, opens=None) ->
                 }
             )
     for r, o in (opens or {}).items():  # 아직 안 끝난 포지션도 진입 표시를 단다
-        if o and o["kind"] == "pos":
+        if o and o["kind"] == "pos" and r not in HIDDEN:
             marks.append(
                 {
                     "rule": r,
@@ -1683,7 +1688,6 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
             "score": float(r["score"]),
             "up": int(r["up"]),
             "dn": int(r["dn"]),
-            "A": int(r["A"]),
             "B": int(r["B"]),
             "models": {m: float(r[f"p_{m}"]) for m in E.MODELS if r.get(f"p_{m}")},
         }
@@ -1861,7 +1865,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
         "price_basis": PRICE_BASIS,
         "fut_days": json.loads(days_path().read_text()) if days_path().exists() else {},
         "reprice_flips": summary.get("reprice_flips", []),
-        "rules": rules,
+        "rules": [x for x in rules if x["id"] not in HIDDEN],
         "recent": recent,
         "chart": chart,
     }

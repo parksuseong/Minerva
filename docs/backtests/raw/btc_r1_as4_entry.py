@@ -296,7 +296,7 @@ def main() -> None:
     Lm, Sm = seeds["mean"]
     rng = np.random.default_rng(7)
     # 레드팀 128: 신호가 있는 2023~ 구간 안에서만 원형으로 민다(전체 배열을 밀면 신호가 시험 밖으로 빠진다)
-    i0 = int(np.searchsorted(G.t, ts(2023)))
+    i0 = int(np.searchsorted(G.A["t"], ts(2023)))
     span = G.n - i0
     shifts = rng.integers(96 * 7, span - 96 * 7, size=a.null)
     for var in ("K1", "K2", "K3"):

@@ -61,6 +61,7 @@ Minerva/
 | `minerva` (웹) | 화면·읽기 전용 API만. 계산·주문·증권사 키 없음 | `src/minerva/main.py`, `routes.py` |
 | `minerva-daily.timer` (배치) | 09:10·16:30 KST 종목 분석 → `~/.minerva/daily/latest.json` + 텔레그램 | `strategy/daily.py` |
 | `minerva-account.timer` (조회) | 평일 08~19시 30초마다 한국투자증권 잔고·주문·체결 → `~/.minerva/account/latest.json` | `kis.py`. 키 `~/.minerva/kis.env`는 이 프로세스만 읽는다. 조회만 |
+| `minerva-binance.timer` (조회) | 1분마다 바이낸스 USDⓈ-M 선물 잔고·포지션·미체결·체결 → `~/.minerva/account/binance.json` | `binance.py`. 키 `~/.minerva/binance.env`는 이 프로세스만 읽는다. GET만 (주문·설정 변경 없음). 시드는 `binance_capital.json`(USDT, `since_at` 분 단위) |
 | `minerva-trade-{preflight,open,watch,reconcile,preview}.timer` (주문) | 08:50 장전 주문(매수 지정가·매도 시장가, 휴장일 건너뜀)·09:02 매도 뒤 매수 · 장중 30초 손절 감시 · 08:40 사전 점검 · 15:45 잔고 대사 · 16:45 다음 날 주문 미리보기 → `~/.minerva/trade/` | `trade.py`. `mode` 파일이 `live`일 때만 실주문, `HALT` 파일이 있으면 정지 |
 
 - 대상: 코스피 지수·시총 상위 100(보통주, `KOSPI_TOP`, 사용자 결정 2026-10-31에 200에서 줄임, 분석·검증·매수 범위), SPY·나스닥100 E-mini 선물(NQ=F)·나스닥 시총 상위 10, 비트코인, KODEX 200. 숏·인버스·레버리지는 매매도 화면도 계산도 하지 않는다. 예외는 비트코인 탭의 BTCUSDT 롱/숏 분석뿐이고 주문과 연결하지 않는다(사용자 요청 2026-10-31, `strategy/btc.py`). (사용자 결정 2026-10-30: 코스피 숏 규칙 p≈0.17로 무작위와 구분 안 됨, `ASSET_SIDES`). 순위는 `strategy/universe.py`가 네이버 증권에서 하루 1번 받는다.

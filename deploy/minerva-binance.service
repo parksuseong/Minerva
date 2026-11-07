@@ -1,0 +1,13 @@
+# 바이낸스 USDⓈ-M 선물 계좌 스냅숏(조회 전용, GET만). minerva-binance.timer가 실행한다.
+# 키: ~/.minerva/binance.env (저장소 밖, chmod 600). 결과: ~/.minerva/account/binance.json
+# 설치: sudo cp deploy/minerva-binance.* /etc/systemd/system/ && sudo systemctl enable --now minerva-binance.timer
+[Unit]
+Description=Minerva Binance futures account snapshot (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.binance

@@ -1,0 +1,11 @@
+# 코인은 24시간 거래되므로 매일 1분마다, 그리고 기동 1분 뒤 한 번. 호출 5건(가중치 약 85/분, 한도 2400).
+[Unit]
+Description=Refresh Minerva Binance futures snapshot every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+OnBootSec=1min
+
+[Install]
+WantedBy=timers.target

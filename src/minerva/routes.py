@@ -6,6 +6,9 @@
   증권사 키는 그 프로세스만 읽는다. 웹 서버에는 키가 없다.
   기본은 공개(사용자 요청). 열람 토큰을 설정하면 `X-Minerva-Token`이 있어야 보여준다.
   수익률: 같은 폴더의 `capital.json`(시작 원금·입금)과 `equity.json`(날짜별 평가액)으로 계산.
+- 바이낸스 선물: `python -m minerva.binance` (`minerva-binance.timer`)
+  → `~/.minerva/account/binance.json`. 시드는 `binance_capital.json`, 날짜별 평가액은
+  `binance_equity.json` (USDT). 열람 토큰은 계좌와 같다.
 - 자동매매: `python -m minerva.trade` (`minerva-trade-*.timer`) → `~/.minerva/trade/`
 """
 
@@ -113,6 +116,25 @@ def account(x_minerva_token: str = Header("")) -> dict:
         owned = _read(trade_dir() / "positions.json") or {}
         bot = perf.bot_pnl(trade_dir(), owned, data)
         data["returns"] = perf.account_returns(data, history, capital, bot)
+    return data
+
+
+@router.get("/api/account/binance")
+def binance_account(x_minerva_token: str = Header("")) -> dict:
+    want = account_view_token()
+    if want and not hmac.compare_digest(x_minerva_token, want):
+        raise HTTPException(status_code=403, detail="invalid token")
+    folder = account_path().parent
+    data = _read(folder / "binance.json")
+    if data is None:
+        return {"status": "not_connected", "message": "바이낸스 계좌 스냅숏 대기 중이에요"}
+    capital = _read(folder / "binance_capital.json")
+    if capital and data.get("status") == "ok":
+        history = _read(folder / "binance_equity.json") or {}
+        returns = perf.account_returns(data, history, capital, 0.0)
+        returns.pop("bot", None)
+        returns.pop("bot_pct", None)
+        data["returns"] = returns
     return data
 
 

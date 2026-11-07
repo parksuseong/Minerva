@@ -48,8 +48,15 @@ SEEDS_OUT = HOME / "research/btc-2026-11-04/seeds"
 URL = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1000&startTime={s}"
 OKX = "https://www.okx.com/api/v5"
 OKX_INST = "BTC-USDT-SWAP"
+# 2026-11-07 21:57 KST 사용자 "일단 검증과 분석은 바이낸스 현물로만", "현물로 롱 숏 다 쳤다고 가정":
+# 체결·청산·일봉 방향·문 모두 바이낸스 현물 BTCUSDT 봉으로 계산하고 펀딩은 없다.
+# 선물 기준 기록(11/07 12:31~21:57)은 *.fut.json으로 남겼다. PRICE = "futures"로 되돌릴 수 있다.
+PRICE = os.environ.get("MINERVA_MLTRACK_PRICE", "spot")
 PRICE_BASIS = (
-    "가격 기준: 바이낸스 선물(전날까지) + OKX(오늘, 임시) 체결·청산 + 펀딩. 신호는 현물 모델. "
+    "가격 기준: 바이낸스 현물 BTCUSDT 체결·청산(롱·숏 모두 현물 가격으로 가정, 펀딩 없음). "
+    "체결 지연 반영(실제 판단 시각 이후 5분봉부터)은 '지연 반영' 칸"
+    if PRICE == "spot"
+    else "가격 기준: 바이낸스 선물(전날까지) + OKX(오늘, 임시) 체결·청산 + 펀딩. 신호는 현물 모델. "
     "체결 지연 반영(실제 판단 시각 이후 5분봉부터)은 '지연 반영' 칸"
 )
 M5 = 300_000
@@ -384,7 +391,9 @@ def fut_bars(t15: np.ndarray) -> tuple:
 
 
 def funding_cut(done: list) -> None:
-    """summ_net과 같이 (체결, 청산] 사이 펀딩을 뺀다. 롱은 양수 펀딩을 낸다."""
+    """summ_net과 같이 (체결, 청산] 사이 펀딩을 뺀다. 롱은 양수 펀딩을 낸다. 현물 기준이면 없다."""
+    if PRICE == "spot":
+        return
     fr = _read_rows(fund_path())
     if not fr:
         return
@@ -440,6 +449,8 @@ def estimate_decided(ts: list, known: dict) -> dict:
 
 
 def fut5_bars() -> dict:
+    if PRICE == "spot":
+        return _spot5()
     rows = _read_rows(fut_path())
     tt = sorted(rows)
     return {
@@ -950,8 +961,15 @@ def paper(bars, sig, rule, tp=TP, sl=SL):
 
 
 # ---- K2 (R1 방향 + AS4 진입 + R1 청산) ----
+def _spot5() -> dict:
+    """현물 5분봉 전체(저장 이력 + 추적기가 받은 최근 봉)."""
+    return load_all()
+
+
 def fut_daily_d5() -> dict:
-    """일봉 방향 계산용 선물 5분봉: 저장된 이력 + 추적기가 받은 최근 봉."""
+    """일봉 방향 계산용 선물 5분봉: 저장된 이력 + 추적기가 받은 최근 봉. 현물 기준이면 현물."""
+    if PRICE == "spot":
+        return _spot5()
     d = load5(FUT_HIST)
     live = fut5_bars()
     if len(live["t"]):
@@ -1126,15 +1144,20 @@ def step(notify: bool = True) -> dict:
         decided_path().write_text(json.dumps(dec))
         sigs = read_signals()
     m = t >= state["start"]
-    got_f, err_f = fetch_fut(int(state["start"]))
-    rp = reprice_binance()
-    bars, miss = fut_bars(t[m])
+    if PRICE == "spot":
+        got_f, err_f, rp = 0, None, None
+        bars = {k: np.asarray(B["d"][k][m], dtype=float) for k in "tohlc"}
+        miss = 0
+    else:
+        got_f, err_f = fetch_fut(int(state["start"]))
+        rp = reprice_binance()
+        bars, miss = fut_bars(t[m])
     summary = {
         "bars": len(bars["t"]),
         "fetched": got,
         "fetched_fut": got_f,
         "last": kst(t[-1] + BAR15) if len(t) else "",
-        "price": "futures_binance_okx",
+        "price": "spot_binance" if PRICE == "spot" else "futures_binance_okx",
         "reprice": rp,
     }
     if err_f or miss:
@@ -1146,7 +1169,10 @@ def step(notify: bool = True) -> dict:
     outs: dict = {}
     flips = []
     # 선물 기준으로 처음 다시 계산할 때는 알림을 보내지 않는다
-    migrate = state.get("price") != "futures_okx"
+    tag = "spot_binance" if PRICE == "spot" else "futures_okx"
+    migrate = state.get("price") != tag
+    if migrate:  # 가격 기준이 바뀌면 지난 결과 비교(flip)를 새로 시작한다
+        prev = {}
     tr4 = trend4h(d5, bars["t"])
     decided = read_decided()
     est = estimate_decided(sorted(sigs), decided)
@@ -1492,7 +1518,7 @@ def step(notify: bool = True) -> dict:
                 )
     if migrate:
         msgs = []
-        state["price"] = "futures_okx"
+        state["price"] = tag
     if flips:
         # 바이낸스 봉으로 다시 계산해 지난 결과가 바뀐 경우: 다시 알리지 않고 한 줄로 남긴다
         print(json.dumps({"reprice_flips": flips}, ensure_ascii=False), flush=True)

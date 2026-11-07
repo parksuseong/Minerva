@@ -49,8 +49,11 @@ URL = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=5m&
 OKX = "https://www.okx.com/api/v5"
 OKX_INST = "BTC-USDT-SWAP"
 PRICE_BASIS = (
-    "가격 기준: 바이낸스 선물(전날까지) + OKX(오늘, 임시) 체결·청산 + 펀딩. 신호는 현물 모델"
+    "가격 기준: 바이낸스 선물(전날까지) + OKX(오늘, 임시) 체결·청산 + 펀딩. 신호는 현물 모델. "
+    "체결 지연 반영(실제 판단 시각 이후 5분봉부터)은 '지연 반영' 칸"
 )
+M5 = 300_000
+LIVE_DELAY = 900_000  # 이보다 늦게 판단한 신호는 따라잡기(서버 꺼짐·실행 실패)로 따로 센다
 BNV = "https://data.binance.vision/data/futures/um"
 DAY = 86_400_000
 BAR15 = 900_000
@@ -359,6 +362,153 @@ def funding_cut(done: list) -> None:
             b = np.searchsorted(ft, x["t_exit"], side="right")
             x["fund"] = float(cf[b] - cf[a])
             x["net1"] -= x["side"] * x["fund"]
+
+
+# ---- 체결 지연 (2026-11-07 레드팀 127: 신호 직후 몇 분의 체결이 수익을 만든다) ----
+def decided_path() -> Path:
+    return ST / "decided.json"
+
+
+def read_decided() -> dict:
+    """{신호 봉 시작 ms: [판단 시각 ms, 추정 여부]}."""
+    p = decided_path()
+    return {int(k): v for k, v in json.loads(p.read_text()).items()} if p.exists() else {}
+
+
+def journal_runs() -> list:
+    """타이머 실행이 끝난 시각들(ms). 판단 시각을 기록하기 전의 신호를 추정하는 데만 쓴다."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["journalctl", "-u", "minerva-btc-mltrack", "-o", "short-unix", "--no-pager"],
+            capture_output=True, text=True, timeout=60, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return sorted(
+        int(float(line.split()[0]) * 1000)
+        for line in out.splitlines()
+        if "Finished minerva-btc-mltrack" in line
+    )
+
+
+def estimate_decided(ts: list, known: dict) -> dict:
+    runs = np.array(journal_runs(), dtype=float)
+    out = {}
+    for x in ts:
+        if x in known or not len(runs):
+            continue
+        k = np.searchsorted(runs, x + BAR15)
+        if k < len(runs):
+            out[x] = [int(runs[k]), True]
+    return out
+
+
+def fut5_bars() -> dict:
+    rows = _read_rows(fut_path())
+    tt = sorted(rows)
+    return {
+        "t": np.array(tt, dtype=float),
+        **{k: np.array([float(rows[x][j]) for x in tt]) for k, j in zip("ohlc", (1, 2, 3, 4))},
+    }
+
+
+def paper_delay(bars, sig, decided, b5):
+    """paper()와 같은 규칙. 다만 판단 시각을 5분 단위로 올린 시각 뒤의 선물 5분봉에서만
+    체결·청산한다.
+
+    지정가는 신호 봉 종가로 정한다(판단할 때 아는 값). 주문 유효 시간은 paper()와 같다
+    (신호 봉 뒤 REST개 15분봉). 판단이 그보다 늦으면 '지연으로 놓침'이다.
+    판단 시각을 모르면 세지 않는다.
+    """
+    t, c = bars["t"], bars["c"]
+    t5, o5, h5, l5 = (b5[k] for k in "tohl")
+    out, state, i, n = [], None, 0, len(t)
+    while i < n:
+        s = sig[i]
+        if not s:
+            i += 1
+            continue
+        lim = c[i] * (1 - OFF * s)
+        dec = decided.get(int(t[i]))
+        if dec is None:
+            out.append({"t_sig": t[i], "side": s, "lim": lim, "unknown": True, "filled": False})
+            i += 1
+            continue
+        d_ms, est = dec
+        go = -(-d_ms // M5) * M5
+        end = t[i] + (1 + REST) * BAR15
+        base = {"t_sig": t[i], "side": s, "lim": lim, "delay": d_ms - (t[i] + BAR15), "est": est}
+        if go >= end:
+            out.append({**base, "filled": False, "late": True})
+            i += 1
+            continue
+        a = int(np.searchsorted(t5, go))
+        z = int(np.searchsorted(t5, end))
+        j = None
+        for b in range(a, z):
+            if (l5[b] <= lim * (1 - THRU)) if s > 0 else (h5[b] >= lim * (1 + THRU)):
+                j = b
+                break
+        if j is None:
+            if not len(t5) or t5[-1] + M5 < end:
+                state = {"kind": "order", "side": s, "lim": lim, "t_sig": t[i]}
+                break
+            out.append({**base, "filled": False})
+            i += 1
+            continue
+        px = lim
+        up, dn = px * (1 + TP), px * (1 - SL)
+        res, b = None, j
+        while b < len(t5):
+            first = b == j
+            if s > 0:
+                if l5[b] <= dn:
+                    fill = min(o5[b], dn) if not first else dn
+                    res = (fill * (1 - SLIP) / px - 1 - MAKER - TAKER, 0)
+                elif not first and h5[b] >= up * (1 + THRU):
+                    res = (TP - 2 * MAKER, 1)
+            else:
+                if h5[b] >= up:
+                    fill = max(o5[b], up) if not first else up
+                    res = (-(fill * (1 + SLIP) / px - 1) - MAKER - TAKER, 0)
+                elif not first and l5[b] <= dn * (1 - THRU):
+                    res = (SL - 2 * MAKER, 1)
+            if res:
+                break
+            b += 1
+        if res is None:
+            state = {"kind": "pos", "side": s, "px": px, "t_sig": t[i], "t_fill": t5[j]}
+            break
+        out.append(
+            {**base, "filled": True, "t_fill": t5[j], "t_exit": t5[b],
+             "net1": res[0], "win": res[1]}
+        )
+        i = max(i + 1, int(np.searchsorted(t, t5[b], side="right")) - 1)
+    return out, state
+
+
+def delay_summary(done: list, open_) -> dict:
+    known = [x for x in done if not x.get("unknown")]
+    fills = [x for x in known if x["filled"]]
+    net = np.array([x["net1"] for x in fills]) if fills else np.zeros(0)
+    dl = np.array([x["delay"] for x in known], dtype=float) / 60_000
+    live = dl[dl * 60_000 <= LIVE_DELAY]
+    return {
+        "signals_known": len(known),
+        "unknown": len(done) - len(known),
+        "estimated": int(sum(1 for x in known if x.get("est"))),
+        "late": int(sum(1 for x in known if x.get("late"))),
+        "fills": len(fills),
+        "wins": int(sum(x["win"] for x in fills)),
+        "x1": round(float((np.prod(1 + net) - 1) * 100), 2),
+        "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
+        "delay_med_min": round(float(np.median(live)), 1) if len(live) else None,
+        "delay_max_min": round(float(live.max()), 1) if len(live) else None,
+        "backfill": int((dl * 60_000 > LIVE_DELAY).sum()),
+        "open": open_["kind"] if open_ else None,
+    }
 
 
 # ---- 모델 ----
@@ -824,6 +974,10 @@ def step(notify: bool = True) -> dict:
                 else:
                     row += [""] * (5 + len(E.MODELS))
                 w.writerow(row)
+        now = int(time.time() * 1000)
+        dec = read_decided()
+        dec.update({int(t[i]): [now, False] for i in need if int(t[i]) not in dec})
+        decided_path().write_text(json.dumps(dec))
         sigs = read_signals()
     m = t >= state["start"]
     got_f, err_f = fetch_fut(int(state["start"]))
@@ -848,6 +1002,12 @@ def step(notify: bool = True) -> dict:
     # 선물 기준으로 처음 다시 계산할 때는 알림을 보내지 않는다
     migrate = state.get("price") != "futures_okx"
     tr4 = trend4h(d5, bars["t"])
+    decided = read_decided()
+    est = estimate_decided(sorted(sigs), decided)
+    if est:  # 판단 시각을 기록하기 전 신호: 타이머 실행 기록으로 추정(한 번만)
+        decided.update(est)
+        decided_path().write_text(json.dumps(decided))
+    b5 = fut5_bars()
     for r in RULES:
         s0 = state["start"] if PFX[r] == "p_" else state.get("start_s", float("inf"))
         col = BASE_RULE.get(r, r)
@@ -869,6 +1029,9 @@ def step(notify: bool = True) -> dict:
             "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
             "open": open_,
         }
+        done_d, open_d = paper_delay(bars, sig, decided, b5)
+        funding_cut(done_d)
+        summary[r]["delay"] = delay_summary(done_d, open_d)
         for x in done:
             ok = f"{r}:{int(x['t_sig'])}"
             outs[ok] = outcome(x)
@@ -1125,6 +1288,8 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "wins": s["wins"],
                 "x1": s["x1"],
                 "x3": s["x3"],
+                "delay": s.get("delay"),
+                "x3_delay": (s.get("delay") or {}).get("x3"),
                 "open": open_row(s["open"], PFX[r]),
                 "note": f"{PRICE_BASIS}. {NOTE[r]}",
                 "seed_avg": PFX[r] == "pa_",

@@ -62,8 +62,8 @@ def main() -> None:
         plt.Line2D([], [], color="#4575b4", label="EMA 50"),
     ]
     p.legend(handles=handles, loc="upper left", ncol=5, frameon=False, fontsize=9)
-    ex = "opposite signal or 1% stop" if var.endswith("X1") else "+1% target / -1% stop / 96 bars"
-    p.set_title(f"BTCUSDT futures 15m, last {days} days: SCR Dynamic StochOnly ({var}), exit {ex}  |  "
+    ex = {"X1": "opposite signal or 1% stop", "X2": "+1% target / -1% stop / 96 bars"}.get(var[-2:], "1% stop or day end")
+    p.set_title(f"BTCUSDT futures 15m, last {days} days: {var}, exit {ex}  |  "
                 f"{wins}/{len(tr)} wins, net of 0.1% round trip + funding (KST)", loc="left", color=INK, fontsize=11)
     for a_, (name, v, lines) in zip(ax[1:], (("Stoch 5", k, (20, 80)), ("CCI 9", cc, (-100, 100)),
                                              ("RSI 14", r, (30, 70)))):

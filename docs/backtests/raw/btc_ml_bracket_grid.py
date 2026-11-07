@@ -12,7 +12,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import btc_ml_edge_cost as C
 import numpy as np
 from btc_fractal import load5
 from btc_futures_compare import load_funding

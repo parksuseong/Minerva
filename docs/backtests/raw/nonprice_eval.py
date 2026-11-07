@@ -190,8 +190,8 @@ def cmd_grid(out: Path) -> None:
             r = {
                 w: summ(T.simulate(B, Sx[h], v, *W[w])) for w in ("design", "val", "seen", "last30")
             }
-            r["pass"] = passes(r["design"], r["val"])
-            r["pass_all5"] = all(r["pass"].values())
+            r["pass"] = {k: bool(x) for k, x in passes(r["design"], r["val"]).items()}
+            r["pass_all5"] = bool(all(r["pass"].values()))
             res[h][T.vname(v)] = r
             cnt += 1
         print(h, sigc[h], round(time.time() - t0, 1), flush=True)

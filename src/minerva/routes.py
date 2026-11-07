@@ -17,6 +17,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException
@@ -149,6 +150,12 @@ def binance_series(x_minerva_token: str = Header("")) -> dict:
     folder = account_path().parent
     capital = _read(folder / "binance_capital.json") or {}
     points = (_read(folder / "binance_series.json") or {}).get("points", [])
+    # 점 시각은 KST 벽시계를 UTC 자리에 둔 값이라 시드 시각도 같은 방식으로 바꿔 비교한다
+    start = capital.get("since_at") or capital.get("since")
+    if start:
+        fmt = "%Y-%m-%d %H:%M" if " " in start else "%Y-%m-%d"
+        cut = datetime.strptime(start, fmt).replace(tzinfo=timezone.utc).timestamp()
+        points = [p for p in points if p["t"] >= cut]
     return {"seed": capital.get("base"), "points": points}
 
 

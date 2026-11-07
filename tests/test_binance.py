@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -271,10 +271,27 @@ def test_returns_use_net_equity_and_series_api(tmp_path, monkeypatch):
     (tmp_path / "binance_capital.json").write_text(
         json.dumps({"since": "2026-11-08", "base": 1000.0, "deposits": []})
     )
-    (tmp_path / "binance_series.json").write_text(json.dumps({"points": [{"t": 1, "v": 1006.0}]}))
+    (tmp_path / "binance_series.json").write_text(
+        json.dumps({"points": [{"t": 1794182400, "v": 1006.0}]})
+    )
     client = TestClient(app)
     assert client.get("/api/account/binance").json()["returns"]["total"] == 6.0
     assert client.get("/api/account/binance/series").json() == {
         "seed": 1000.0,
-        "points": [{"t": 1, "v": 1006.0}],
+        "points": [{"t": 1794182400, "v": 1006.0}],
     }
+
+
+def test_series_api_starts_at_seed_time(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_ACCOUNT_OUT", str(tmp_path / "latest.json"))
+    monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(tmp_path / "none"))
+    monkeypatch.delenv("MINERVA_ACCOUNT_TOKEN", raising=False)
+    (tmp_path / "binance_capital.json").write_text(
+        json.dumps({"since": "2026-11-08", "since_at": "2026-11-08 00:00", "base": 1.0})
+    )
+    before = datetime(2026, 11, 7, 23, 55, tzinfo=timezone.utc).timestamp()
+    after = datetime(2026, 11, 8, 0, 0, tzinfo=timezone.utc).timestamp()
+    pts = [{"t": int(before), "v": 1.0}, {"t": int(after), "v": 2.0}]
+    (tmp_path / "binance_series.json").write_text(json.dumps({"points": pts}))
+    got = TestClient(app).get("/api/account/binance/series").json()["points"]
+    assert [p["v"] for p in got] == [2.0]

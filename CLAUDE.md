@@ -89,8 +89,8 @@ Minerva/
 - 재주문: 통신 오류·응답 유실만 10초 간격으로 최대 3회 다시 낸다. 다시 내기 전에 주문 내역을 조회해 중복을 막는다. 증권사 거부(rt_cd≠0)는 다시 내지 않는다.
 - 계좌 탭 수익률: 누적(원금 대비)·오늘(전일 마감 대비)·봇 손익. 원금은 `~/.minerva/account/capital.json`(시작 2026-10-29, 10,002,669원), 날짜별 평가액은 `equity.json`(`kis.record_equity`). 사용자가 입금·출금을 알리면 `deposits`에 `{"date", "amount"}`(출금은 음수)를 추가한다. 안 적으면 입금이 수익으로 잡힌다.
 - 💼 계좌 탭과 `/api/account`는 공개다(사용자 요청 2026-10-28). 잠그려면 `~/.minerva/account/view.token`에 토큰을 넣는다(헤더 `X-Minerva-Token`).
-- 화면 탭: 🎯 오늘 할 일 / 📈 종목 분석 / 💼 계좌 / 🏢 오피스 (`#today` 같은 해시로 이동).
-- ₿ 비트코인 탭의 "ML 규칙 기록"(2026-11-04 사용자 요청): `minerva-btc-mltrack.timer`(15분, 주문 없음, 코드는 브랜치 `feat/btc-scr-ma`의 `docs/backtests/raw/btc_ml_tracker.py`)가 `~/.minerva/research/btc-ml-tracker/view.json`을 쓰고 웹은 `/api/btc/ml`로 읽기만 한다. 차트는 TradingView Lightweight Charts 5.2.1(Apache-2.0, `static/vendor/`, npm 무결성 확인).
+- 화면 탭: 🎯 오늘 할 일 / 📈 종목 분석 / 💼 계좌 / 🏢 오피스 (`#today` 같은 해시로 이동). 앞의 세 탭은 맨 위 버튼으로 📈 주식/₿ 비트코인 중 하나만 보인다(사용자 요청 2026-11-07, 기기에 기억). 옛 ₿ 비트코인 탭 내용은 종목 분석 > 비트코인에 있고 `#btc`는 그쪽으로 연다.
+- 종목 분석 > ₿ 비트코인의 "ML 규칙 기록"(2026-11-04 사용자 요청): `minerva-btc-mltrack.timer`(15분, 주문 없음, 코드는 브랜치 `feat/btc-scr-ma`의 `docs/backtests/raw/btc_ml_tracker.py`)가 `~/.minerva/research/btc-ml-tracker/view.json`을 쓰고 웹은 `/api/btc/ml`로 읽기만 한다. 차트는 TradingView Lightweight Charts 5.2.1(Apache-2.0, `static/vendor/`, npm 무결성 확인).
 
 ## 오피스 패널 (🏢 오피스 탭)
 - Claude와 서브에이전트가 일하는 모습을 보여준다. 코드: `static/office.{js,css}`, API `src/minerva/office.py`. 훅 `scripts/office_hook.py`가 `~/.minerva/office/events.jsonl`에 이벤트를 쌓는다.

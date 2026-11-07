@@ -73,7 +73,8 @@ def load_metrics(path: Path):
             except ValueError:
                 continue
             tk.append(t.timestamp() * 1000 + M5)  # create_time은 구간 시작: 값은 +5분에 정해진다
-            oi.append(float(row[2]) if row[2] else np.nan)
+            v = float(row[2]) if row[2] else np.nan
+            oi.append(v if v > 0 else np.nan)  # 레드팀 131: OI=0 행(2022-03, 2024-07)은 결측
             ls.append(float(row[4]) if row[4] else np.nan)
     tk = np.array(tk)
     o = np.argsort(tk, kind="stable")

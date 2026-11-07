@@ -296,7 +296,8 @@ def main() -> None:
                     else:
                         opp = F.e5[ev[-side]]
                         j = np.searchsorted(opp, e, side="right")
-                        other = np.where(j < len(opp), opp[np.minimum(j, len(opp) - 1)], X.n - 1)
+                        other = (np.where(j < len(opp), opp[np.minimum(j, len(opp) - 1)], X.n - 1) if len(opp)
+                                 else np.full(len(e), X.n - 1))
                         g, x = X.stop_exit(e, side, 0.01, other, ks=k1[p])
                     E.append(e), S.append(np.full(len(e), side)), G.append(g), XX.append(x)
                 if not E:
@@ -376,7 +377,8 @@ def main() -> None:
                     else:
                         opp = F.e5[ev[-side]]
                         j = np.searchsorted(opp, e, side="right")
-                        other = np.where(j < len(opp), opp[np.minimum(j, len(opp) - 1)], X.n - 1)
+                        other = (np.where(j < len(opp), opp[np.minimum(j, len(opp) - 1)], X.n - 1) if len(opp)
+                                 else np.full(len(e), X.n - 1))
                         g, x = X.stop_exit(e, side, 0.01, other)
                     E.append(e), S.append(np.full(len(e), side)), G.append(g), XX.append(x)
                 if not E:

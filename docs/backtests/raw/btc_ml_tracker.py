@@ -8,8 +8,11 @@
 모델은 백테스트의 2026년 모델과 같은 자료·씨드로 한 번 학습해 저장한다(train).
 step은 15분마다: 현물 5분봉을 받아 붙이고, 새로 마감된 15분봉에 점수를 매기고,
 추적 시작 뒤의 신호로 모의 체결을 다시 계산해 새 사건만 텔레그램으로 알린다.
-모델 입력은 현물(학습과 같다). 지정가·체결·익절·손절은 선물(OKX BTC-USDT-SWAP) 15분봉으로
-보고 펀딩(OKX)을 뺀다(사용자 2026-11-07: 선물로 매매한다). 옛 현물 기준 기록은 *.spot.*에 둔다.
+모델 입력은 현물(학습과 같다). 지정가·체결·익절·손절은 선물 15분봉으로 보고 펀딩을 뺀다
+(사용자 2026-11-07: 바이낸스 USDT-M 선물로 매매한다). 오늘 봉은 OKX BTC-USDT-SWAP로 먼저 보고,
+바이낸스 공식 일별 아카이브(data.binance.vision)가 나온 날은 바이낸스 봉으로 바꿔 다시 계산한다.
+fapi.binance.com은 이 서버(미국)에서 451로 막혀 있고, 우회 경로는 쓰지 않는다.
+옛 현물 기준 기록은 *.spot.*에 둔다.
 
 실행: PYTHONPATH=<pyml>:src:docs/backtests/raw python3 docs/backtests/raw/btc_ml_tracker.py train|step|report
 """
@@ -18,11 +21,16 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import io
 import json
 import os
 import pickle
 import time
+import urllib.error
 import urllib.request
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import btc_ml_15m as M
@@ -40,7 +48,11 @@ SEEDS_OUT = HOME / "research/btc-2026-11-04/seeds"
 URL = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1000&startTime={s}"
 OKX = "https://www.okx.com/api/v5"
 OKX_INST = "BTC-USDT-SWAP"
-PRICE_BASIS = "가격 기준: 선물(OKX BTC-USDT-SWAP) 체결·청산 + 펀딩. 신호는 현물 모델"
+PRICE_BASIS = (
+    "가격 기준: 바이낸스 선물(전날까지) + OKX(오늘, 임시) 체결·청산 + 펀딩. 신호는 현물 모델"
+)
+BNV = "https://data.binance.vision/data/futures/um"
+DAY = 86_400_000
 BAR15 = 900_000
 YEAR = 2026
 RULES = {"A": (0.90, 4), "B": (0.95, 5), "AS": (0.90, 4), "BS": (0.95, 5), "AS4": (0.90, 4)}
@@ -208,6 +220,102 @@ def fetch_fut(since: int) -> tuple:
         return len(got), None
     except Exception as e:  # noqa: BLE001 - 선물 자료가 없으면 이번 봉은 건너뛰고 다음에 다시 본다
         return 0, f"{type(e).__name__}: {e}"
+
+
+def _vision(url: str) -> list | None:
+    """바이낸스 공식 아카이브 zip을 CHECKSUM으로 확인하고 CSV 행을 돌려준다. 아직 없으면 None."""
+    req = urllib.request.Request(url, headers={"User-Agent": "minerva-tracker"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            blob = r.read()
+        req = urllib.request.Request(url + ".CHECKSUM", headers={"User-Agent": "minerva-tracker"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            want = r.read().decode().split()[0]
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    if hashlib.sha256(blob).hexdigest() != want:
+        raise ValueError(f"checksum mismatch {url}")
+    z = zipfile.ZipFile(io.BytesIO(blob))
+    rows = list(csv.reader(io.TextIOWrapper(z.open(z.namelist()[0]))))
+    return [x for x in rows if x and x[0].isdigit()]
+
+
+def days_path() -> Path:
+    return ST / "fut_days.json"
+
+
+def reprice_binance() -> dict:
+    """전날까지의 OKX 봉·펀딩을 바이낸스 아카이브로 바꾼다. 바뀐 날 목록을 돌려준다."""
+    days = json.loads(days_path().read_text()) if days_path().exists() else {}
+    out = {"days": [], "funding_months": [], "error": None}
+    try:
+        rows = _read_rows(fut_path())
+        if not rows:
+            return out
+        today = int(time.time() * 1000) // DAY
+        by_day: dict = {}
+        for t0 in rows:
+            by_day.setdefault(t0 // DAY, []).append(t0)
+        for dk in sorted(by_day):
+            name = datetime.fromtimestamp(dk * 86400, timezone.utc).strftime("%Y-%m-%d")
+            if dk >= today or days.get(name) == "binance":
+                continue
+            got = _vision(f"{BNV}/daily/klines/BTCUSDT/5m/BTCUSDT-5m-{name}.zip")
+            if not got or len(got) != 288:
+                days.setdefault(name, "okx")
+                continue
+            for t0 in by_day[dk]:
+                rows.pop(t0)
+            for x in got:
+                rows[int(x[0])] = [int(x[0]), x[1], x[2], x[3], x[4], x[5]]
+            days[name] = "binance"
+            out["days"].append(name)
+        if out["days"]:
+            tmp = fut_path().with_suffix(".tmp")
+            with tmp.open("w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["open_time", "open", "high", "low", "close", "volume_btc"])
+                for t0 in sorted(rows):
+                    w.writerow(rows[t0])
+            tmp.replace(fut_path())
+        fr = _read_rows(fund_path())
+        def ym_of(t0: int) -> str:
+            return datetime.fromtimestamp(t0 / 1000, timezone.utc).strftime("%Y-%m")
+
+        months = sorted({ym_of(t0) for t0 in fr})
+        cur = datetime.now(timezone.utc).strftime("%Y-%m")
+        changed = False
+        for ym in months:
+            if ym >= cur or days.get(f"fund:{ym}") == "binance":
+                continue
+            got = _vision(f"{BNV}/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-{ym}.zip")
+            if not got:
+                continue
+            for t0 in [t0 for t0 in fr if ym_of(t0) == ym]:
+                fr.pop(t0)
+            for x in got:  # calc_time, funding_interval_hours, last_funding_rate
+                fr[int(x[0])] = [int(x[0]), x[2]]
+            days[f"fund:{ym}"] = "binance"
+            out["funding_months"].append(ym)
+            changed = True
+        if changed:
+            tmp = fund_path().with_suffix(".tmp")
+            with tmp.open("w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["funding_time", "rate"])
+                for t0 in sorted(fr):
+                    w.writerow(fr[t0][:2])
+            tmp.replace(fund_path())
+    except Exception as e:  # noqa: BLE001 - 아카이브가 안 되면 OKX 그대로 두고 다음 실행에 다시 본다
+        out["error"] = f"{type(e).__name__}: {e}"
+    days_path().write_text(json.dumps(days, indent=1, sort_keys=True))
+    return out
+
+
+def outcome(x: dict) -> str:
+    return ("x:" + ("win" if x["win"] else "loss")) if x["filled"] else "n"
 
 
 def fut_bars(t15: np.ndarray) -> tuple:
@@ -719,19 +827,24 @@ def step(notify: bool = True) -> dict:
         sigs = read_signals()
     m = t >= state["start"]
     got_f, err_f = fetch_fut(int(state["start"]))
+    rp = reprice_binance()
     bars, miss = fut_bars(t[m])
     summary = {
         "bars": len(bars["t"]),
         "fetched": got,
         "fetched_fut": got_f,
         "last": kst(t[-1] + BAR15) if len(t) else "",
-        "price": "futures_okx",
+        "price": "futures_binance_okx",
+        "reprice": rp,
     }
     if err_f or miss:
         summary["fut_gap"] = {"error": err_f, "missing_bars": int(miss)}
     msgs = []
     trades = {}
     sent = set(state["sent"])
+    prev = state.get("outcomes", {})
+    outs: dict = {}
+    flips = []
     # 선물 기준으로 처음 다시 계산할 때는 알림을 보내지 않는다
     migrate = state.get("price") != "futures_okx"
     tr4 = trend4h(d5, bars["t"])
@@ -757,6 +870,10 @@ def step(notify: bool = True) -> dict:
             "open": open_,
         }
         for x in done:
+            ok = f"{r}:{int(x['t_sig'])}"
+            outs[ok] = outcome(x)
+            if ok in prev and prev[ok] != outs[ok]:
+                flips.append(f"{NAMES[r]} {kst(x['t_sig'] + BAR15)} 신호: {prev[ok]} → {outs[ok]}")
             key = f"{r}:{int(x['t_sig'])}:{'x' if x['filled'] else 'n'}"
             if key in sent:
                 continue
@@ -792,12 +909,30 @@ def step(notify: bool = True) -> dict:
     if migrate:
         msgs = []
         state["price"] = "futures_okx"
+    if flips:
+        # 바이낸스 봉으로 다시 계산해 지난 결과가 바뀐 경우: 다시 알리지 않고 한 줄로 남긴다
+        print(json.dumps({"reprice_flips": flips}, ensure_ascii=False), flush=True)
+        state["flip_note"] = (state.get("flip_note", []) + flips)[-20:]
+        stamp = kst(time.time() * 1000)
+        log = state.get("flips_log", []) + [f"{stamp} {f}" for f in flips]
+        state["flips_log"] = log[-100:]
+    summary["reprice_flips"] = state.get("flips_log", [])[-10:]
     if summary.get("fut_gap"):
         # 선물 봉이 비면 이번 계산은 일부만이다. 알리지 않고 보낸 표시도 남기지 않는다.
         msgs = []
         if not migrate:
             sent = set(state["sent"])
         print(json.dumps({"fut_gap": summary["fut_gap"]}), flush=True)
+    if msgs and state.get("flip_note"):
+        msgs[0] = (
+            "[BTC 기록] 바이낸스 가격으로 다시 계산해 지난 결과가 바뀜: "
+            + "; ".join(state.pop("flip_note"))
+            + "\n"
+            + msgs[0]
+        )
+    if not summary.get("fut_gap"):
+        prev.update(outs)
+        state["outcomes"] = prev
     state["sent"] = sorted(sent)
     st_path.write_text(json.dumps(state))
     (ST / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
@@ -1007,6 +1142,8 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
         "model_names": LABEL,
         "trained": meta.get("trained"),
         "price_basis": PRICE_BASIS,
+        "fut_days": json.loads(days_path().read_text()) if days_path().exists() else {},
+        "reprice_flips": summary.get("reprice_flips", []),
         "rules": rules,
         "recent": recent,
         "chart": chart,

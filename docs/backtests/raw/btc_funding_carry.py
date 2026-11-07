@@ -221,7 +221,8 @@ def main() -> None:
         c1 = all((x["years"][y].get("ret", -1) >= 0) for y in range(2021, 2027))
         c2 = (x["2024~"].get("cagr", -1) >= 5)
         c3 = (x["all"].get("mdd", -100) > -5)
-        verdict[v] = {"1_every_year_ge0": c1, "2_cagr24_ge5": c2, "3_mdd_gt_-5": c3, "pass": c1 and c2 and c3}
+        verdict[v] = {"1_every_year_ge0": bool(c1), "2_cagr24_ge5": bool(c2), "3_mdd_gt_-5": bool(c3),
+                      "pass": bool(c1 and c2 and c3)}
     rep["verdict"] = verdict
     (out / "result.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1, default=str))
     np.savez(out / "series.npz", ft=ft, fr=fr,

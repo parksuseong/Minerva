@@ -45,7 +45,7 @@ def day_trades(d: dict, i0: int, i1: int, ph: float, pl: float, fund) -> list:
         if g is None:
             g = (o[i1] / px - 1) * side
         g = with_funding(g, d, j, x, side, fund)
-        out.append((j, side, float(g), int(x), float(t[j]), stopped, STOP))
+        out.append((int(j), side, float(g), int(x), float(t[j]), stopped, STOP))
         if not stopped:
             break
         j = x + 1
@@ -85,7 +85,7 @@ def main() -> None:
     ctl_tr = [z for s, tr in days if not s for z in tr]
     g = sorted(z[2] for z in sig_tr)
     rep: dict = {
-        "day_shift": sh, "signal_days": sum(s for s, _ in days), "days": len(days),
+        "day_shift": sh, "signal_days": int(sum(s for s, _ in days)), "days": len(days),
         "signal": {"all": summ(sig_tr), "old": summ([z for z in sig_tr if z[4] < ystart(2024)]),
                    "new": summ([z for z in sig_tr if z[4] >= ystart(2024)]),
                    "long": summ([z for z in sig_tr if z[1] > 0]), "short": summ([z for z in sig_tr if z[1] < 0]),

@@ -66,6 +66,7 @@ NAMES = {
     "BS": "B평균(씨드5벌·5개 동의·상위5%)",
     "AS4": "A평균+4시간 추세(EMA50)",
     "K2": "K2(R1 일봉 방향 + AS4 진입 + R1식 청산)",
+    "R1": "R1(일봉 방향 보유, 1% 손절)",
 }
 # AS·BS는 같은 규칙을 씨드 5벌(Y, Y+1000·k) 평균 확률로 계산한다(2026-11-05 사용자 승인,
 # 문서 2026-11-04-btc-ml-seeds-hypotheses.md). 확률 칸 접두어: 씨드 Y는 p_, 평균은 pa_.
@@ -86,6 +87,8 @@ NOTE = {
     "최근 1년 백테스트는 필터 없음보다 나빴음(+30% vs +165%). 100회 넘게 쌓였을 때 A평균보다 못하거나 숏 거래당 손익이 0 이하면 폐기",
     "K2": "K2: R1 일봉 방향 + AS4 신호로 진입 + R1식 청산(방향 전환·1% 손절). 128번 탈락, "
     "레드팀: 새 자료로 추적할 후보",
+    "R1": "R1: 일봉 CCI20·RSI14 방향 보유, 1% 손절. 107번 통과(조건부), "
+    "2024~ 1배 연 +6~10%, 낙폭 −41~46%",
 }
 # K2(2026-11-07 사용자 "응", 문서 2026-11-07-btc-r1-as4-entry-hypotheses.md):
 # 방향은 마감된 일봉(UTC 0시) CCI20>0·RSI14>50이면 +1, 둘 다 아래면 −1(R1).
@@ -95,6 +98,8 @@ NOTE = {
 # 계산은 128번 코드(btc_r1_as4_entry의 lim_fill·r1_manage)를 그대로 쓴다.
 FUT_HIST = HOME / "data/btc/futures/klines_5m.csv"
 K2_STOP = 0.01
+# R1(107번) 기록 시작: 2026-11-06 00:00 UTC 일봉 마감에 숏 방향이 나온 봉부터
+R1_START = 1793923200000.0
 
 
 def trend4h(d5: dict, t15: np.ndarray) -> np.ndarray:
@@ -986,6 +991,52 @@ def k2_paper(bars: dict, b5: dict, reg: np.ndarray, sig: np.ndarray, delay: bool
     return out, state
 
 
+def r1_paper(
+    bars: dict, b5: dict, reg: np.ndarray, newday: np.ndarray, i0: int, delay: bool
+) -> tuple:
+    """107번 R1(= 128번 run_r1)과 같은 규칙. 시장가 진입, 1% 손절, 방향이 바뀌면 다음 시가.
+
+    손절 뒤에는 다음 일봉 마감까지 기다린다. 끝나지 않은 포지션도 돌려준다.
+    """
+    import btc_r1_as4_entry as K
+
+    A = {k: bars[k] for k in "tohlc"}
+    G = K.Grid(A, {k: b5[k] for k in "tohl"})
+    model = K.Model(delay, THRU)
+    t, c = A["t"], A["c"]
+    n = G.n
+    out, state, i, can = [], None, i0, True
+    while i < n - 2:
+        if newday[i]:
+            can = True
+        d = int(reg[i])
+        if d and can:
+            e = i + 1
+            px = G.market_px(e, model)
+            x = K.r1_manage(G, e, d, px, reg, model, model.delay, model.r1_fee, 0.0)
+            if x is None:
+                state = {
+                    "kind": "pos", "side": d, "px": px, "t_sig": t[i], "t_fill": t[e],
+                    "tp": None, "sl": px * (1 - d * K2_STOP), "last": c[-1],
+                }
+                break
+            b, xp, xf, stopped = x
+            net = d * (xp / px - 1) - model.r1_fee - xf
+            out.append(
+                {
+                    "t_sig": t[i], "side": d, "lim": px, "filled": True, "t_fill": t[e],
+                    "t_exit": t[b] if stopped else t[min(b + 1, n - 1)], "net1": float(net),
+                    "win": int(net > 0), "stopped": bool(stopped),
+                }
+            )
+            if stopped:
+                can = False
+            i = b
+            continue
+        i += 1
+    return out, state
+
+
 def kst(ms) -> str:
     return time.strftime("%m/%d %H:%M", time.gmtime(ms / 1000 + 9 * 3600))
 
@@ -1236,6 +1287,67 @@ def step(notify: bool = True) -> dict:
                         f"체결 {kst(open_['t_fill'])} "
                         f"{open_['px']:,.1f}, 손절 {open_['sl']:,.1f}, 일봉 방향이 바뀌면 청산"
                     )
+    # ---- R1: 일봉 방향 보유 (2026-11-07 추가) ----
+    # 11/06 00:00 UTC 숏부터 기록하고, 추가한 순간의 포지션은 알리지 않는다
+    first_r1 = "start_r1" not in state
+    if first_r1:
+        state["start_r1"] = R1_START - BAR15  # 이 봉 마감(= 일봉 마감)에 숏 방향이 나왔다
+    if len(bars["t"]):
+        import btc_fut_daily_regime as R1M
+
+        reg1, nd1 = R1M.regime(fut_daily_d5(), {"t": bars["t"]}, 0)
+        i0 = int(np.searchsorted(bars["t"], state["start_r1"]))
+        done, open_ = r1_paper(bars, b5, reg1, nd1, i0, delay=False)
+        funding_cut(done)
+        if open_:
+            open_["last"] = float(bars["c"][-1])
+        trades["R1"] = done
+        net = np.array([x["net1"] for x in done]) if done else np.zeros(0)
+        # 지연 반영: 시장가가 다음 15분봉 시가가 아니라 그 5분 뒤 5분봉 시가에 체결
+        done_d, open_d = r1_paper(bars, b5, reg1, nd1, i0, delay=True)
+        funding_cut(done_d)
+        nd = np.array([x["net1"] for x in done_d]) if done_d else np.zeros(0)
+        summary["R1"] = {
+            "signals": len(done) + (1 if open_ else 0),
+            "fills": len(done),
+            "wins": int(sum(x["win"] for x in done)),
+            "x1": round(float((np.prod(1 + net) - 1) * 100), 2),
+            "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
+            "open": open_,
+            "direction": int(reg1[-1]),
+            "delay": {
+                "fills": len(done_d),
+                "wins": int(sum(x["win"] for x in done_d)),
+                "x1": round(float((np.prod(1 + nd) - 1) * 100), 2),
+                "x3": round(float((np.prod(1 + np.maximum(3 * nd, -1)) - 1) * 100), 2),
+                "open_px": open_d["px"] if open_d else None,
+            },
+        }
+        keys = [f"R1:{int(x['t_sig'])}:x" for x in done]
+        if open_:
+            keys.append(f"R1:{int(open_['t_sig'])}:pos")
+        if first_r1:  # 추가한 순간의 포지션은 알리지 않는다
+            sent.update(keys)
+        for x in done:
+            key = f"R1:{int(x['t_sig'])}:x"
+            if key in sent:
+                continue
+            sent.add(key)
+            why = "1% 손절" if x["stopped"] else "일봉 방향 바뀜"
+            msgs.append(
+                f"[BTC 기록] {NAMES['R1']} {side_kr(x['side'])} 끝: "
+                f"{kst(x['t_fill'])} {x['lim']:,.1f} 진입 → {kst(x['t_exit'])} {why}, "
+                f"수수료·펀딩 뺀 1배 {x['net1'] * 100:+.2f}% / 3배 {x['net1'] * 300:+.2f}%"
+            )
+        if open_:
+            key = f"R1:{int(open_['t_sig'])}:pos"
+            if key not in sent:
+                sent.add(key)
+                msgs.append(
+                    f"[BTC 기록] {NAMES['R1']} {side_kr(open_['side'])} "
+                    f"진입 {kst(open_['t_fill'])} {open_['px']:,.1f} (시장가 가정), "
+                    f"손절 {open_['sl']:,.1f}, 일봉 방향이 바뀌면 청산"
+                )
     if migrate:
         msgs = []
         state["price"] = "futures_okx"
@@ -1282,7 +1394,7 @@ def step(notify: bool = True) -> dict:
             meta,
             trades,
             state["start"],
-            {r: summary[r]["open"] for r in list(RULES) + ["K2"] if r in summary},
+            {r: summary[r]["open"] for r in list(RULES) + ["K2", "R1"] if r in summary},
         ),
     )
     if notify:
@@ -1304,6 +1416,9 @@ BACKTEST = {  # 2026-11-04 문서의 2024-01~ 결과 (3배, 수수료 포함, �
     "AS4": {"per_year": 167, "win": 58.0, "x3": 645.2, "mdd": -44.5, "y2023": 142.3},
     # 2026-11-07 128번 K2(탈락, 이미 본 자료)
     "K2": K2_BACKTEST,
+    # 107번 R1, 2024~ 거래 마감 기준(선물+펀딩): 약 2.85년 195회, 승률 12.3%,
+    # 3배 −11.9%, 낙폭 −73.7%
+    "R1": {"per_year": 68, "win": 12.3, "x3": -11.9, "mdd": -73.7, "y2023": None},
 }
 
 
@@ -1495,6 +1610,34 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "seed_avg": True,
                 "backtest": BACKTEST["K2"],
                 "trades": [trade_row(x, "pa_") for x in reversed(trades.get("K2", []))][:50],
+            }
+        )
+    if "R1" in summary:
+        s = summary["R1"]
+        rules.append(
+            {
+                "id": "R1",
+                "name": NAMES["R1"],
+                "top": "-",
+                "agree": "-",
+                "long_above": None,
+                "short_below": None,
+                "signals": s["signals"],
+                "fills": s["fills"],
+                "wins": s["wins"],
+                "x1": s["x1"],
+                "x3": s["x3"],
+                "delay": s.get("delay"),
+                "x3_delay": (s.get("delay") or {}).get("x3"),
+                "direction": s.get("direction"),
+                "open": open_row(s["open"], "none_"),  # R1은 모델 점수를 쓰지 않는다
+                "note": f"{PRICE_BASIS}. {NOTE['R1']}. 모델 점수는 쓰지 않음(진입 조건 칸 무시). "
+                + "지금 일봉 방향: "
+                + {1: "위(롱)", -1: "아래(숏)", 0: "없음(쉼)"}[s.get("direction", 0)]
+                + f". 기록 시작 {kst(state['start_r1'] + BAR15)}",
+                "seed_avg": False,
+                "backtest": BACKTEST["R1"],
+                "trades": [trade_row(x, "none_") for x in reversed(trades.get("R1", []))][:50],
             }
         )
     view = {

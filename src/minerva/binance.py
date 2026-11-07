@@ -170,9 +170,11 @@ def snapshot(cfg: dict, now: datetime, capital: dict | None = None) -> dict:
         "updated_at": now.strftime("%Y-%m-%d %H:%M"),
         **parse_account(acct, risk),
         "orders": parse_orders(_get(cfg, "/fapi/v1/openOrders")),
-        "trades": parse_trades(_get(cfg, "/fapi/v1/userTrades", symbol=SYMBOL, limit=100)),
     }
     since = _since_ms(capital)
+    trades = _get(cfg, "/fapi/v1/userTrades", symbol=SYMBOL, limit=100)
+    # 시드 전 거래는 시드 금액에 이미 들어가 있으니 보여주지 않는다 (사용자 요청 2026-11-07)
+    data["trades"] = parse_trades([t for t in trades if since is None or t["time"] >= since])
     if since is not None:
         # 최근 7일 이전 시작이면 바이낸스가 기간을 나눠 달라고 하므로 3개월 이내만 담는다
         start = max(since, int(now.timestamp() * 1000) - 89 * 86400_000)

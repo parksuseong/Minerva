@@ -176,3 +176,27 @@ def test_binance_api_returns_and_token(tmp_path, monkeypatch):
     monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(token))
     assert client.get("/api/account/binance").status_code == 403
     assert client.get("/api/account/binance", headers={"X-Minerva-Token": "t0k"}).status_code == 200
+
+
+def test_snapshot_hides_trades_before_seed(monkeypatch):
+    seed = binance._since_ms({"since": "2026-11-07", "since_at": "2026-11-07 23:13"})
+    trade = {
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "qty": "0.1",
+        "price": "76000",
+        "realizedPnl": "0",
+        "commission": "1",
+    }
+    rows = [{**trade, "time": seed - 60_000}, {**trade, "time": seed + 60_000}]
+    pages = {
+        "/fapi/v2/account": ACCOUNT,
+        "/fapi/v2/positionRisk": RISK,
+        "/fapi/v1/openOrders": [],
+        "/fapi/v1/userTrades": rows,
+        "/fapi/v1/income": [],
+    }
+    monkeypatch.setattr(binance, "_get", lambda cfg, path, **p: pages[path])
+    capital = {"since": "2026-11-07", "since_at": "2026-11-07 23:13"}
+    data = binance.snapshot(CFG, NOW, capital)
+    assert [t["time"] for t in data["trades"]] == ["2026-11-07 23:14:00"]

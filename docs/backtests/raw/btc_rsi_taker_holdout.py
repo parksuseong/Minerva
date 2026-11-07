@@ -10,10 +10,9 @@ import argparse
 import json
 from pathlib import Path
 
+import btc_indicator_library as L
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view as sw
-
-import btc_indicator_library as L
 
 M5, B15, DAY = L.M5, L.B15, L.DAY
 FIX = {"rsi_hi": 9.486742973327637, "rsi_lo": -9.663559913635254,

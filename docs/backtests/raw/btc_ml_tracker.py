@@ -8,6 +8,8 @@
 모델은 백테스트의 2026년 모델과 같은 자료·씨드로 한 번 학습해 저장한다(train).
 step은 15분마다: 현물 5분봉을 받아 붙이고, 새로 마감된 15분봉에 점수를 매기고,
 추적 시작 뒤의 신호로 모의 체결을 다시 계산해 새 사건만 텔레그램으로 알린다.
+모델 입력은 현물(학습과 같다). 지정가·체결·익절·손절은 선물(OKX BTC-USDT-SWAP) 15분봉으로
+보고 펀딩(OKX)을 뺀다(사용자 2026-11-07: 선물로 매매한다). 옛 현물 기준 기록은 *.spot.*에 둔다.
 
 실행: PYTHONPATH=<pyml>:src:docs/backtests/raw python3 docs/backtests/raw/btc_ml_tracker.py train|step|report
 """
@@ -36,6 +38,9 @@ ST = Path(os.environ.get("MINERVA_MLTRACK_DIR", HOME / "research/btc-ml-tracker"
 PRED = HOME / "research/btc-2026-11-04/ml15/pred.npz"
 SEEDS_OUT = HOME / "research/btc-2026-11-04/seeds"
 URL = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=1000&startTime={s}"
+OKX = "https://www.okx.com/api/v5"
+OKX_INST = "BTC-USDT-SWAP"
+PRICE_BASIS = "가격 기준: 선물(OKX BTC-USDT-SWAP) 체결·청산 + 펀딩. 신호는 현물 모델"
 BAR15 = 900_000
 YEAR = 2026
 RULES = {"A": (0.90, 4), "B": (0.95, 5), "AS": (0.90, 4), "BS": (0.95, 5), "AS4": (0.90, 4)}
@@ -131,6 +136,121 @@ def fetch_new() -> int:
         for x in rows:
             w.writerow(x[:7])
     return len(rows)
+
+
+def _get_json(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": "minerva-tracker"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+def fut_path() -> Path:
+    return ST / "live_fut5m.csv"
+
+
+def fund_path() -> Path:
+    return ST / "fut_funding.csv"
+
+
+def _read_rows(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        r = csv.reader(f)
+        next(r, None)
+        return {int(x[0]): x for x in r if x}
+
+
+def fetch_fut(since: int) -> tuple:
+    """OKX 선물 5분봉(마감된 것만)과 펀딩을 받아 붙인다.
+
+    실패하면 (0, 오류)를 돌려준다. 다음 실행에 다시 받는다.
+    """
+    try:
+        have = _read_rows(fut_path())
+        last = max(have) if have else since - 300_000
+        now = int(time.time() * 1000)
+        got, cur = {}, None
+        while True:  # history-candles는 최신부터 거꾸로 100개씩 준다
+            url = f"{OKX}/market/history-candles?instId={OKX_INST}&bar=5m&limit=100"
+            data = _get_json(url + (f"&after={cur}" if cur else ""))["data"]
+            if not data:
+                break
+            for x in data:
+                t0 = int(x[0])
+                if t0 > last and x[8] == "1" and t0 + 300_000 <= now:
+                    got[t0] = [t0, x[1], x[2], x[3], x[4], x[6]]
+            cur = data[-1][0]
+            if int(cur) <= last:
+                break
+            time.sleep(0.15)
+        new = not fut_path().exists()
+        with fut_path().open("a", newline="") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(["open_time", "open", "high", "low", "close", "volume_btc"])
+            for t0 in sorted(got):
+                w.writerow(got[t0])
+        fr = _read_rows(fund_path())
+        lf = max(fr) if fr else 0
+        rows = _get_json(f"{OKX}/public/funding-rate-history?instId={OKX_INST}&limit=100")["data"]
+        add = sorted(
+            (int(x["fundingTime"]), x["realizedRate"])
+            for x in rows
+            if lf < int(x["fundingTime"]) <= now
+        )
+        new = not fund_path().exists()
+        with fund_path().open("a", newline="") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(["funding_time", "rate"])
+            w.writerows(add)
+        return len(got), None
+    except Exception as e:  # noqa: BLE001 - 선물 자료가 없으면 이번 봉은 건너뛰고 다음에 다시 본다
+        return 0, f"{type(e).__name__}: {e}"
+
+
+def fut_bars(t15: np.ndarray) -> tuple:
+    """신호 시각 t15(현물 15분봉 시작)에 맞춘 선물 15분봉.
+
+    첫 빈 봉에서 자른다(그 뒤는 다음 실행에).
+    """
+    rows = _read_rows(fut_path())
+    tt = np.array(sorted(rows), dtype=float)
+    if not len(tt):
+        return {k: np.zeros(0) for k in "tohlc"}, len(t15)
+    v = np.array([[float(rows[int(x)][j]) for j in (1, 2, 3, 4)] for x in tt])
+    key = (tt // BAR15).astype(np.int64)
+    out = {k: [] for k in "tohlc"}
+    miss = 0
+    for x in t15:
+        k15 = int(x // BAR15)
+        a, b = np.searchsorted(key, k15), np.searchsorted(key, k15, side="right")
+        if b - a != 3:
+            miss = len(t15) - len(out["t"])
+            break
+        seg = v[a:b]
+        out["t"].append(x)
+        out["o"].append(seg[0, 0])
+        out["h"].append(seg[:, 1].max())
+        out["l"].append(seg[:, 2].min())
+        out["c"].append(seg[-1, 3])
+    return {k: np.array(val, dtype=float) for k, val in out.items()}, miss
+
+
+def funding_cut(done: list) -> None:
+    """summ_net과 같이 (체결, 청산] 사이 펀딩을 뺀다. 롱은 양수 펀딩을 낸다."""
+    fr = _read_rows(fund_path())
+    if not fr:
+        return
+    ft = np.array(sorted(fr), dtype=float)
+    cf = np.r_[0.0, np.cumsum([float(fr[int(x)][1]) for x in ft])]
+    for x in done:
+        if x["filled"]:
+            a = np.searchsorted(ft, x["t_fill"], side="right")
+            b = np.searchsorted(ft, x["t_exit"], side="right")
+            x["fund"] = float(cf[b] - cf[a])
+            x["net1"] -= x["side"] * x["fund"]
 
 
 # ---- 모델 ----
@@ -598,17 +718,22 @@ def step(notify: bool = True) -> dict:
                 w.writerow(row)
         sigs = read_signals()
     m = t >= state["start"]
-    bars = {
-        "t": t[m],
-        "o": B["d"]["o"][m],
-        "h": B["d"]["h"][m],
-        "l": B["d"]["l"][m],
-        "c": B["d"]["c"][m],
+    got_f, err_f = fetch_fut(int(state["start"]))
+    bars, miss = fut_bars(t[m])
+    summary = {
+        "bars": len(bars["t"]),
+        "fetched": got,
+        "fetched_fut": got_f,
+        "last": kst(t[-1] + BAR15) if len(t) else "",
+        "price": "futures_okx",
     }
-    summary = {"bars": int(m.sum()), "fetched": got, "last": kst(t[-1] + BAR15) if len(t) else ""}
+    if err_f or miss:
+        summary["fut_gap"] = {"error": err_f, "missing_bars": int(miss)}
     msgs = []
     trades = {}
     sent = set(state["sent"])
+    # 선물 기준으로 처음 다시 계산할 때는 알림을 보내지 않는다
+    migrate = state.get("price") != "futures_okx"
     tr4 = trend4h(d5, bars["t"])
     for r in RULES:
         s0 = state["start"] if PFX[r] == "p_" else state.get("start_s", float("inf"))
@@ -619,6 +744,7 @@ def step(notify: bool = True) -> dict:
         if r == "AS4":
             sig = np.where(sig == tr4, sig, 0)
         done, open_ = paper(bars, sig, r)
+        funding_cut(done)
         trades[r] = done
         fills = [x for x in done if x["filled"]]
         net = np.array([x["net1"] for x in fills]) if fills else np.zeros(0)
@@ -663,6 +789,15 @@ def step(notify: bool = True) -> dict:
                         f"{open_['px']:,.1f}, 목표 {open_['tp']:,.1f} / 손절 {open_['sl']:,.1f}"
                         + probs_text(model_probs(sigs, open_["t_sig"], PFX[r]), open_["side"])
                     )
+    if migrate:
+        msgs = []
+        state["price"] = "futures_okx"
+    if summary.get("fut_gap"):
+        # 선물 봉이 비면 이번 계산은 일부만이다. 알리지 않고 보낸 표시도 남기지 않는다.
+        msgs = []
+        if not migrate:
+            sent = set(state["sent"])
+        print(json.dumps({"fut_gap": summary["fut_gap"]}), flush=True)
     state["sent"] = sorted(sent)
     st_path.write_text(json.dumps(state))
     (ST / "summary.json").write_text(json.dumps(summary, indent=1, default=float))
@@ -856,7 +991,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "x1": s["x1"],
                 "x3": s["x3"],
                 "open": open_row(s["open"], PFX[r]),
-                "note": NOTE[r],
+                "note": f"{PRICE_BASIS}. {NOTE[r]}",
                 "seed_avg": PFX[r] == "pa_",
                 "backtest": BACKTEST[r],
                 "trades": [trade_row(x, PFX[r]) for x in reversed(trades[r])][:50],
@@ -871,6 +1006,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
         "models": list(E.MODELS),
         "model_names": LABEL,
         "trained": meta.get("trained"),
+        "price_basis": PRICE_BASIS,
         "rules": rules,
         "recent": recent,
         "chart": chart,

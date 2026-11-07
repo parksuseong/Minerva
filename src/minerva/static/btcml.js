@@ -75,9 +75,9 @@
         <td class="mini">${votes(x.models, x.side)}</td></tr>`).join("")}</tbody></table>`
       : "아직 끝난 매매가 없어요";
     const sig = (v) => (v > 0 ? sideChip("롱") : v < 0 ? sideChip("숏") : "-");
-    $("btcml-recent").innerHTML = `<table class="acct"><thead><tr><th>봉 마감</th><th>종가</th><th>점수</th><th>오른다/내린다(5개 중)</th><th>A</th><th>B</th><th>모델별 오를 확률</th></tr></thead>
+    $("btcml-recent").innerHTML = `<table class="acct"><thead><tr><th>봉 마감</th><th>종가</th><th>점수</th><th>오른다/내린다(5개 중)</th><th>B</th><th>모델별 오를 확률</th></tr></thead>
       <tbody>${d.recent.slice(0, 12).map((r) => `<tr><td>${esc(r.at)}</td><td>${num(r.close)}</td><td>${num(r.score, 3)}</td>
-        <td>${r.up} / ${r.dn}</td><td>${sig(r.A)}</td><td>${sig(r.B)}</td>
+        <td>${r.up} / ${r.dn}</td><td>${sig(r.B)}</td>
         <td class="mini">${votes(r.models, r.dn > r.up ? "숏" : "롱")}</td></tr>`).join("")}</tbody></table>`;
   };
 
@@ -150,14 +150,14 @@
     series.stoch.setData(at(5)); series.cci.setData(at(6)); series.rsi.setData(at(7)); series.score.setData(at(8));
     series.thr.forEach((p) => series.score.removePriceLine(p));
     series.thr = [
-      [c.thr.A[0], GREEN, "A 롱"], [c.thr.A[1], RED, "A 숏"], [c.thr.B[0], GREEN, "B 롱"], [c.thr.B[1], RED, "B 숏"],
+      [c.thr.B[0], GREEN, "B 롱"], [c.thr.B[1], RED, "B 숏"],
     ].map(([price, color, title]) => series.score.createPriceLine({ price, color, lineWidth: 1, lineStyle: 2,
       axisLabelVisible: true, title }));
     const marks = c.marks.map(marker).sort((a, b) => a.time - b.time);
     marks.push({ time: c.start, position: "aboveBar", color: css("--muted") || "#888", shape: "square", text: "기록 시작" });
     series.markers.setMarkers(marks.sort((a, b) => a.time - b.time));
     if (first) chart.timeScale().fitContent();
-    $("btcml-legend").innerHTML = "위: 15분봉 캔들(KST) · 아래 칸: 모델 점수(점선 = 규칙 A·B 문턱) · Stoch · CCI · RSI. " +
+    $("btcml-legend").innerHTML = "위: 15분봉 캔들(KST) · 아래 칸: 모델 점수(점선 = 규칙 B 문턱) · Stoch · CCI · RSI. " +
       "● 롱, ▲▼ 숏 · 초록 = 롱 진입/숏 청산, 빨강 = 롱 청산/숏 진입. 기록 시작 전 점수는 참고값이에요.";
   };
 

@@ -20,7 +20,6 @@ from btc_ml_futures_reprice import futures_on
 from btc_ml_seeds import rule_masks
 from btc_ml_tracker import trend4h
 from btc_scale_in_out import path_returns
-from btc_scr_learned import bars
 from btc_strategy_combo import RES, daily, stats, ts
 
 DAY = 86_400_000
@@ -311,8 +310,8 @@ def main() -> None:
     for var in ("K1", "K2", "K3"):
         v = rep[f"{var}|bc|mean"]
         c1 = all((v[f"{p} 1x"].get("cagr") or -1) > 0 for p in ("2023", "2024~"))
-        c2 = all((v[f"{p} 1x"].get("ratio") or -9) >= max(rep[f"R1|bc|mean"][f"{p} 1x"].get("ratio") or -9,
-                                                          rep[f"AS4|bc|mean"][f"{p} 1x"].get("ratio") or -9)
+        c2 = all((v[f"{p} 1x"].get("ratio") or -9) >= max(rep["R1|bc|mean"][f"{p} 1x"].get("ratio") or -9,
+                                                          rep["AS4|bc|mean"][f"{p} 1x"].get("ratio") or -9)
                  for p in ("2023", "2024~"))
         tr = v["2024~ trades"]
         c3 = (tr.get("long_pct") or 0) >= 0 and (tr.get("short_pct") or 0) >= 0

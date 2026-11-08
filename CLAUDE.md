@@ -97,7 +97,7 @@ Minerva/
   - 계산기 `/api/btc/size`: 손절 시 왕복 수수료(0.05%/편도) 포함 위험 0.5/1/2%, 0.001 BTC 내림, 5배(가용 증거금 기준) 넘으면 줄인다. 수수료가 손절 폭의 20%를 넘으면 경고.
   - 아침 브리핑: `minerva-btc-brief.timer` 매일 08:30 KST → `python -m minerva.strategy.btc_plan brief` (시험 `--dry`).
 - 종목 분석 > ₿ 비트코인의 "ML 규칙 기록"(2026-11-04 사용자 요청): `minerva-btc-mltrack.timer`(15분, 주문 없음, 코드는 브랜치 `feat/btc-scr-ma`의 `docs/backtests/raw/btc_ml_tracker.py`)가 `~/.minerva/research/btc-ml-tracker/view.json`을 쓰고 웹은 `/api/btc/ml`로 읽기만 한다. 차트는 TradingView Lightweight Charts 5.2.1(Apache-2.0, `static/vendor/`, npm 무결성 확인).
-- 🧪 SCR 실험실(`#scrlab`, 사용자 요청 2026-11-08): SCR 3단 숫자(길이·기준선·확인 창 W·필요 지표 수·넘어옴/구간 모드)를 바꿔 BTCUSDT 롱·숏 열림 신호를 바로 다시 그린다. 계산은 화면 `static/scrlab_core.js`, 파이썬 쌍둥이 `strategy/scr_lab.py`(테스트가 bun으로 둘을 맞춰 봄). 봉은 `/api/btc/klines`(바이낸스 선물 공개 시세 GET, 5m~1d, 최대 30일 + 앞쪽 300봉, 45초 캐시, 진행 중 봉 제외). 참고용이고 주문과 연결되지 않는다.
+- 🧪 SCR 실험실(`#scrlab`, 사용자 요청 2026-11-08): SCR 3단 숫자(길이·기준선·확인 창 W·필요 지표 수·넘어옴/구간 모드)를 바꿔 BTCUSDT 롱·숏 열림 신호를 바로 다시 그린다. 계산은 화면 `static/scrlab_core.js`, 파이썬 쌍둥이 `strategy/scr_lab.py`(테스트가 bun으로 둘을 맞춰 봄). 기본값 Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70)·W 3·3개 중 3개·넘어옴·15분·7일(사용자 지정 2026-11-08, 저장 키 `minerva-scrlab-v2`). 기간 3일~1년. 봉은 `/api/btc/klines`(바이낸스 선물 공개 시세 GET, 5m~1d, 최대 365일·5분봉 90일 + 앞쪽 300봉, 진행 중 봉 제외, gzip). 서버는 1500봉 덩어리로 캐시한다(끝난 덩어리 6시간, 마지막 덩어리 45초, 최대 80덩어리). 요약 아래 "손절 3% · 3배 단순 계산"은 롱↔숏 갈아타기 거친 추정(`switchSim`). 참고용이고 주문과 연결되지 않는다.
 
 ## 오피스 패널 (🏢 오피스 탭)
 - Claude와 서브에이전트가 일하는 모습을 보여준다. 코드: `static/office.{js,css}`, API `src/minerva/office.py`. 훅 `scripts/office_hook.py`가 `~/.minerva/office/events.jsonl`에 이벤트를 쌓는다.

@@ -49,6 +49,8 @@ class Stops:
 
     def dist(self, kind, s, d, pe, w):
         """진입 때 손절 거리(비율). s = 신호 봉, d = 방향, pe = 진입가."""
+        if kind == "N":  # 손절 없음: 닿을 수 없는 거리
+            return np.full(np.shape(pe), 10.0)
         if kind[0] == "F":
             return np.full(np.shape(pe), float(kind[1:]) / 100)
         if kind[0] == "A":

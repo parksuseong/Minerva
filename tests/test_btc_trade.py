@@ -1654,3 +1654,57 @@ def test_protect_close_lookup_failure_still_clears_position(env, monkeypatch):
     assert ex.amt == 0 and state()["position"] is None
     assert jsonl("closed.jsonl")[-1]["why"] == "protect"
     assert not [m for m in env["sent"] if "닫지 못했어요" in m]
+
+
+def test_protect_close_retry_uses_new_id(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    st = state()
+    ctx = bt.Ctx(ex, FakeMarket(ex.price), env["send"], NOW, True)
+    ex.net_fail["POST /fapi/v1/order"] = 4  # 첫 시도는 통신 오류로 못 냄
+    monkeypatch.setattr(bt, "_sleep", lambda s: None)
+    bt.protect_close(ctx, st, "protect")
+    assert st["position"] is not None and st["position"]["x_n"] == 1
+    bt.protect_close(ctx, st, "protect")
+    assert st["position"] is None and ex.amt == 0
+    sent = [w[2]["newClientOrderId"] for w in ex.writes if w[2].get("reduceOnly") == "true"]
+    assert sent[-1] == f"mnv-{pos['bar'] // 60000}-x2"
+
+
+def test_stale_engine_stop_cancelled_before_new_entry(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    old = "mnv-1-s"
+    ex.algos[old] = {"clientAlgoId": old, "algoStatus": "NEW", "triggerPrice": "90000"}
+    with_signal(monkeypatch, "long")
+    real = {"n": 0}
+
+    def cancel_once(c, keep=None):
+        real["n"] += 1
+        ex.algos[old]["algoStatus"] = "CANCELED"
+        return [old]
+
+    monkeypatch.setattr(bt, "cancel_engine_stops", cancel_once)
+    run(env, ex)
+    assert ex.algos[old]["algoStatus"] == "CANCELED" and state()["position"]["side"] == "long"
+
+
+def test_entry_skipped_if_stale_stop_cannot_be_cancelled(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    calls = {"n": 0}
+
+    def flaky(c, keep=None):
+        calls["n"] += 1
+        if calls["n"] >= 2:  # 대사 때는 되고 진입 직전에는 실패
+            raise bt.NetworkError("down")
+        return []
+
+    monkeypatch.setattr(bt, "cancel_engine_stops", flaky)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert ex.amt == 0 and state().get("position") is None
+    assert any("남은 엔진 손절을 취소하지 못함" in m for m in env["sent"])

@@ -539,10 +539,9 @@ def _close_result(client, pos: dict, close_side: str) -> tuple[float | None, flo
     exits = [t for t in trades if t["side"] == close_side and int(t["time"]) >= start]
     qty = sum(float(t["qty"]) for t in exits)
     px = sum(float(t["qty"]) * float(t["price"]) for t in exits) / qty if qty else None
-    if exits:
-        pos["closed_ms"] = max(int(t["time"]) for t in exits)
     if qty < pos["qty"] - 1e-9:
         return px, None
+    pos["closed_ms"] = max(int(t["time"]) for t in exits)
     pnl = sum(float(t["realizedPnl"]) for t in trades) - sum(
         float(t["commission"]) for t in trades if t.get("commissionAsset", "USDT") == "USDT"
     )
@@ -877,8 +876,12 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
     """보호 못 하는 엔진 포지션을 시장가로 닫는다. 실패하면 크게 알린다."""
     pos = state["position"]
     close_side = "SELL" if pos["side"] == "long" else "BUY"
-    # ID는 포지션마다(같은 실행에서 두 번째 비상 청산이 앞 주문을 찾아 아무것도 안 하지 않게)
-    cid = f"{PREFIX}{pos['bar'] // 60000}-x"
+    # ID는 포지션·시도마다(실행 분 단위면 같은 실행의 두 번째 비상 청산이 앞 주문을 찾고 끝난다)
+    # 시도마다 새 ID(앞 시도가 만료·부분 체결이면 같은 ID는 옛 주문을 찾아 아무것도 안 낸다)
+    n = pos.get("x_n", 0) + 1
+    pos["x_n"] = n
+    _save(DIR / "state.json", state)
+    cid = f"{PREFIX}{pos['bar'] // 60000}-x{n}"
     try:
         amt = position_amt(ctx.client)
         if amt:
@@ -1017,6 +1020,8 @@ def _adopt(state: dict, pending: dict, order: dict) -> dict:
         "opened_at": pending.get("at"),
         "mode": "live",
     }
+    if state.get("closed_through_ms"):
+        pos["after_ms"] = state.pop("closed_through_ms")
     state["position"] = pos
     return pos
 
@@ -1087,7 +1092,8 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
     # 청산은 확인됐다: 손익 조회가 실패해도 포지션은 닫힌 것으로 적는다
     state["position"] = None
     state.pop("pending", None)
-    state["closed_through_ms"] = int(time.time() * 1000)
+    # 손익 조회가 실패하면 쓰는 값: 거래소와 시계가 조금 어긋나도 새 진입 체결을 빼지 않게 2초 앞
+    state["closed_through_ms"] = int(time.time() * 1000) - 2000
     _save(DIR / "state.json", state)
     try:
         px, pnl = _close_result(c, pos, close_side)
@@ -1541,6 +1547,13 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     if ctx.live and not acct.get("canTrade", False):
         ctx.say("❌ 계좌가 거래 불가(canTrade=false)라 진입하지 않아요")
         return
+    if ctx.live and not state.get("position"):
+        # 앞 포지션의 손절·익절(closePosition)이 남아 있으면 새 포지션을 닫아 버린다
+        try:
+            cancel_engine_stops(ctx.client)
+        except (Rejected, NetworkError) as e:
+            ctx.say(f"⏭ {SIDE_KO[side]} 진입 건너뜀: 남은 엔진 손절을 취소하지 못함({e})")
+            return
     avail = float(acct["availableBalance"])
     qty, why = size_qty(avail, price, margin_frac(), flt)
     if not qty:
@@ -1678,8 +1691,6 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     o = {"executedQty": str(real), "avgPrice": str(entry), "updateTime": int(time.time() * 1000)}
     pos = _adopt(state, state["pending"], o)
     pos["entry_ms"] = int(ctx.now.timestamp() * 1000) - 1000
-    if state.get("closed_through_ms"):
-        pos["after_ms"] = state.pop("closed_through_ms")
     pos["opened_at"] = _now_iso(ctx.now)
     pos["fill"] = fill["path"] if fill else "recovered"
     state.pop("pending", None)

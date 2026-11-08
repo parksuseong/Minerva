@@ -1,0 +1,937 @@
+"""BTCUSDT 자동매매 엔진 테스트. 바이낸스는 전부 가짜(네트워크 없음)."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from decimal import Decimal
+
+import pytest
+
+from minerva import btc_trade as bt
+from minerva.kis import KST
+
+NOW = datetime(2026, 11, 8, 22, 30, 20, tzinfo=KST)
+NOW_MS = int(NOW.timestamp() * 1000)
+BAR = (NOW_MS // bt.BAR_MS - 1) * bt.BAR_MS  # 마지막 마감 봉 시작
+FLT = {
+    "tick": "0.10",
+    "step": "0.001",
+    "min_qty": 0.001,
+    "max_qty": 1000.0,
+    "min_notional": 100.0,
+    "status": "TRADING",
+}
+
+
+class FakeExchange:
+    """주문·조건부 주문·포지션을 흉내 내는 바이낸스."""
+
+    def __init__(self, price: float = 100_000.0, available: float = 1000.0):
+        self.price = price
+        self.available = available
+        self.amt = 0.0
+        self.orders: dict[str, dict] = {}
+        self.algos: dict[str, dict] = {}
+        self.trades: list[dict] = []
+        self.calls: list[tuple[str, str, dict]] = []
+        self.leverage = 10
+        self.dual = False
+        self.reject_stop = False
+        self.lose_response: set[str] = set()  # 실행은 됐는데 응답만 잃는 경로
+        self.net_fail: dict[str, int] = {}  # 실행 전 통신 오류 횟수
+        self.foreign_open: list[dict] = []
+        self.t = NOW_MS
+
+    @property
+    def writes(self) -> list[tuple[str, str, dict]]:
+        return [c for c in self.calls if c[0] in ("POST", "DELETE")]
+
+    def request(self, method, path, params=None, signed=True):
+        params = dict(params or {})
+        self.calls.append((method, path, params))
+        key = f"{method} {path}"
+        if self.net_fail.get(key):
+            self.net_fail[key] -= 1
+            raise bt.NetworkError("timeout")
+        out = self._handle(method, path, params)
+        if key in self.lose_response:
+            self.lose_response.discard(key)
+            raise bt.NetworkError("response lost")
+        return out
+
+    def _handle(self, method, path, p):
+        if path == "/fapi/v2/positionRisk":
+            return [{"symbol": "BTCUSDT", "positionAmt": str(self.amt)}]
+        if path == "/fapi/v1/openAlgoOrders":
+            return [a for a in self.algos.values() if a["algoStatus"] == "NEW"] + [
+                o for o in self.foreign_open if "clientAlgoId" in o
+            ]
+        if path == "/fapi/v1/openOrders":
+            return [o for o in self.foreign_open if "clientOrderId" in o]
+        if path == "/fapi/v2/account":
+            eq = self.available
+            return {"availableBalance": str(eq), "totalMarginBalance": str(eq), "canTrade": True}
+        if path == "/fapi/v1/positionSide/dual":
+            return {"dualSidePosition": self.dual}
+        if path == "/fapi/v1/symbolConfig":
+            return [{"symbol": "BTCUSDT", "leverage": self.leverage, "marginType": "CROSSED"}]
+        if path == "/fapi/v1/leverage":
+            self.leverage = int(p["leverage"])
+            return {"leverage": self.leverage}
+        if path == "/fapi/v1/userTrades":
+            return [t for t in self.trades if t["time"] >= p["startTime"]]
+        if path == "/fapi/v1/exchangeInfo":
+            return {"symbols": []}
+        if path == "/fapi/v1/order" and method == "GET":
+            o = self.orders.get(p["origClientOrderId"])
+            if not o:
+                raise bt.Rejected(-2013, "Order does not exist.")
+            return o
+        if path == "/fapi/v1/algoOrder" and method == "GET":
+            a = self.algos.get(p["clientAlgoId"])
+            if not a:
+                raise bt.Rejected(-2013, "Order does not exist.")
+            return a
+        if path == "/fapi/v1/order" and method == "POST":
+            qty = float(p["quantity"])
+            sign = 1 if p["side"] == "BUY" else -1
+            if p.get("reduceOnly") == "true":
+                qty = min(qty, abs(self.amt))
+            self.amt = round(self.amt + sign * qty, 6)
+            self.t += 1000
+            o = {
+                "clientOrderId": p["newClientOrderId"],
+                "status": "FILLED",
+                "avgPrice": str(self.price),
+                "executedQty": str(qty),
+                "updateTime": self.t,
+            }
+            self.orders[p["newClientOrderId"]] = o
+            self.trades.append(
+                {
+                    "time": self.t,
+                    "side": p["side"],
+                    "qty": str(qty),
+                    "price": str(self.price),
+                    "realizedPnl": "0",
+                    "commission": "0.01",
+                    "commissionAsset": "USDT",
+                }
+            )
+            return o
+        if path == "/fapi/v1/algoOrder" and method == "POST":
+            if self.reject_stop:
+                raise bt.Rejected(-2021, "Order would immediately trigger.")
+            a = {
+                "clientAlgoId": p["clientAlgoId"],
+                "algoStatus": "NEW",
+                "triggerPrice": p["triggerPrice"],
+                "side": p["side"],
+                "type": p["type"],
+            }
+            self.algos[p["clientAlgoId"]] = a
+            return a
+        if path == "/fapi/v1/algoOrder" and method == "DELETE":
+            a = self.algos.get(p["clientAlgoId"])
+            if not a or a["algoStatus"] != "NEW":
+                raise bt.Rejected(-2011, "Unknown order sent.")
+            a["algoStatus"] = "CANCELED"
+            return a
+        raise AssertionError(f"unexpected {method} {path}")
+
+    def trigger_stop(self, cid: str, price: float) -> None:
+        """손절이 걸려 포지션이 닫힌 상황."""
+        self.algos[cid]["algoStatus"] = "FINISHED"
+        side = "SELL" if self.amt > 0 else "BUY"
+        self.trades.append(
+            {
+                "time": self.t + 5000,
+                "side": side,
+                "qty": str(abs(self.amt)),
+                "price": str(price),
+                "realizedPnl": "-30",
+                "commission": "0.05",
+                "commissionAsset": "USDT",
+            }
+        )
+        self.amt = 0.0
+
+
+class FakeMarket:
+    def __init__(self, price: float = 100_000.0):
+        self._price = price
+        self.rows = rows(300, 100_000.0)
+
+    def klines(self, interval):
+        return self.rows
+
+    def price(self):
+        return self._price
+
+    def funding(self):
+        return 0.0001
+
+
+def rows(n: int, px: float) -> list[list]:
+    out = []
+    for k in range(n):
+        t = BAR - (n - 1 - k) * bt.BAR_MS
+        out.append([t, px, px * 1.001, px * 0.999, px, 1.0, t + bt.BAR_MS - 1])
+    return out
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    monkeypatch.setattr(bt, "DIR", tmp_path / "btc_trade")
+    monkeypatch.setattr(bt, "CAPITAL_FILE", tmp_path / "binance_capital.json")
+    monkeypatch.setattr(bt, "_sleep", lambda s: None)
+    monkeypatch.setattr(bt, "filters", lambda c: dict(FLT))
+    monkeypatch.setattr(bt, "chase_gate", lambda m, r, n: {"pct": 1.0, "big": False})
+    asked: list[str] = []
+
+    def ai(prompt: str) -> str:
+        asked.append(prompt)
+        return AI_ANSWER["text"]
+
+    AI_ANSWER["text"] = '{"stop_pct": 3.0, "tp_pct": null, "reason": "기본과 같게"}'
+    monkeypatch.setattr(bt, "AI_CALLER", ai)
+    sent: list[str] = []
+    bt.DIR.mkdir(parents=True)
+    return {"sent": sent, "send": sent.append, "tmp": tmp_path, "asked": asked}
+
+
+AI_ANSWER = {"text": ""}
+
+
+def live(env, base: float = 1000.0):
+    (bt.DIR / "mode").write_text("live\n")
+    bt.CAPITAL_FILE.write_text(json.dumps({"live": True, "base": base, "deposits": []}))
+
+
+def with_signal(monkeypatch, d, close=100_000.0, bar=BAR, **extra):
+    sig = {"dir": d, "bar": bar, "close": close, **extra}
+    monkeypatch.setattr(bt, "latest_signal", lambda r, n, last: dict(sig))
+
+
+def run(env, ex, mk=None):
+    return bt.run(now=NOW, client=ex, market_=mk or FakeMarket(ex.price), send=env["send"])
+
+
+def state() -> dict:
+    return json.loads((bt.DIR / "state.json").read_text())
+
+
+def jsonl(name: str) -> list[dict]:
+    path = bt.DIR / name
+    return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
+
+
+def engine_long(ex: FakeExchange, qty=0.029, entry=100_000.0) -> dict:
+    """엔진이 연 롱(손절 포함)을 거래소와 상태에 만든다."""
+    ex.amt = qty
+    sid = f"mnv-{(BAR - bt.BAR_MS * 8) // 60000}-s"
+    ex.algos[sid] = {"clientAlgoId": sid, "algoStatus": "NEW", "triggerPrice": "97000.0"}
+    pos = {
+        "side": "long",
+        "qty": qty,
+        "entry": entry,
+        "stop": 97000.0,
+        "stop_id": sid,
+        "bar": BAR - bt.BAR_MS * 8,
+        "entry_ms": NOW_MS - 3_600_000,
+        "opened_at": "2026-11-08 21:30:20",
+        "mode": "live",
+    }
+    bt._save(bt.DIR / "state.json", {"position": pos, "last_bar": BAR - bt.BAR_MS * 8})
+    return pos
+
+
+# ---------------------------------------------------------------- 수량·가격
+
+
+def test_qty_rounds_down_to_step():
+    qty, why = bt.size_qty(1000.0, 76_041.4, 1.0, FLT)
+    # 1000 × 0.99 × 3 / 76041.4 = 0.03905… → 0.039
+    assert qty == Decimal("0.039") and why == ""
+    half, _ = bt.size_qty(1000.0, 76_041.4, 0.5, FLT)
+    assert half == Decimal("0.019")
+
+
+def test_min_notional_and_min_qty_block():
+    qty, why = bt.size_qty(30.0, 100_000.0, 1.0, FLT)  # 0.00089 → 0
+    assert qty == 0 and "최소" in why
+    flt = {**FLT, "min_notional": 5000.0}
+    qty, why = bt.size_qty(1000.0, 100_000.0, 1.0, flt)
+    assert qty == 0 and "주문 금액" in why
+
+
+def test_stop_price_never_tighter_than_3pct():
+    assert bt.stop_price("long", 76_041.37, "0.10") == Decimal("73760.10")
+    assert bt.stop_price("short", 76_041.37, "0.10") == Decimal("78322.70")
+    assert float(bt.stop_price("long", 76_041.37, "0.10")) <= 76_041.37 * 0.97
+    assert float(bt.stop_price("short", 76_041.37, "0.10")) >= 76_041.37 * 1.03
+
+
+# ---------------------------------------------------------------- 신호
+
+
+def _fake_signals(long_at, short_at):
+    return lambda h, lo, c, p: {
+        "long": long_at,
+        "short": short_at,
+        "stoch": [50.0] * len(c),
+        "cci": [0.0] * len(c),
+        "rsi": [50.0] * len(c),
+    }
+
+
+def test_latest_signal_uses_closed_bars_and_engine_params(monkeypatch):
+    seen = {}
+
+    def fake(h, lo, c, p):
+        seen["n"], seen["p"] = len(c), p
+        return _fake_signals([len(c) - 1], [])(h, lo, c, p)
+
+    monkeypatch.setattr(bt.scr_lab, "signals", fake)
+    r = rows(300, 100.0)
+    r.append([BAR + bt.BAR_MS, 1, 1, 1, 1, 1, BAR + 2 * bt.BAR_MS - 1])  # 진행 중 봉
+    sig = bt.latest_signal(r, NOW_MS, None)
+    assert seen["n"] == 300 and seen["p"]["stoch_n"] == 9 and seen["p"]["rsi_n"] == 21
+    assert seen["p"]["mode"] == "cross" and seen["p"]["need"] == 3 and seen["p"]["w"] == 3
+    assert sig["dir"] == "long" and sig["bar"] == BAR
+
+
+def test_latest_signal_catch_up_and_dedupe(monkeypatch):
+    r = rows(300, 100.0)
+    monkeypatch.setattr(bt.scr_lab, "signals", _fake_signals([], [298]))
+    assert bt.latest_signal(r, NOW_MS, None)["dir"] is None  # 첫 실행은 마지막 봉만
+    sig = bt.latest_signal(r, NOW_MS, BAR - 2 * bt.BAR_MS)
+    assert sig["dir"] == "short" and sig["age"] == 1  # 한 번 빠진 실행은 따라잡는다
+    assert bt.latest_signal(r, NOW_MS, BAR - bt.BAR_MS)["dir"] is None  # 이미 처리
+    monkeypatch.setattr(bt.scr_lab, "signals", _fake_signals([299], [299]))
+    sig = bt.latest_signal(r, NOW_MS, None)
+    assert sig["dir"] is None and sig["conflict"]
+
+
+def test_latest_signal_flags_stale_data(monkeypatch):
+    monkeypatch.setattr(bt.scr_lab, "signals", _fake_signals([], []))
+    old = [[r[0] - 3_600_000, *r[1:6], r[6] - 3_600_000] for r in rows(300, 1.0)]
+    assert bt.latest_signal(old, NOW_MS, None)["stale"]
+
+
+def test_real_scr_computation_runs_on_fixture():
+    import pathlib
+
+    fx = pathlib.Path(__file__).parent / "fixtures" / "btc_15m_scr.json"
+    data = json.loads(fx.read_text())
+    bars = data["bars"]
+    rs = [[int(b[0]), *map(float, b[1:5]), 0.0, int(b[0]) + bt.BAR_MS - 1] for b in bars]
+    end = rs[-1][6] + 1
+    sig = bt.latest_signal(rs, end, rs[-3][0])
+    assert "dir" in sig and not sig.get("error")
+
+
+# ---------------------------------------------------------------- 추격 한도
+
+
+def test_chase_limit_directional():
+    assert bt.chase_ok("long", 100.99, 100.0, 1.0)
+    assert not bt.chase_ok("long", 101.0, 100.0, 1.0)
+    assert bt.chase_ok("long", 95.0, 100.0, 1.0)  # 진입 방향 반대로 벌어진 건 막지 않는다
+    assert not bt.chase_ok("short", 99.0, 100.0, 1.0)
+    assert bt.chase_ok("short", 99.0, 100.0, 3.0)
+    assert bt.chase_ok("short", 104.0, 100.0, 1.0)
+
+
+def test_run_skips_entry_beyond_chase_limit(env, monkeypatch):
+    live(env)
+    ex = FakeExchange(price=101_500.0)
+    with_signal(monkeypatch, "long", close=100_000.0)
+    s = run(env, ex)
+    assert not ex.writes and state().get("position") is None
+    assert "진입 안 함" in s["decision"] and any("추격 한도" in m for m in env["sent"])
+    assert state()["last_bar"] == BAR
+
+
+def test_big_move_allows_3pct(env, monkeypatch):
+    live(env)
+    monkeypatch.setattr(bt, "chase_gate", lambda m, r, n: {"pct": 3.0, "big": True})
+    ex = FakeExchange(price=102_000.0)
+    with_signal(monkeypatch, "long", close=100_000.0)
+    run(env, ex)
+    assert state()["position"]["side"] == "long"
+
+
+# ---------------------------------------------------------------- 실전 주문 흐름
+
+
+def test_flat_long_signal_opens_long_with_stop(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long")
+    s = run(env, ex)
+    writes = [(m, p) for m, p, _ in ex.writes]
+    assert writes == [
+        ("POST", "/fapi/v1/leverage"),
+        ("POST", "/fapi/v1/order"),
+        ("POST", "/fapi/v1/algoOrder"),
+    ]
+    order = ex.writes[1][2]
+    assert order["side"] == "BUY" and order["type"] == "MARKET" and order["quantity"] == "0.029"
+    assert order["newClientOrderId"] == f"mnv-{BAR // 60000}-o"
+    stop = ex.writes[2][2]
+    assert stop["type"] == "STOP_MARKET" and stop["closePosition"] == "true"
+    assert stop["side"] == "SELL" and stop["triggerPrice"] == "97000.0"
+    assert stop["workingType"] == "MARK_PRICE" and stop["algoType"] == "CONDITIONAL"
+    pos = state()["position"]
+    assert pos["side"] == "long" and pos["qty"] == 0.029 and pos["stop"] == 97000.0
+    assert s["decision"] == "롱 진입" and ex.leverage == 3
+
+
+def test_reverse_sequence_long_to_short(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    old = engine_long(ex)
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    seq = [(m, p, x.get("side"), x.get("reduceOnly")) for m, p, x in ex.writes]
+    assert seq == [
+        ("DELETE", "/fapi/v1/algoOrder", None, None),  # 1) 엔진 손절 취소
+        ("POST", "/fapi/v1/order", "SELL", "true"),  # 2) 시장가 reduceOnly 청산
+        ("POST", "/fapi/v1/order", "SELL", None),  # 4) 시장가 숏 진입
+        ("POST", "/fapi/v1/algoOrder", "BUY", None),  # 6) 숏 손절
+    ]
+    assert ex.writes[1][2]["quantity"] == "0.029"
+    assert ex.algos[old["stop_id"]]["algoStatus"] == "CANCELED"
+    pos = state()["position"]
+    assert pos["side"] == "short" and pos["stop"] == 103000.0
+    assert ex.amt == pytest.approx(-0.029)
+    closed = jsonl("closed.jsonl")
+    assert closed[-1]["why"] == "signal" and closed[-1]["side"] == "long"
+
+
+def test_same_direction_signal_holds(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    with_signal(monkeypatch, "long")
+    s = run(env, ex)
+    assert not ex.writes and "유지" in s["decision"]
+
+
+def test_stop_rejected_closes_position(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.reject_stop = True
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert ex.amt == 0 and state()["position"] is None
+    last = ex.writes[-1][2]
+    assert last["reduceOnly"] == "true" and last["side"] == "SELL"
+    assert any("손절 주문 실패" in m for m in env["sent"])
+    assert jsonl("closed.jsonl")[-1]["why"] == "protect"
+
+
+def test_missing_stop_is_replaced(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    ex.algos.clear()
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    placed = [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
+    assert len(placed) == 1 and placed[0]["triggerPrice"] == "97000.0"
+    assert state()["position"]["stop_id"] == f"mnv-{pos['bar'] // 60000}-s1"
+    assert any("다시 걸었어요" in m for m in env["sent"])
+
+
+def test_missing_stop_and_replace_fails_closes(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.algos.clear()
+    ex.reject_stop = True
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.amt == 0 and state()["position"] is None
+
+
+def test_stop_fill_is_reconciled(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    ex.trigger_stop(pos["stop_id"], 97_000.0)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    c = jsonl("closed.jsonl")[-1]
+    assert c["why"] == "stop" and c["exit"] == 97_000.0 and c["pnl"] < 0
+    assert state()["position"] is None and not bt.entries_blocked()
+    assert not ex.writes
+    assert any("손절 체결" in m for m in env["sent"])
+
+
+def test_after_stop_waits_for_next_signal(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    ex.trigger_stop(pos["stop_id"], 97_000.0)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    run(env, ex)
+    assert not ex.writes and ex.amt == 0
+
+
+def test_manual_close_sets_no_entry(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.amt = 0.0  # 사용자가 앱에서 닫음 (손절은 그대로 NEW)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert jsonl("closed.jsonl")[-1]["why"] == "manual"
+    assert bt.entries_blocked()
+
+
+def test_foreign_position_is_left_alone(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.amt = 0.5  # 엔진이 열지 않은 포지션
+    with_signal(monkeypatch, "short")
+    s = run(env, ex)
+    assert not ex.writes and bt.entries_blocked()
+    assert any("엔진이 열지 않은" in m for m in env["sent"])
+    assert "수동 개입" in s["decision"]
+    env["sent"].clear()
+    run(env, ex)  # 같은 포지션은 다시 알리지 않는다
+    assert not any("엔진이 열지 않은" in m for m in env["sent"])
+
+
+def test_qty_mismatch_is_left_alone(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.amt = 0.05  # 사용자가 더 샀다
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    assert not ex.writes and bt.entries_blocked()
+
+
+def test_foreign_open_order_blocks_entry(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.foreign_open = [{"clientOrderId": "web_abc"}]
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert not [w for w in ex.writes if w[1] == "/fapi/v1/order"]
+
+
+def test_hedge_mode_blocks_trading(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.dual = True
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert not ex.writes
+
+
+# ---------------------------------------------------------------- 멱등·재시도
+
+
+def test_lost_response_is_not_resent(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.lose_response = {"POST /fapi/v1/order"}
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    sends = [w for w in ex.writes if w[1] == "/fapi/v1/order"]
+    assert len(sends) == 1 and ex.amt == pytest.approx(0.029)
+    assert state()["position"]["qty"] == 0.029
+
+
+def test_network_error_retried_at_most_3_times(env, monkeypatch):
+    ex = FakeExchange()
+    ex.net_fail = {"POST /fapi/v1/order": 10}
+    with pytest.raises(bt.NetworkError):
+        bt.market(ex, "BUY", Decimal("0.01"), "mnv-1-o", reduce=False)
+    assert len([c for c in ex.calls if c[0] == "POST"]) == 4  # 처음 1 + 재시도 3
+
+
+def test_rejection_not_retried(env):
+    ex = FakeExchange()
+    ex.reject_stop = True
+    with pytest.raises(bt.Rejected):
+        bt.place_stop(ex, "long", Decimal("97000"), "mnv-1-s")
+    assert len([c for c in ex.calls if c[0] == "POST"]) == 1
+
+
+def test_open_response_lost_entirely_is_adopted_next_run(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.lose_response = {"POST /fapi/v1/order"}
+    ex.net_fail = {"GET /fapi/v1/order": 0}
+
+    real_query = bt._query
+    calls = {"n": 0}
+
+    def flaky(client, path, key, cid):
+        if path == "/fapi/v1/order" and cid.endswith("-o"):
+            calls["n"] += 1
+            if 1 < calls["n"] <= 5:  # 보낸 뒤 확인 조회가 모두 실패
+                raise bt.NetworkError("down")
+        return real_query(client, path, key, cid)
+
+    monkeypatch.setattr(bt, "_query", flaky)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert state().get("pending") and state().get("position") is None
+    monkeypatch.setattr(bt, "_query", real_query)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    assert pos and pos["side"] == "long" and "pending" not in state()
+    assert any(a["algoStatus"] == "NEW" for a in ex.algos.values())
+
+
+# ---------------------------------------------------------------- 정지 규칙
+
+
+def test_equity_floor_halts_new_entries(env, monkeypatch):
+    live(env, base=1300.0)  # 1000 < 1300 × 0.8
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long")
+    s = run(env, ex)
+    assert bt.entries_blocked() and not ex.writes
+    assert any("평가액" in h for h in s["halts"])
+    assert any("신규 진입 정지" in m for m in env["sent"])
+
+
+def test_winrate_halt(env, monkeypatch):
+    live(env)
+    for k in range(8):
+        bt._append("closed.jsonl", {"at": f"2026-11-0{k % 7 + 1} 10:00:00", "mode": "live",
+                                     "pnl": 1.0 if k < 3 else -1.0})  # fmt: skip
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long")
+    s = run(env, ex)
+    assert bt.entries_blocked() and any("승률 3/8" in h for h in s["halts"])
+    assert not ex.writes
+
+
+def test_winrate_needs_8_trades_and_same_mode(env, monkeypatch):
+    live(env)
+    for _ in range(7):
+        bt._append("closed.jsonl", {"at": "2026-11-05 10:00:00", "mode": "live", "pnl": -1.0})
+    for _ in range(5):
+        bt._append("closed.jsonl", {"at": "2026-11-05 10:00:00", "mode": "dry", "pnl": -1.0})
+    assert bt.check_halts("live", {}, 1000.0, NOW, lambda m: None) == []
+
+
+def test_halt_file_blocks_entry_but_reverse_still_closes(env, monkeypatch):
+    live(env)
+    (bt.DIR / "HALT").write_text("")
+    ex = FakeExchange()
+    engine_long(ex)
+    with_signal(monkeypatch, "short")
+    s = run(env, ex)
+    assert ex.amt == 0 and state()["position"] is None  # 롱은 반대 신호로 닫는다
+    assert not [w for w in ex.writes if w[2].get("side") == "SELL" and not w[2].get("reduceOnly")]
+    assert "진입 정지" in s["decision"]
+
+
+def test_live_without_seed_blocks_entry(env, monkeypatch):
+    (bt.DIR / "mode").write_text("live\n")
+    bt.CAPITAL_FILE.write_text(json.dumps({"live": False}))
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long")
+    s = run(env, ex)
+    assert not ex.writes and any("시드 없음" in h for h in s["halts"])
+
+
+# ---------------------------------------------------------------- 드라이런
+
+
+def test_dry_mode_never_writes_to_exchange(env, monkeypatch):
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    with_signal(monkeypatch, "short", bar=BAR + bt.BAR_MS)
+    run(env, ex)
+    assert not ex.writes
+    dry = jsonl("dry.jsonl")
+    assert [d["action"] for d in dry] == ["open", "close", "open"]
+    assert dry[0]["side"] == "long" and dry[0]["qty"] == 0.029 and dry[0]["stop"] == 97000.0
+    assert any(m.startswith("[드라이런] 🟢 롱 진입 예정") for m in env["sent"])
+    assert any("엔진 시작 — 드라이런" in m for m in env["sent"])
+    assert state()["position"]["side"] == "short" and state()["position"]["mode"] == "dry"
+    assert jsonl("closed.jsonl")[-1]["mode"] == "dry"
+
+
+def test_dry_virtual_stop(env, monkeypatch):
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long", bar=BAR - bt.BAR_MS * 3)
+    mk = FakeMarket()
+    run(env, ex, mk)
+    mk.rows[-1][3] = 96_000.0  # 진입 뒤 봉의 저가가 손절 아래
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    c = jsonl("closed.jsonl")[-1]
+    assert c["why"] == "stop" and c["exit"] == 97_000.0 and state()["position"] is None
+    assert not ex.writes
+
+
+def test_dry_position_dropped_when_switching_to_live(env, monkeypatch):
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    live(env)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert state()["position"] is None and not ex.writes
+
+
+# ---------------------------------------------------------------- 실전 시작
+
+
+def test_start_live_writes_seed_and_mode(env, monkeypatch):
+    bt.CAPITAL_FILE.write_text(
+        json.dumps({"live": False, "asset": "USDT", "previous": {"base": 816.4}, "note": "x"})
+    )
+    bt._save(bt.DIR / "state.json", {"position": {"side": "long", "mode": "dry"}})
+    monkeypatch.setattr(bt.binance, "snapshot", lambda cfg, now, cap: {"net_equity": 815.1})
+    ex = FakeExchange()
+    ex._cfg = {}
+    sent = []
+    cap = bt.start_live(ex, send=sent.append)
+    saved = json.loads(bt.CAPITAL_FILE.read_text())
+    assert saved == cap
+    assert saved["live"] is True and saved["base"] == 815.1 and saved["asset"] == "USDT"
+    assert saved["deposits"] == [] and saved["previous"] == {"base": 816.4}
+    assert len(saved["since_at"]) == 16 and "note" not in saved
+    assert bt.mode() == "live" and state()["position"] is None
+    assert not ex.writes and "실전 시작" in sent[0]
+
+
+def test_start_live_refuses_with_open_position(env, monkeypatch):
+    ex = FakeExchange()
+    ex.amt = 0.01
+    ex._cfg = {}
+    with pytest.raises(SystemExit):
+        bt.start_live(ex, send=lambda m: None)
+    assert bt.mode() == "dry"
+
+
+def test_leverage_not_changed_in_dry(env, monkeypatch):
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert ex.leverage == 10 and not ex.writes
+
+
+# ---------------------------------------------------------------- AI 손절·익절
+
+
+def test_ai_parse_valid_and_fence():
+    v, err = bt.btc_ai.parse('{"stop_pct": 2.5, "tp_pct": 4, "reason": "ATR 기준"}')
+    assert err == "" and v == {"stop_pct": 2.5, "tp_pct": 4.0, "reason": "ATR 기준"}
+    v, _ = bt.btc_ai.parse('```json\n{"stop_pct": 3, "tp_pct": null, "reason": "x"}\n```')
+    assert v["tp_pct"] is None
+
+
+@pytest.mark.parametrize(
+    "text,why",
+    [
+        ("손절 3%가 좋겠어요", "JSON 아님"),
+        ('[{"stop_pct": 3}]', "객체 아님"),
+        ('{"stop_pct": 3, "reason": "x"}', "tp_pct 없음"),
+        ('{"stop_pct": "3", "tp_pct": null, "reason": "x"}', "stop_pct 숫자 아님"),
+        ('{"stop_pct": true, "tp_pct": null, "reason": "x"}', "stop_pct 숫자 아님"),
+        ('{"stop_pct": 0.5, "tp_pct": null, "reason": "x"}', "범위 밖"),
+        ('{"stop_pct": 6, "tp_pct": null, "reason": "x"}', "범위 밖"),
+        ('{"stop_pct": 3, "tp_pct": 12, "reason": "x"}', "범위 밖"),
+        ('{"stop_pct": 3, "tp_pct": 0.5, "reason": "x"}', "범위 밖"),
+        ('{"stop_pct": 3, "tp_pct": null, "reason": ""}', "reason 없음"),
+        ('설명 {"stop_pct": 3, "tp_pct": null, "reason": "x"}', "JSON 아님"),
+    ],
+)
+def test_ai_parse_rejects(text, why):
+    v, err = bt.btc_ai.parse(text)
+    assert v is None and why in err
+
+
+def test_ai_decide_fallbacks():
+    import subprocess
+
+    def timeout(p):
+        raise subprocess.TimeoutExpired("claude", 60)
+
+    def boom(p):
+        raise RuntimeError("exit 1")
+
+    for caller, why in ((timeout, "시간 초과"), (boom, "호출 실패"), (lambda p: "", "JSON 아님")):
+        out = bt.btc_ai.decide({"side": "long"}, caller)
+        assert out["used"]["stop_pct"] == 3.0 and out["used"]["tp_pct"] is None
+        assert why in out["fallback"] and out["used"]["reason"].startswith("기본값 사용")
+
+
+def test_ai_exits_used_for_live_orders(env, monkeypatch):
+    live(env)
+    AI_ANSWER["text"] = '{"stop_pct": 2.0, "tp_pct": 4.0, "reason": "ATR 작아 좁게"}'
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    algos = [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
+    assert [(a["type"], a["triggerPrice"], a["side"]) for a in algos] == [
+        ("STOP_MARKET", "98000.0", "SELL"),
+        ("TAKE_PROFIT_MARKET", "104000.0", "SELL"),
+    ]
+    assert all(a["closePosition"] == "true" for a in algos)
+    pos = state()["position"]
+    assert pos["stop_pct"] == 2.0 and pos["tp"] == 104000.0 and pos["tp_id"].endswith("-t")
+    msg = next(m for m in env["sent"] if "롱 진입" in m)
+    assert "−2%" in msg and "+4%" in msg and "ATR 작아 좁게" in msg
+    ev = [e for e in jsonl("events.jsonl") if e.get("event") == "ai_exits"][-1]
+    assert ev["parsed"]["stop_pct"] == 2.0 and ev["fallback"] is None and ev["ai_raw"]
+    assert "atr14_pct" in env["asked"][0] and "direction_tm" in env["asked"][0]
+
+
+def test_ai_out_of_range_falls_back_and_is_logged(env, monkeypatch):
+    live(env)
+    AI_ANSWER["text"] = '{"stop_pct": 9, "tp_pct": null, "reason": "넓게"}'
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert state()["position"]["stop"] == 97000.0 and state()["position"]["tp"] is None
+    ev = [e for e in jsonl("events.jsonl") if e.get("event") == "ai_exits"][-1]
+    assert "범위 밖" in ev["fallback"] and ev["used"]["stop_pct"] == 3.0
+    assert any("기본값 사용" in m for m in env["sent"])
+
+
+def test_ai_not_asked_when_halted_or_chasing(env, monkeypatch):
+    live(env, base=5000.0)
+    with_signal(monkeypatch, "long")
+    run(env, FakeExchange())
+    assert env["asked"] == []
+
+
+class SlidingMarket(FakeMarket):
+    """AI를 기다리는 사이 가격이 달아난다."""
+
+    def __init__(self, prices):
+        super().__init__()
+        self.prices = list(prices)
+
+    def price(self):
+        return self.prices.pop(0) if len(self.prices) > 1 else self.prices[0]
+
+
+def test_chase_rechecked_after_ai(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    with_signal(monkeypatch, "short")
+    run(env, ex, SlidingMarket([100_000.0, 98_500.0]))
+    assert env["asked"]  # 처음엔 한도 안이라 물었다
+    assert ex.amt == 0 and state()["position"] is None  # 롱은 닫았고 숏은 건너뜀
+    assert any("AI 응답 뒤 다시 봄" in m for m in env["sent"])
+
+
+def test_tp_fill_cancels_stop(env, monkeypatch):
+    live(env)
+    AI_ANSWER["text"] = '{"stop_pct": 3.0, "tp_pct": 2.0, "reason": "x"}'
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    pos = state()["position"]
+    ex.algos[pos["tp_id"]]["algoStatus"] = "FINISHED"
+    ex.trades.append(
+        {
+            "time": ex.t + 9000,
+            "side": "SELL",
+            "qty": str(ex.amt),
+            "price": "102000",
+            "realizedPnl": "58",
+            "commission": "0.05",
+            "commissionAsset": "USDT",
+        }
+    )
+    ex.amt = 0.0
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    c = jsonl("closed.jsonl")[-1]
+    assert c["why"] == "tp" and c["exit"] == 102000.0 and c["pnl"] > 0
+    assert ex.algos[pos["stop_id"]]["algoStatus"] == "CANCELED"
+    assert not bt.entries_blocked() and state()["position"] is None
+
+
+def test_stop_fill_cancels_tp(env, monkeypatch):
+    live(env)
+    AI_ANSWER["text"] = '{"stop_pct": 3.0, "tp_pct": 2.0, "reason": "x"}'
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    pos = state()["position"]
+    ex.trigger_stop(pos["stop_id"], 97_000.0)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert jsonl("closed.jsonl")[-1]["why"] == "stop"
+    assert ex.algos[pos["tp_id"]]["algoStatus"] == "CANCELED"
+
+
+def test_reverse_cancels_stop_and_tp(env, monkeypatch):
+    live(env)
+    AI_ANSWER["text"] = '{"stop_pct": 3.0, "tp_pct": 5.0, "reason": "x"}'
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    old = state()["position"]
+    ex.calls.clear()
+    with_signal(monkeypatch, "short", bar=BAR + bt.BAR_MS)
+    run(env, ex)
+    seq = [(m, x.get("clientAlgoId") or x.get("side")) for m, p, x in ex.writes]
+    assert seq[:2] == [("DELETE", old["stop_id"]), ("DELETE", old["tp_id"])]
+    assert seq[2] == ("POST", "SELL") and ex.writes[2][2]["reduceOnly"] == "true"
+    assert ex.algos[old["tp_id"]]["algoStatus"] == "CANCELED"
+    assert state()["position"]["side"] == "short"
+
+
+def test_missing_tp_is_replaced(env, monkeypatch):
+    live(env)
+    AI_ANSWER["text"] = '{"stop_pct": 3.0, "tp_pct": 5.0, "reason": "x"}'
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    tid = state()["position"]["tp_id"]
+    del ex.algos[tid]
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert state()["position"]["tp_id"].endswith("-t1")
+    assert ex.algos[state()["position"]["tp_id"]]["type"] == "TAKE_PROFIT_MARKET"
+
+
+def test_dry_virtual_tp_and_ai_message(env, monkeypatch):
+    AI_ANSWER["text"] = '{"stop_pct": 3.0, "tp_pct": 1.5, "reason": "가까운 저항"}'
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long", bar=BAR - bt.BAR_MS * 3)
+    mk = FakeMarket()
+    run(env, ex, mk)
+    assert any(
+        m.startswith("[드라이런] 🟢 롱 진입 예정") and "가까운 저항" in m and "+1.5%" in m
+        for m in env["sent"]
+    )
+    mk.rows[-1][2] = 101_600.0
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    c = jsonl("closed.jsonl")[-1]
+    assert c["why"] == "tp" and c["exit"] == 101_500.0 and not ex.writes

@@ -552,6 +552,7 @@ def delay_summary(done: list, open_) -> dict:
         "wins": int(sum(x["win"] for x in fills)),
         "x1": round(float((np.prod(1 + net) - 1) * 100), 2),
         "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
+        "x5": round(float((np.prod(1 + np.maximum(5 * net, -1)) - 1) * 100), 2),
         "delay_med_min": round(float(np.median(live)), 1) if len(live) else None,
         "delay_max_min": round(float(live.max()), 1) if len(live) else None,
         "backfill": int((dl * 60_000 > LIVE_DELAY).sum()),
@@ -1202,6 +1203,7 @@ def step(notify: bool = True) -> dict:
             "wins": int(sum(x["win"] for x in fills)),
             "x1": round(float((np.prod(1 + net) - 1) * 100), 2),
             "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
+            "x5": round(float((np.prod(1 + np.maximum(5 * net, -1)) - 1) * 100), 2),
             "open": open_,
         }
         done_d, open_d = paper_delay(bars, sig, decided, b5)
@@ -1220,7 +1222,7 @@ def step(notify: bool = True) -> dict:
                 msgs.append(
                     f"[BTC 기록] {NAMES[r]} {side_kr(x['side'])} 끝: {kst(x['t_fill'])} {x['lim']:,.1f} 체결 → "
                     f"{kst(x['t_exit'])} {'목표 +1.5%' if x['win'] else '손절 −1.5%'}, "
-                    f"수수료 뺀 1배 {x['net1'] * 100:+.2f}% / 3배 {x['net1'] * 300:+.2f}%"
+                    f"수수료 뺀 1배 {x['net1'] * 100:+.2f}% / 5배 {x['net1'] * 500:+.2f}%"
                     + probs_text(model_probs(sigs, x["t_sig"], PFX[r]), x["side"])
                 )
             else:
@@ -1284,6 +1286,7 @@ def step(notify: bool = True) -> dict:
             "wins": int(sum(x["win"] for x in fills)),
             "x1": round(float((np.prod(1 + net) - 1) * 100), 2),
             "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
+            "x5": round(float((np.prod(1 + np.maximum(5 * net, -1)) - 1) * 100), 2),
             "open": open_,
             "direction": int(reg[-1]),
             "delay": {
@@ -1292,6 +1295,7 @@ def step(notify: bool = True) -> dict:
                 "wins": int(sum(x["win"] for x in fd)),
                 "x1": round(float((np.prod(1 + nd) - 1) * 100), 2),
                 "x3": round(float((np.prod(1 + np.maximum(3 * nd, -1)) - 1) * 100), 2),
+                "x5": round(float((np.prod(1 + np.maximum(5 * nd, -1)) - 1) * 100), 2),
                 "open": open_d["kind"] if open_d else None,
             },
         }
@@ -1312,7 +1316,7 @@ def step(notify: bool = True) -> dict:
                     f"[BTC 기록] {NAMES['K2']} {side_kr(x['side'])} 끝: "
                     f"{kst(x['t_fill'])} {x['lim']:,.1f} 체결 → "
                     f"{kst(x['t_exit'])} {why}, 수수료·펀딩 뺀 1배 {x['net1'] * 100:+.2f}% / "
-                    f"3배 {x['net1'] * 300:+.2f}%"
+                    f"5배 {x['net1'] * 500:+.2f}%"
                 )
             else:
                 msgs.append(
@@ -1363,6 +1367,7 @@ def step(notify: bool = True) -> dict:
             "wins": int(sum(x["win"] for x in done)),
             "x1": round(float((np.prod(1 + net) - 1) * 100), 2),
             "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
+            "x5": round(float((np.prod(1 + np.maximum(5 * net, -1)) - 1) * 100), 2),
             "open": open_,
             "direction": int(reg1[-1]),
             "delay": {
@@ -1370,6 +1375,7 @@ def step(notify: bool = True) -> dict:
                 "wins": int(sum(x["win"] for x in done_d)),
                 "x1": round(float((np.prod(1 + nd) - 1) * 100), 2),
                 "x3": round(float((np.prod(1 + np.maximum(3 * nd, -1)) - 1) * 100), 2),
+                "x5": round(float((np.prod(1 + np.maximum(5 * nd, -1)) - 1) * 100), 2),
                 "open_px": open_d["px"] if open_d else None,
             },
         }
@@ -1387,7 +1393,7 @@ def step(notify: bool = True) -> dict:
             msgs.append(
                 f"[BTC 기록] {NAMES['R1']} {side_kr(x['side'])} 끝: "
                 f"{kst(x['t_fill'])} {x['lim']:,.1f} 진입 → {kst(x['t_exit'])} {why}, "
-                f"수수료·펀딩 뺀 1배 {x['net1'] * 100:+.2f}% / 3배 {x['net1'] * 300:+.2f}%"
+                f"수수료·펀딩 뺀 1배 {x['net1'] * 100:+.2f}% / 5배 {x['net1'] * 500:+.2f}%"
             )
         if open_:
             key = f"R1:{int(open_['t_sig'])}:pos"
@@ -1435,6 +1441,7 @@ def step(notify: bool = True) -> dict:
                 "wins": int(sum(x["win"] for x in fills)),
                 "x1": round(float((np.prod(1 + net) - 1) * 100), 2),
                 "x3": round(float((np.prod(1 + np.maximum(3 * net, -1)) - 1) * 100), 2),
+                "x5": round(float((np.prod(1 + np.maximum(5 * net, -1)) - 1) * 100), 2),
                 "open": open_,
                 "delay": delay_summary(done_d, open_d),
                 "tp_sl": [tp_, sl_],
@@ -1451,7 +1458,7 @@ def step(notify: bool = True) -> dict:
                     msgs.append(
                         f"[BTC 기록] {NAMES[r]} {side_kr(x['side'])} 끝: {kst(x['t_fill'])} "
                         f"{x['lim']:,.1f} 체결 → {kst(x['t_exit'])} {res}, "
-                        f"수수료 뺀 1배 {x['net1'] * 100:+.2f}% / 3배 {x['net1'] * 300:+.2f}%"
+                        f"수수료 뺀 1배 {x['net1'] * 100:+.2f}% / 5배 {x['net1'] * 500:+.2f}%"
                     )
                 else:
                     msgs.append(
@@ -1497,6 +1504,7 @@ def step(notify: bool = True) -> dict:
             "wins": int(sum(x["win"] for x in tr_th)),
             "x1": round((eq - 1) * 100, 2),  # 비중을 반영한 자금 기준 수익
             "x3": None,
+            "x5": None,
             "open": open_th,
             "direction": int(regx[-1]),
         }
@@ -1662,6 +1670,7 @@ def chart_data(B, X, seq, t, seq_ok, models, meta, trades, start, opens=None) ->
                     "time": sec(x["t_exit"]),
                     "win": bool(x["win"]),
                     "net3": round(x["net1"] * 300, 2),
+                    "net5": round(x["net1"] * 500, 2),
                 }
             )
     for r, o in (opens or {}).items():  # 아직 안 끝난 포지션도 진입 표시를 단다
@@ -1709,6 +1718,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                         else ("목표" if x["win"] else "손절")),
                 net1=round(x["net1"] * 100, 2),
                 net3=round(x["net1"] * 300, 2),
+                net5=round(x["net1"] * 500, 2),
             )
         else:
             row["result"] = "미체결 취소"
@@ -1755,6 +1765,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "wins": s["wins"],
                 "x1": s["x1"],
                 "x3": s["x3"],
+                "x5": s.get("x5"),
                 "delay": s.get("delay"),
                 "x3_delay": (s.get("delay") or {}).get("x3"),
                 "open": open_row(s["open"], PFX[r]),
@@ -1780,6 +1791,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "wins": s["wins"],
                 "x1": s["x1"],
                 "x3": s["x3"],
+                "x5": s.get("x5"),
                 "delay": s.get("delay"),
                 "x3_delay": (s.get("delay") or {}).get("x3"),
                 "direction": s.get("direction"),
@@ -1807,6 +1819,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "wins": s["wins"],
                 "x1": s["x1"],
                 "x3": s["x3"],
+                "x5": s.get("x5"),
                 "delay": s.get("delay"),
                 "x3_delay": (s.get("delay") or {}).get("x3"),
                 "direction": s.get("direction"),
@@ -1843,6 +1856,7 @@ def write_view(summary, trades, sigs, meta, state, chart=None) -> None:
                 "wins": s["wins"],
                 "x1": s["x1"],
                 "x3": s["x3"],
+                "x5": s.get("x5"),
                 "delay": s.get("delay"),
                 "x3_delay": (s.get("delay") or {}).get("x3"),
                 "direction": s.get("direction"),

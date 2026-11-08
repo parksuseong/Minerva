@@ -94,6 +94,12 @@
     details.asset summary { list-style: none; cursor: pointer; }
     details.asset summary::-webkit-details-marker { display: none; }
     .mini { font-size: 12px; color: var(--muted); }
+    .sizer { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 6px 0; }
+    .sizer label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+    .sizer input { font: inherit; font-size: 15px; padding: 6px 8px; border: 1px solid var(--line);
+      border-radius: 8px; background: var(--bg); color: var(--text); min-width: 0; }
+    .checklist { margin: 6px 0 0; padding-left: 0; list-style: none; }
+    .checklist li { padding: 4px 0; }
     table.acct { width: 100%; border-collapse: collapse; font-size: 13px; }
     table.acct th, table.acct td { text-align: left; padding: 6px 4px; border-top: 1px solid var(--line); }
     footer { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0 24px; }
@@ -184,6 +190,30 @@
     </section>
     </div>
     <div id="an-bn" hidden>
+    <section class="card" id="btcplan">
+      <h2>🧭 오늘의 판 <span class="mini">덜 잃고 크게 먹기 · 진입은 직접, 주문 없음</span></h2>
+      <div id="btcplan-today" class="placeholder">불러오는 중…</div>
+    </section>
+    <section class="card">
+      <h2>📏 손절·크기 계산 <span class="mini">계산만 해요 · 저장·주문 없음</span></h2>
+      <div class="filters" id="sz-side" role="group" aria-label="롱/숏">
+        <button type="button" data-v="long" class="on">롱</button>
+        <button type="button" data-v="short">숏</button>
+      </div>
+      <div class="sizer">
+        <label>진입가 (USDT)<input id="sz-entry" type="number" inputmode="decimal" step="0.1"></label>
+        <label>손절가 (USDT)<input id="sz-stop" type="number" inputmode="decimal" step="0.1"></label>
+        <label>계좌 금액 (USDT)<input id="sz-equity" type="number" inputmode="decimal" step="0.01"></label>
+      </div>
+      <div class="filters" id="sz-stops" role="group" aria-label="손절 후보"></div>
+      <div class="filters" id="sz-risk" role="group" aria-label="위험">
+        <span class="mini">한 번에 잃을 돈</span>
+        <button type="button" data-v="0.5">0.5%</button>
+        <button type="button" data-v="1" class="on">1%</button>
+        <button type="button" data-v="2">2%</button>
+      </div>
+      <div id="sz-out" class="placeholder">-</div>
+    </section>
     <section class="card">
       <h2>₿ BTCUSDT 롱/숏 분석</h2>
       <div id="btc-meta" class="placeholder">불러오는 중…</div>
@@ -394,6 +424,7 @@
   </script>
   <script src="/static/daily.js?v=20261031b"></script>
   <script src="/static/btc.js?v=20261108a"></script>
+  <script src="/static/btcplan.js?v=20261108a"></script>
   <script src="/static/btcday.js?v=20261108b"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
   <script src="/static/btcml.js?v=20261108b"></script>

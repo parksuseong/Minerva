@@ -1,0 +1,10 @@
+# 매일 08:30 KST. 서버는 02:00~08:00에 꺼져 있다. 일봉은 09:00 KST에 마감하므로 일봉 방향은 전날 마감 기준이다.
+[Unit]
+Description=Send Minerva BTCUSDT morning brief at 08:30 KST
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+# BTC 아침 브리핑(큰 움직임 표시·일봉 방향·현재가·손절 거리)을 텔레그램으로 보낸다. 주문 없음.
+# 설치: sudo cp deploy/minerva-btc-brief.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-btc-brief.timer
+[Unit]
+Description=Minerva BTCUSDT morning brief to Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.strategy.btc_plan brief

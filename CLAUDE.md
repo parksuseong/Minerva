@@ -90,6 +90,11 @@ Minerva/
 - 계좌 탭 수익률: 누적(원금 대비)·오늘(전일 마감 대비)·봇 손익. 원금은 `~/.minerva/account/capital.json`(시작 2026-10-29, 10,002,669원), 날짜별 평가액은 `equity.json`(`kis.record_equity`). 사용자가 입금·출금을 알리면 `deposits`에 `{"date", "amount"}`(출금은 음수)를 추가한다. 안 적으면 입금이 수익으로 잡힌다.
 - 💼 계좌 탭과 `/api/account`는 공개다(사용자 요청 2026-10-28). 잠그려면 `~/.minerva/account/view.token`에 토큰을 넣는다(헤더 `X-Minerva-Token`).
 - 화면 탭: 🎯 오늘 할 일 / 📈 종목 분석 / 💼 계좌 / 🏢 오피스 (`#today` 같은 해시로 이동). 앞의 세 탭은 맨 위 버튼으로 📈 주식/₿ 비트코인 중 하나만 보인다(사용자 요청 2026-11-07, 기기에 기억). 옛 ₿ 비트코인 탭 내용은 종목 분석 > 비트코인에 있고 `#btc`는 그쪽으로 연다.
+- 종목 분석 > ₿ 비트코인 맨 위 "🧭 오늘의 판"·"📏 손절·크기 계산"(사용자 원칙 "덜 잃고 크게 먹기", 2026-11-08): 손절·크기·추적 청산은 기계, 진입 여부는 사람. 주문 없음. `strategy/btc_plan.py`.
+  - 큰 움직임 표시 = 일봉·4시간·15분 방향이 모두 하방(범위 예고, 방향은 반반). 추격 한도의 "큰 움직임 조건"(셋이 같은 방향)과는 다르다.
+  - 일봉 방향 = 일봉 T6D(추세 이탈 규칙) 마지막 신호 방향. 백테스트 원본(`pine_ports.s6_trend_dev`)을 numpy 없이 옮겼고 실제 일봉 1,499개에서 신호가 모두 같다.
+  - 계산기 `/api/btc/size`: 손절 시 왕복 수수료(0.05%/편도) 포함 위험 0.5/1/2%, 0.001 BTC 내림, 5배(가용 증거금 기준) 넘으면 줄인다.
+  - 아침 브리핑: `minerva-btc-brief.timer` 매일 08:30 KST → `python -m minerva.strategy.btc_plan brief` (시험 `--dry`).
 - 종목 분석 > ₿ 비트코인의 "ML 규칙 기록"(2026-11-04 사용자 요청): `minerva-btc-mltrack.timer`(15분, 주문 없음, 코드는 브랜치 `feat/btc-scr-ma`의 `docs/backtests/raw/btc_ml_tracker.py`)가 `~/.minerva/research/btc-ml-tracker/view.json`을 쓰고 웹은 `/api/btc/ml`로 읽기만 한다. 차트는 TradingView Lightweight Charts 5.2.1(Apache-2.0, `static/vendor/`, npm 무결성 확인).
 
 ## 오피스 패널 (🏢 오피스 탭)

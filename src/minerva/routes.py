@@ -19,10 +19,12 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
 
 from minerva import perf
+from minerva.strategy import btc_plan
 
 router = APIRouter()
 
@@ -83,6 +85,22 @@ def btc_ml_tracker() -> dict:
     if data is None:
         return {"status": "pending", "message": "아직 추적 기록이 없어요 (15분마다 자동 실행)"}
     return data
+
+
+@router.get("/api/btc/size")
+def btc_size(
+    side: str,
+    entry: float,
+    stop: float,
+    equity: float,
+    risk_pct: float = 1.0,
+    available: Optional[float] = None,  # noqa: UP045 — FastAPI가 3.9에서 주석을 평가한다
+) -> dict:
+    """손절·크기 계산(순수 계산, 저장·주문 없음). 사용자 원칙 "덜 잃고 크게 먹기"(2026-11-08)."""
+    try:
+        return btc_plan.size_position(side, entry, stop, equity, risk_pct, available)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/signals")

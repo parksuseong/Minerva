@@ -166,7 +166,15 @@ def _read_jsonl(name: str) -> list[dict]:
     path = DIR / name
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    out = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:  # 다른 프로세스가 쓰는 중인 마지막 줄
+            log.warning("%s: 읽지 못한 줄을 건너뜀", name)
+    return out
 
 
 def mode() -> str:
@@ -665,7 +673,7 @@ def winrate(mode_: str, now: datetime) -> tuple[int, int]:
     rows = [
         r
         for r in _read_jsonl("closed.jsonl")
-        if r.get("mode") == mode_ and r["at"] >= since and r.get("pnl") is not None
+        if r.get("mode") == mode_ and r.get("at", "") >= since and r.get("pnl") is not None
     ]
     return len(rows), sum(1 for r in rows if (r.get("pnl") or 0) > 0)
 

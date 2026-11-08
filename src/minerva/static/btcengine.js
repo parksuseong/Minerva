@@ -27,6 +27,7 @@
   };
 
   let eng = null, bars = null, gate = null, chart = null, series = null;
+  const lev = () => (eng && eng.params && eng.params.leverage) || 3;
 
   const modeChip = (d) => {
     if (d.halt) return '<span class="chip warn">⏸ 정지(HALT)</span>';
@@ -43,7 +44,7 @@
     const u = c ? (c / p.entry - 1) * 100 * sign : null;
     const tp = p.tp ? ` · 익절 <b>${num(p.tp)}</b> (+${num(p.tp_pct, 2)}%)` : " · 익절 없음";
     return `<span class="chip ${p.side === "long" ? "good" : "warn"}">${SIDE[p.side]}</span> ${num(p.qty, 3)} BTC @ <b>${num(p.entry)}</b>
-      · 지금 ${pct(u)} (× 3배 ${pct(u == null ? null : u * 3)})<br>
+      · 지금 ${pct(u)} (× ${lev()}배 ${pct(u == null ? null : u * lev())})<br>
       <span class="mini">손절 <b>${num(p.stop)}</b> (−${num(p.stop_pct ?? 3, 2)}%)${tp} · ${esc(p.opened_at || "")} 진입${p.mode === "dry" ? " · 드라이런 가상" : ""}</span>`;
   };
 
@@ -74,7 +75,7 @@
     const runAt = run ? `마지막 확인 ${esc(run.at)} KST (15분마다, 봉 마감 20초 뒤)` : "아직 실행 기록 없음";
     const halt = d.no_entry ? `<div class="detail up">정지 사유: ${esc(d.no_entry)}</div>` : "";
     $("bte-status").innerHTML = `<div class="regime">${modeChip(d)}
-        <span class="chip">SCR ① 15분</span><span class="chip">3배</span><span class="chip">AI 손절 ${d.params.ai_stop_range.join("~")}% · 익절 ${d.params.ai_tp_range.join("~")}%/없음</span></div>
+        <span class="chip">SCR ① 15분</span><span class="chip">${lev()}배</span><span class="chip">AI 손절 ${d.params.ai_stop_range.join("~")}% · 익절 ${d.params.ai_tp_range.join("~")}%/없음</span></div>
       ${halt}
       <h3 style="margin:10px 0 4px;font-size:14px">포지션</h3><div>${posHtml(d.position)}</div>
       <h3 style="margin:10px 0 4px;font-size:14px">마지막 신호</h3><div>${sigHtml(d.last_signal)}</div>
@@ -103,7 +104,7 @@
 
   const tradeRows = (rows) => rows.map((r) => `<tr><td>${esc((r.at || "").slice(5, 16))}</td>
       <td><span class="chip ${r.side === "long" ? "good" : "warn"}">${SIDE[r.side]}</span></td>
-      <td>${num(r.entry)} → ${num(r.exit)}</td><td>${pct(r.pct)} <span class="mini">×3 ${pct(r.pct == null ? null : r.pct * 3)}</span></td>
+      <td>${num(r.entry)} → ${num(r.exit)}</td><td>${pct(r.pct)} <span class="mini">×${lev()} ${pct(r.pct == null ? null : r.pct * lev())}</span></td>
       <td>${r.pnl == null ? "-" : `${r.pnl > 0 ? "+" : ""}${num(r.pnl, 2)}`}</td><td>${esc(WHY[r.why] || r.why)}</td></tr>`).join("");
   const TRADE_HEAD = "<thead><tr><th>청산</th><th>방향</th><th>진입 → 청산</th><th>가격 변화</th><th>손익 USDT</th><th>이유</th></tr></thead>";
 
@@ -302,7 +303,7 @@
   const load = () => Promise.all([get("/api/btc/engine"), get("/api/btc/klines?interval=15m&days=7"), get("/api/btc")])
     .then(([e, k, g]) => {
       eng = e || { status: "error" };
-      if (k && k.bars) { bars = k.bars; bars.showFrom = k.show_from; }
+      if (k && k.bars && k.bars.length) { bars = k.bars; bars.showFrom = k.show_from; }
       gate = g;
       renderStatus(); renderGate(); renderOutlook(); recompute();
     });

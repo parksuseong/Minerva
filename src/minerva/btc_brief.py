@@ -68,13 +68,16 @@ def brief_text(v: dict, now: datetime, price: float | None, ways: dict, since: s
         sign = 1 if p["side"] == "long" else -1
         u = (price / p["entry"] - 1) * 100 * sign if price else None
         tp = f" · 익절 {p['tp']:,.1f} (+{p.get('tp_pct', 0):g}%)" if p.get("tp") else " · 익절 없음"
+        prm = v.get("params") or {}
+        lev = prm.get("leverage", 3)
         now_px = (
-            f" · 지금 {price:,.1f} ({_pct(u)}, 3배 {_pct(u * 3 if u is not None else None)})"
+            f" · 지금 {price:,.1f} ({_pct(u)}, {lev}배 {_pct(u * lev if u is not None else None)})"
             if price
             else ""
         )
         lines.append(f"포지션: {SIDE[p['side']]} {p['qty']} BTC @ {p['entry']:,.1f}{now_px}")
-        lines.append(f"  손절 {p['stop']:,.1f} (−{p.get('stop_pct', 3):g}%){tp}")
+        stop_pct = p.get("stop_pct", prm.get("default_stop_pct", 3))
+        lines.append(f"  손절 {p['stop']:,.1f} (−{stop_pct:g}%){tp}")
     else:
         lines.append("포지션: 없음 (다음 신호 대기)")
 

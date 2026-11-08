@@ -16,15 +16,13 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from minerva.strategy import btc_outlook, btc_plan
+from minerva.strategy import btc_outlook
 from minerva.strategy.indicators import Bar, TMState, tm_states
 
 SYMBOL = "BTCUSDT"
 URL = "https://fapi.binance.com/fapi/v1/klines?symbol={sym}&interval={iv}&limit={n}"
 PRICE_URL = "https://fapi.binance.com/fapi/v1/ticker/price?symbol={sym}"
 LIMIT = 1000
-# 오늘의 판 전용(봉별 상태 표에는 넣지 않는다): 30분 매매 봉, 1시간 방향
-PLAN_FRAMES = ("30m", "1h")
 FRAMES = (("15m", "15분봉"), ("4h", "4시간봉"), ("1d", "일봉"), ("1w", "주봉"), ("1M", "월봉"))
 OUT = Path(os.environ.get("MINERVA_BTC_OUT", "~/.minerva/btc/latest.json")).expanduser()
 KST = timezone(timedelta(hours=9))
@@ -142,13 +140,6 @@ def build(now: datetime | None = None) -> dict:
             raise ValueError(f"{key} 봉이 {len(bars)}개뿐이다")
         frames.append(frame_status(key, name, bars, opened))
         raw[key] = (bars, opened)
-    for key in PLAN_FRAMES:
-        raw[key] = parse(fetch(key), now_ms)
-        if len(raw[key][0]) < 30:
-            raise ValueError(f"{key} 봉이 {len(raw[key][0])}개뿐이다")
-    ways = {f["frame"]: f["direction"] for f in frames}
-    ways["1h"] = direction(tm_states(raw["1h"][0])[-1])
-    intraday = {k: raw[k][0] for k in btc_plan.TRADE_FRAMES}
     price = fetch_price()
     return {
         "generated_at": now.isoformat(timespec="seconds"),
@@ -156,7 +147,6 @@ def build(now: datetime | None = None) -> dict:
         "frames": frames,
         "summary": summary(frames),
         "entry_gate": entry_gate(frames),
-        "plan": btc_plan.today(frames, *raw["1d"], intraday, ways, price),
         "outlook": btc_outlook.build({k: raw[k][0] for k, _ in btc_outlook.FRAMES}, price),
     }
 

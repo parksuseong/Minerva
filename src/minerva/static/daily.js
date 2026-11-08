@@ -132,10 +132,18 @@
       </div><div class="detail">분석 ${esc(d.generated_at.replace("T", " "))} KST · 매일 09:10·16:30 갱신</div>` +
       (d.summary?.length ? `<ul style="margin:8px 0 0 16px;padding:0">${
         d.summary.map((s) => `<li class="detail" style="color:inherit">${esc(s)}</li>`).join("")}</ul>` : "");
-    $("trade-memo").hidden = !d.memo?.length && !d.plan?.length;
-    $("trade-memo-list").innerHTML = (d.memo || []).map((s) => `<li>${esc(s)}</li>`).join("");
-    $("trade-plan-box").hidden = !d.plan?.length;
-    $("trade-plan-list").innerHTML = (d.plan || []).map((s) => `<li>${esc(s)}</li>`).join("");
+    if (d.kr_halted) {
+      $("trade-memo").hidden = false;
+      $("trade-memo-list").innerHTML = "<li>국내 주식 매매 중지 · 분석만 참고용이에요 (11/4부터 정지, 계좌 출금 완료)</li>";
+      $("trade-plan-box").hidden = true;
+      $("trade").hidden = true;
+    } else {
+      $("trade-memo").hidden = !d.memo?.length && !d.plan?.length;
+      $("trade-memo-list").innerHTML = (d.memo || []).map((s) => `<li>${esc(s)}</li>`).join("");
+      $("trade-plan-box").hidden = !d.plan?.length;
+      $("trade-plan-list").innerHTML = (d.plan || []).map((s) => `<li>${esc(s)}</li>`).join("");
+      $("trade").hidden = false;
+    }
     renderToday(d);
     renderList();
     $("daily-note").textContent = d.note;

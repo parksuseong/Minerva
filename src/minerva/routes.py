@@ -70,7 +70,8 @@ def daily_analysis() -> dict:
     data = _read(daily_path())
     if data is None:
         return {"status": "pending", "message": "아직 오늘 분석이 없어요 (09:10·16:30 자동 실행)"}
-    return data
+    # 국내 매매를 멈춘 동안(사용자 결정 2026-11-04)에는 화면에서 매매 계획 대신 중지 안내를 보인다
+    return {**data, "kr_halted": (trade_dir() / "HALT").exists()}
 
 
 @router.get("/api/btc")

@@ -91,6 +91,16 @@
       BN.forEach((id) => { $(id).textContent = "-"; });
       return;
     }
+    if (d.live === false) {
+      $("bn-status").innerHTML = `
+        <div class="mini">${esc(d.broker)} · ${esc(d.market)} · 기준 ${esc(d.updated_at)}</div>
+        <div class="state hold">실전 자동매매 시작 전이에요. 지금 수동 매매는 기록하지 않아요.
+          시작하면 그때 잔고를 시드로 수익률·자산 기록을 새로 시작해요.</div>
+        <div class="row"><span>지갑 잔고 · 주문 가능</span>
+          <span class="px">${usdt(d.wallet)} · ${usdt(d.available)}</span></div>`;
+      BN.forEach((id) => { $(id).textContent = "실전 시작 전"; });
+      return;
+    }
     const r = d.returns;
     const err = d.error ? `<div class="state hold">⚠️ 최근 갱신 실패 (${esc(d.error_at)}): ${esc(d.error)}</div>` : "";
     const ret = r ? `
@@ -145,6 +155,11 @@
   function drawSeries(d) {
     const LC = window.LightweightCharts;
     const pts = (d.points || []).map((p) => ({ time: p.t, value: p.v }));
+    if (d.live === false) {
+      $("bn-chart-note").textContent = "실전 자동매매를 시작하면 그때부터 그려요";
+      if (line) line.setData([]);
+      return;
+    }
     $("bn-chart-note").textContent = pts.length < 2
       ? "기록이 쌓이는 중이에요 (5분마다 한 점)"
       : `5분마다 한 점 · 가로선 = 시드 ${usdt(d.seed)} · 수수료를 뺀 순평가액`;

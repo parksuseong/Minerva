@@ -8,6 +8,10 @@
 순평가액 = 지갑 잔고 + 미실현 손익 - 지금 시장가로 닫을 때 낼 수수료(테이커 요율 추정).
 지갑 잔고에는 이미 낸 수수료·펀딩이 빠져 있다. 자산 차트는 `binance_series.json`(5분 단위).
 
+실전 전(capital `live: false`, 사용자 결정 2026-11-08): 수동 매매 기간은 기록하지 않는다.
+잔고만 남기고 체결·손익·자산 기록은 비운다.
+실전 자동매매를 시작하면 그 시각 잔고를 시드로 새로 잡는다.
+
 실행: `python -m minerva.binance` (minerva-binance.timer가 1분마다 실행)
 """
 
@@ -186,6 +190,10 @@ def snapshot(cfg: dict, now: datetime, capital: dict | None = None) -> dict:
     }
     data["close_fee_est"] = close_fee(data["positions"], data["fee_rate"]["taker"])
     data["net_equity"] = data["equity"] - data["close_fee_est"]
+    if capital is not None and capital.get("live") is False:
+        data["live"] = False
+        data["trades"] = []
+        return data
     since = _since_ms(capital)
     trades = _get(cfg, "/fapi/v1/userTrades", symbol=SYMBOL, limit=100)
     # 시드 전 거래는 시드 금액에 이미 들어가 있으니 보여주지 않는다 (사용자 요청 2026-11-07)
@@ -203,7 +211,7 @@ def _read(path: Path) -> dict | None:
 
 def record_equity(path: Path, data: dict) -> None:
     """날짜별 마지막 평가액(KST). 오늘 수익률이 전날 값을 읽는다."""
-    if data.get("status") != "ok":
+    if data.get("status") != "ok" or data.get("live") is False:
         return
     history = _read(path) or {}
     history[data["updated_at"][:10]] = data.get("net_equity", data["equity"])
@@ -212,7 +220,7 @@ def record_equity(path: Path, data: dict) -> None:
 
 def record_series(path: Path, data: dict, now: datetime) -> None:
     """자산 차트용 순평가액. 5분 칸마다 한 점, 같은 칸이면 최신 값으로 덮는다."""
-    if data.get("status") != "ok":
+    if data.get("status") != "ok" or data.get("live") is False:
         return
     points = (_read(path) or {}).get("points", [])
     t = int(now.timestamp()) // SERIES_STEP * SERIES_STEP + KST_SHIFT

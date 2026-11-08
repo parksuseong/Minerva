@@ -295,3 +295,34 @@ def test_series_api_starts_at_seed_time(tmp_path, monkeypatch):
     (tmp_path / "binance_series.json").write_text(json.dumps({"points": pts}))
     got = TestClient(app).get("/api/account/binance/series").json()["points"]
     assert [p["v"] for p in got] == [2.0]
+
+
+def test_pending_live_hides_manual_trading(tmp_path, monkeypatch):
+    # 실전 전 수동 매매 기간 (사용자 결정 2026-11-08): 잔고만, 손익·체결·자산 기록은 비운다
+    pages = {
+        "/fapi/v2/account": ACCOUNT,
+        "/fapi/v2/positionRisk": RISK,
+        "/fapi/v1/openOrders": [],
+        "/fapi/v1/commissionRate": {
+            "makerCommissionRate": "0.0002",
+            "takerCommissionRate": "0.0005",
+        },
+    }
+    monkeypatch.setattr(binance, "_get", lambda cfg, path, **p: pages[path])
+    data = binance.snapshot(CFG, NOW, {"live": False})
+    assert data["live"] is False and data["trades"] == [] and "income" not in data
+    binance.record_equity(tmp_path / "eq.json", data)
+    binance.record_series(tmp_path / "s.json", data, NOW)
+    assert not (tmp_path / "eq.json").exists() and not (tmp_path / "s.json").exists()
+
+    monkeypatch.setenv("MINERVA_ACCOUNT_OUT", str(tmp_path / "latest.json"))
+    monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(tmp_path / "none"))
+    monkeypatch.delenv("MINERVA_ACCOUNT_TOKEN", raising=False)
+    (tmp_path / "binance.json").write_text(json.dumps(data))
+    (tmp_path / "binance_capital.json").write_text(json.dumps({"live": False}))
+    (tmp_path / "binance_series.json").write_text(json.dumps({"points": [{"t": 1, "v": 2.0}]}))
+    client = TestClient(app)
+    got = client.get("/api/account/binance").json()
+    assert got["live"] is False and got["positions"] == [] and "returns" not in got
+    assert got["wallet"] == data["wallet"]
+    assert client.get("/api/account/binance/series").json()["points"] == []

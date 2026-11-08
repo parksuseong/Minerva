@@ -130,6 +130,24 @@ def binance_account(x_minerva_token: str = Header("")) -> dict:
     if data is None:
         return {"status": "not_connected", "message": "바이낸스 계좌 스냅숏 대기 중이에요"}
     capital = _read(folder / "binance_capital.json")
+    if capital and capital.get("live") is False:
+        # 실전 전 수동 매매 기간: 잔고만 보이고 손익·체결은 화면에서 비운다 (사용자 결정 2026-11-08)
+        data = {
+            k: data[k]
+            for k in (
+                "status",
+                "broker",
+                "market",
+                "updated_at",
+                "wallet",
+                "available",
+                "error",
+                "error_at",
+            )
+            if k in data
+        }
+        data.update(live=False, positions=[], orders=[], trades=[])
+        return data
     if capital and data.get("status") == "ok":
         history = _read(folder / "binance_equity.json") or {}
         # 수익률은 수수료(낸 것 + 닫을 때 낼 추정치)를 뺀 순평가액으로 낸다
@@ -149,6 +167,8 @@ def binance_series(x_minerva_token: str = Header("")) -> dict:
         raise HTTPException(status_code=403, detail="invalid token")
     folder = account_path().parent
     capital = _read(folder / "binance_capital.json") or {}
+    if capital.get("live") is False:
+        return {"seed": None, "points": [], "live": False}
     points = (_read(folder / "binance_series.json") or {}).get("points", [])
     # 점 시각은 KST 벽시계를 UTC 자리에 둔 값이라 시드 시각도 같은 방식으로 바꿔 비교한다
     start = capital.get("since_at") or capital.get("since")

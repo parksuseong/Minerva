@@ -97,7 +97,7 @@ def brief_text(v: dict, now: datetime, price: float | None, ways: dict, since: s
     if eq is not None and seed:
         lines.append(
             f"평가액 {eq:,.2f} USDT · 시드 {seed:,.2f} 대비 "
-            f"{_pct((eq / seed - 1) * 100)} ({eq - seed:+.2f} USDT)"
+            f"{_pct((eq / seed - 1) * 100)} ({round(eq - seed, 2) + 0.0:+.2f} USDT)"
         )
     n, w = g.get("winrate_n", 0), g.get("winrate_wins", 0)
     floor_txt = (

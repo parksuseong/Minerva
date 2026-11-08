@@ -27,15 +27,15 @@
     const o = r.open;
     const now = !o ? "대기"
       : o.kind === "보유 중"
-        ? `<span class="chip ${o.side === "롱" ? "good" : "warn"}">${esc(o.side)}</span> ${num(o.price)} · 지금 ${pct(o.pnl1 == null ? null : o.pnl1 * 3)} (3배)`
+        ? `<span class="chip ${o.side === "롱" ? "good" : "warn"}">${esc(o.side)}</span> ${num(o.price)} · 지금 ${pct(o.pnl1 == null ? null : o.pnl1 * 5)} (5배)`
         : `${esc(o.side || "")} 주문 대기`;
     return `<tr><td><b>${esc(r.id)}</b></td><td>${now}</td>
-      <td>${r.fills ? `${r.wins}/${r.fills}` : "-"}</td><td>${pct(r.x3)}</td></tr>`;
+      <td>${r.fills ? `${r.wins}/${r.fills}` : "-"}</td><td>${pct(r.x5)}</td></tr>`;
   };
 
   const mlHtml = (d) => {
     if (!d || d.status === "pending" || !d.rules) return `<div class="placeholder">모의 추적 대기 중</div>`;
-    return `<table class="acct" style="margin-top:6px"><thead><tr><th>규칙</th><th>지금</th><th>승/끝난 매매</th><th>누적 3배</th></tr></thead>
+    return `<table class="acct" style="margin-top:6px"><thead><tr><th>규칙</th><th>지금</th><th>승/끝난 매매</th><th>누적 5배</th></tr></thead>
       <tbody>${d.rules.map(ruleRow).join("")}</tbody></table>
       <p class="mini">모의 추적이에요(주문 없음). ${esc(d.start)}부터 기록, 끝난 매매가 아직 적어 운일 수 있어요. 자세한 내용은 ₿ 비트코인 탭.</p>`;
   };

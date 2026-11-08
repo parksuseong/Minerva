@@ -24,7 +24,7 @@
   const openText = (o) => {
     if (!o) return "대기 (신호 없음)";
     if (o.kind === "지정가 대기") return `${sideChip(o.side)} 지정가 대기 ${num(o.limit)} (신호 ${esc(o.signal_at)}, 30분 유효)`;
-    return `${sideChip(o.side)} 보유 중 · ${esc(o.filled_at)} ${num(o.price)} 체결 · 목표 ${num(o.target)} / 손절 ${num(o.stop)} · 지금 1배 ${pct(o.pnl1)} (3배 ${pct(o.pnl1 * 3)})`;
+    return `${sideChip(o.side)} 보유 중 · ${esc(o.filled_at)} ${num(o.price)} 체결 · 목표 ${num(o.target)} / 손절 ${num(o.stop)} · 지금 1배 ${pct(o.pnl1)} (5배 ${pct(o.pnl1 * 5)})`;
   };
 
   // 맨 위 쉬운 요약: 규칙마다 "지금 들고 있나 / 끝난 매매로 번 돈 / 지금 평가손익"을 한눈에.
@@ -36,11 +36,11 @@
     const o = r.open;
     const now = !o ? "들고 있는 것 없음 · 다음 신호 기다리는 중"
       : o.kind === "지정가 대기" ? `${sideWord(o.side)} 사려고 ${num(o.limit)}에 주문 걸어 둠 (30분 안 닿으면 취소)`
-        : `${sideWord(o.side)} 들고 있음 · ${num(o.price)}에 삼 · 지금 ${pct(o.pnl1)} (3배 ${pct(o.pnl1 * 3)})`
+        : `${sideWord(o.side)} 들고 있음 · ${num(o.price)}에 삼 · 지금 ${pct(o.pnl1)} (5배 ${pct(o.pnl1 * 5)})`
           + `<br><span class="mini">${num(o.target)} 닿으면 이익 보고 팔고, ${num(o.stop)} 닿으면 손해 보고 팔아요</span>`;
     const why = o && o.models ? `<div class="mini" style="margin-top:4px">신호 때 모델 판단: ${votes(o.models, o.side)}</div>` : "";
     const done = r.fills
-      ? `끝난 매매 ${r.fills}번 (이익 ${r.wins} · 손해 ${r.fills - r.wins}) · 합계 ${pct(r.x1)} (3배 ${pct(r.x3)})`
+      ? `끝난 매매 ${r.fills}번 (이익 ${r.wins} · 손해 ${r.fills - r.wins}) · 합계 ${pct(r.x1)} (5배 ${pct(r.x5)})`
       : "아직 끝난 매매 없음";
     return `<div style="flex:1;min-width:260px;border:1px solid var(--line);border-radius:8px;padding:10px">
       <div><b>규칙 ${esc(LABEL[r.id] || r.id)}</b> <span class="mini">${NICK[r.id] || ""}</span></div>${noteHtml(r)}
@@ -57,21 +57,21 @@
     renderSummary(d);
     $("btcml-meta").innerHTML = `<div class="detail">기록 시작 ${esc(d.start)} KST · 마지막 봉 ${esc(d.last_bar)} 마감 · 갱신 ${esc(d.generated_at.slice(11, 16))} · 기록된 봉 ${num(d.bars, 0)}개 · 모델 학습 ${esc(d.trained)}</div>`;
     $("btcml-rules").innerHTML = `<table class="acct"><thead><tr>
-        <th>규칙</th><th>진입 조건</th><th>지금</th><th>신호</th><th>체결</th><th>승</th><th>누적 1배</th><th>누적 3배</th><th>과거(2024~, 3배)</th>
+        <th>규칙</th><th>진입 조건</th><th>지금</th><th>신호</th><th>체결</th><th>승</th><th>누적 1배</th><th>누적 5배</th><th>과거(2024~)</th>
       </tr></thead><tbody>${d.rules.map((r) => `<tr>
         <td><b>${esc(LABEL[r.id] || r.id)}</b>${noteHtml(r)}</td>
         <td class="mini">점수 ≥ ${num(r.long_above, 3)} + ${r.agree}개 이상 동의 → 롱<br>점수 ≤ ${num(r.short_below, 3)} + ${r.agree}개 이상 동의 → 숏<br>(작년 기준 상위·하위 ${r.top}%)</td>
         <td>${openText(r.open)}</td><td>${r.signals}</td><td>${r.fills}</td>
-        <td>${r.fills ? `${r.wins}/${r.fills}` : "-"}</td><td>${pct(r.x1)}</td><td>${pct(r.x3)}</td>
-        <td class="mini">1년 ${r.backtest.per_year}번 · ${pct(r.backtest.x3)} · 낙폭 ${num(r.backtest.mdd)}%</td></tr>`).join("")}</tbody></table>
+        <td>${r.fills ? `${r.wins}/${r.fills}` : "-"}</td><td>${pct(r.x1)}</td><td>${pct(r.x5)}</td>
+        <td class="mini">1년 ${r.backtest.per_year}번</td></tr>`).join("")}</tbody></table>
       <p class="mini">주문: 봉 마감가에서 롱 −0.1%, 숏 +0.1%에 지정가, 30분 안 닿으면 취소. 체결가 ±1.5%에서 목표(지정가)·손절(스톱). 한 번에 한 포지션. 수수료 포함, 펀딩비는 빠져 있어요. 현물 가격 기준.</p>`;
     const rows = d.rules.flatMap((r) => r.trades.map((x) => ({ rule: r.id, ...x })))
       .sort((a, b) => (a.signal_at < b.signal_at ? 1 : -1));
     $("btcml-trades").innerHTML = rows.length ? `<table class="acct"><thead><tr>
-        <th>규칙</th><th>방향</th><th>신호</th><th>지정가</th><th>체결</th><th>청산</th><th>결과</th><th>1배</th><th>3배</th><th>모델 판단 (+1.5% 먼저 닿을 확률, ✓ = 그 방향 동의)</th>
+        <th>규칙</th><th>방향</th><th>신호</th><th>지정가</th><th>체결</th><th>청산</th><th>결과</th><th>1배</th><th>5배</th><th>모델 판단 (+1.5% 먼저 닿을 확률, ✓ = 그 방향 동의)</th>
       </tr></thead><tbody>${rows.map((x) => `<tr><td>${esc(LABEL[x.rule] || x.rule)}</td><td>${sideChip(x.side)}</td>
         <td>${esc(x.signal_at)}</td><td>${num(x.limit)}</td><td>${esc(x.filled_at || "-")}</td><td>${esc(x.exit_at || "-")}</td>
-        <td>${esc(x.result)}</td><td>${pct(x.net1)}</td><td>${pct(x.net3)}</td>
+        <td>${esc(x.result)}</td><td>${pct(x.net1)}</td><td>${pct(x.net5)}</td>
         <td class="mini">${votes(x.models, x.side)}</td></tr>`).join("")}</tbody></table>`
       : "아직 끝난 매매가 없어요";
     const sig = (v) => (v > 0 ? sideChip("롱") : v < 0 ? sideChip("숏") : "-");
@@ -131,7 +131,7 @@
     const long = m.side > 0;
     const open = m.kind === "open";
     const green = long === open;
-    const res = open ? "" : ` ${m.win ? "목표" : "손절"} ${m.net3 > 0 ? "+" : ""}${m.net3}%`;
+    const res = open ? "" : ` ${m.win ? "목표" : "손절"} ${m.net5 > 0 ? "+" : ""}${m.net5}%`;
     return {
       time: m.time,
       position: long === open ? "belowBar" : "aboveBar",

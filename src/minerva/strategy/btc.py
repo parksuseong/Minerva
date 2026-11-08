@@ -16,10 +16,12 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from minerva.strategy import btc_plan
 from minerva.strategy.indicators import Bar, TMState, tm_states
 
 SYMBOL = "BTCUSDT"
 URL = "https://fapi.binance.com/fapi/v1/klines?symbol={sym}&interval={iv}&limit={n}"
+PRICE_URL = "https://fapi.binance.com/fapi/v1/ticker/price?symbol={sym}"
 LIMIT = 1000
 FRAMES = (("15m", "15분봉"), ("4h", "4시간봉"), ("1d", "일봉"), ("1w", "주봉"), ("1M", "월봉"))
 OUT = Path(os.environ.get("MINERVA_BTC_OUT", "~/.minerva/btc/latest.json")).expanduser()
@@ -31,6 +33,15 @@ def fetch(interval: str) -> list[list]:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.load(r)
+
+
+def fetch_price() -> float:
+    """선물 최근 체결가(공개 시세, GET만)."""
+    req = urllib.request.Request(
+        PRICE_URL.format(sym=SYMBOL), headers={"User-Agent": "Mozilla/5.0"}
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return float(json.load(r)["price"])
 
 
 def parse(rows: list[list], now_ms: int) -> tuple[list[Bar], list[datetime]]:
@@ -122,18 +133,21 @@ def entry_gate(frames: list[dict]) -> dict:
 def build(now: datetime | None = None) -> dict:
     now = now or datetime.now(KST)
     now_ms = int(now.timestamp() * 1000)
-    frames = []
+    frames, raw = [], {}
     for key, name in FRAMES:
         bars, opened = parse(fetch(key), now_ms)
         if len(bars) < 30:
             raise ValueError(f"{key} 봉이 {len(bars)}개뿐이다")
         frames.append(frame_status(key, name, bars, opened))
+        raw[key] = (bars, opened)
+    price = fetch_price()
     return {
         "generated_at": now.isoformat(timespec="seconds"),
         "symbol": SYMBOL,
         "frames": frames,
         "summary": summary(frames),
         "entry_gate": entry_gate(frames),
+        "plan": btc_plan.today(frames, *raw["1d"], raw["4h"][0], price),
     }
 
 

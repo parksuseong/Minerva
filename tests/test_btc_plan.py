@@ -2,13 +2,9 @@ import math
 from datetime import date, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
-from minerva.main import app
 from minerva.strategy import btc_plan
 from minerva.strategy.indicators import Bar
-
-client = TestClient(app)
 
 
 def _series(n=400):
@@ -110,14 +106,6 @@ def test_size_warns_below_exchange_minimum():
 def test_size_rejects_stop_on_wrong_side(side, stop):
     with pytest.raises(ValueError):
         btc_plan.size_position(side, 100_000, stop, 1_000)
-
-
-def test_size_endpoint():
-    q = {"side": "long", "entry": 100000, "stop": 98000, "equity": 10000, "risk_pct": 1}
-    got = client.get("/api/btc/size", params=q)
-    assert got.status_code == 200 and got.json()["qty"] == 0.047
-    bad = client.get("/api/btc/size", params={**q, "stop": 101000})
-    assert bad.status_code == 400
 
 
 def _bars(h, lo, c):

@@ -116,17 +116,20 @@ def test_btc_endpoint_pending_then_data(tmp_path, monkeypatch):
     page = client.get("/").text
     # 비트코인 분석은 종목 분석 탭의 비트코인 쪽에 있다 (2026-11-07)
     analysis = page.split('id="tab-analysis"', 1)[1].split('class="panel"', 1)[0]
-    assert 'id="an-bn"' in analysis and 'id="btc-meta"' in analysis
-    assert "/static/btc.js" in page
-    assert client.get("/static/btc.js").status_code == 200
+    assert 'id="an-bn"' in analysis and 'id="bte-status"' in analysis
+    assert 'id="bte-chart"' in analysis and 'id="bte-trades"' in analysis
+    assert "/static/btcengine.js" in page
+    assert client.get("/static/btcengine.js").status_code == 200
+    # 실전에 쓰지 않는 옛 연구 화면은 뺐다 (사용자 2026-11-08 22:35)
+    for gone in ("btcml", "btcday", "btcplan", "/static/btc.js", "5배", "sz-"):
+        assert gone not in page
 
 
-def test_today_tab_has_btc_daily_card():
+def test_today_tab_has_btc_engine_card():
     client = TestClient(app)
     page = client.get("/").text
     today = page.split('id="tab-today"', 1)[1].split('class="panel"', 1)[0]
-    assert 'id="btcday-body"' in today and "/static/btcday.js" in page
-    assert client.get("/static/btcday.js").status_code == 200
+    assert 'id="bte-today"' in today and "/static/btcengine.js" in page
 
 
 def test_daily_endpoint_pending_then_data(tmp_path, monkeypatch):
@@ -154,14 +157,8 @@ def test_account_not_connected_until_snapshot(tmp_path, monkeypatch):
     assert 'id="tab-account"' in page and "/static/account.js" in page
 
 
-def test_btc_ml_endpoint_pending_then_data(tmp_path, monkeypatch):
-    out = tmp_path / "view.json"
-    monkeypatch.setenv("MINERVA_BTC_ML_OUT", str(out))
+def test_btc_ml_and_size_routes_removed():
     client = TestClient(app)
-    assert client.get("/api/btc/ml").json()["status"] == "pending"
-    out.write_text(json.dumps({"rules": [], "recent": [], "chart": None}))
-    assert client.get("/api/btc/ml").json()["rules"] == []
-    page = client.get("/").text
-    assert "/static/btcml.js" in page and 'id="btcml-chart"' in page
-    assert client.get("/static/btcml.js").status_code == 200
+    assert client.get("/api/btc/ml").status_code == 404
+    assert client.get("/api/btc/size").status_code == 404
     assert client.get("/static/vendor/lightweight-charts-5.2.1.js").status_code == 200

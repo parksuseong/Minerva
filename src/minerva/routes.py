@@ -10,6 +10,8 @@
   → `~/.minerva/account/binance.json`. 시드는 `binance_capital.json`, 날짜별 평가액은
   `binance_equity.json` (USDT). 열람 토큰은 계좌와 같다.
 - 자동매매: `python -m minerva.trade` (`minerva-trade-*.timer`) → `~/.minerva/trade/`
+- BTC 자동매매: `python -m minerva.btc_trade` (`minerva-btc-trade.timer`) → `~/.minerva/btc_trade/`.
+  `/api/btc/engine`이 그 파일을 읽기만 한다(`btc_view.py`). 주문은 엔진만 낸다.
 - SCR 실험실: `/api/btc/klines`가 바이낸스 선물 공개 시세(GET, 키 없음)를 덩어리째 캐시해 넘긴다.
   계산은 화면(`static/scrlab_core.js`)이 한다.
 """
@@ -27,23 +29,16 @@ import urllib.request
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Response
 
-from minerva import perf
-from minerva.strategy import btc_plan
+from minerva import btc_view, perf
 
 router = APIRouter()
 
 
 def btc_path() -> Path:
     return Path(os.environ.get("MINERVA_BTC_OUT", "~/.minerva/btc/latest.json")).expanduser()
-
-
-def btc_ml_path() -> Path:
-    default = "~/.minerva/research/btc-ml-tracker/view.json"
-    return Path(os.environ.get("MINERVA_BTC_ML_OUT", default)).expanduser()
 
 
 def daily_path() -> Path:
@@ -86,13 +81,10 @@ def btc_analysis() -> dict:
     return data
 
 
-@router.get("/api/btc/ml")
-def btc_ml_tracker() -> dict:
-    """ML 규칙 A·B 기록 추적(주문 없음). 추적기 `minerva-btc-mltrack.timer`가 15분마다 쓴다."""
-    data = _read(btc_ml_path())
-    if data is None:
-        return {"status": "pending", "message": "아직 추적 기록이 없어요 (15분마다 자동 실행)"}
-    return data
+@router.get("/api/btc/engine")
+def btc_engine() -> dict:
+    """BTC 자동매매 엔진 상태(읽기 전용): 모드·포지션·마지막 신호·AI 손절익절·정지 게이지·거래."""
+    return btc_view.engine_view()
 
 
 KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
@@ -198,22 +190,6 @@ def btc_klines(interval: str = "15m", days: int = 7, accept_encoding: str = Head
             headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
         )
     return Response(body, media_type="application/json")
-
-
-@router.get("/api/btc/size")
-def btc_size(
-    side: str,
-    entry: float,
-    stop: float,
-    equity: float,
-    risk_pct: float = 1.0,
-    available: Optional[float] = None,  # noqa: UP045 — FastAPI가 3.9에서 주석을 평가한다
-) -> dict:
-    """손절·크기 계산(순수 계산, 저장·주문 없음). 사용자 원칙 "덜 잃고 크게 먹기"(2026-11-08)."""
-    try:
-        return btc_plan.size_position(side, entry, stop, equity, risk_pct, available)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/api/signals")

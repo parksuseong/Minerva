@@ -86,7 +86,7 @@ Minerva/
 - 정기 요원 작업(cron, 평일): 16:15 `scripts/routine.sh review`(🦅 운용 감시관, 이상 있을 때만 알림), 17:05 `briefing`(🦊 전략가, 내일 신호·대기 가격). 요원은 `claude -p`로 돌고 읽기 도구만 쓴다. 점검 결과는 스크립트가 미리 만들어 넘긴다. `--strict-mcp-config`를 빼면 텔레그램 플러그인이 하나 더 떠서 상시 세션의 텔레그램이 끊긴다. 시험은 `DRY=1 scripts/routine.sh briefing`.
 - 운용 점검: 평일 16:00 `python -m minerva.audit --notify` (`minerva-trade-audit.timer`). ❌·⚠️가 나오면 `trade-auditor` 에이전트로 원인을 찾는다.
 - 주문 경로 확인: 장중에 `python -m minerva.trade selftest --yes` (CD금리 ETF 1주 매수→매도, 실주문).
-- 텔레그램으로 "매매중지"가 오면 `touch ~/.minerva/trade/HALT`, "매매재개"가 오면 그 파일을 지운다.
+- 텔레그램으로 "매매중지"가 오면 BTC 자동매매를 멈춘다: `touch ~/.minerva/btc_trade/HALT`, "매매재개"가 오면 그 파일을 지운다(사용자 안내 2026-11-08, BTC 실전 시작 뒤). 국내는 "국내 매매중지/재개"로 `~/.minerva/trade/HALT`를 다룬다(2026-11-04부터 켜져 있음).
 - 재주문: 통신 오류·응답 유실만 10초 간격으로 최대 3회 다시 낸다. 다시 내기 전에 주문 내역을 조회해 중복을 막는다. 증권사 거부(rt_cd≠0)는 다시 내지 않는다.
 - 계좌 탭 수익률: 누적(원금 대비)·오늘(전일 마감 대비)·봇 손익. 원금은 `~/.minerva/account/capital.json`(시작 2026-10-29, 10,002,669원), 날짜별 평가액은 `equity.json`(`kis.record_equity`). 사용자가 입금·출금을 알리면 `deposits`에 `{"date", "amount"}`(출금은 음수)를 추가한다. 안 적으면 입금이 수익으로 잡힌다.
 - 💼 계좌 탭과 `/api/account`는 공개다(사용자 요청 2026-10-28). 잠그려면 `~/.minerva/account/view.token`에 토큰을 넣는다(헤더 `X-Minerva-Token`).

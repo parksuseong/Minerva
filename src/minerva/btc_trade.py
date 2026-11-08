@@ -101,6 +101,10 @@ RETRY_GAP = 10
 MAX_SIGNAL_BARS = 2
 # 마지막 마감 봉이 이보다 오래됐으면 시세가 멈춘 것으로 보고 새 진입을 하지 않는다
 STALE_MS = 2 * BAR_MS
+# 거래소 지연으로 실행이 길어지면 새 진입은 하지 않는다(systemd 제한 600초 전에 손절까지 끝나게)
+MAX_RUN_SECS = 180
+# AI가 연달아 기본값으로 돌아가면(인증 만료·한도) 알린다
+AI_FALLBACK_ALERT = 3
 PREFIX = "mnv-"
 NOT_FOUND = (-2013, -2011)
 
@@ -244,12 +248,17 @@ def _query(client, path: str, id_key: str, cid: str) -> dict | None:
         raise
 
 
-def _send(client, method: str, path: str, params: dict, query_path: str, id_key: str) -> dict:
+def _send(
+    client, method: str, path: str, params: dict, query_path: str, id_key: str, resend: bool = True
+) -> dict:
     """주문 보내기(멱등). 같은 ID가 이미 있으면 그걸 돌려준다.
 
     통신 오류만 RETRY_GAP 간격 RETRIES회 다시 보낸다. 다시 보내기 전에 조회해 중복을 막는다.
-    거래소 거부(Rejected)는 그대로 올린다.
+    거래소 거부(Rejected)는 그대로 올린다. resend=False면 한 번만 보내고, 응답을 잃으면 조회만
+    한다. 바이낸스 ID 중복 검사는 미체결 주문끼리만이라
+    즉시 체결된 시장가 진입은 같은 ID로 두 번 들어갈 수 있다.
     """
+    sent = False
     cid = params["clientAlgoId" if id_key == "clientAlgoId" else "newClientOrderId"]
     last: Exception | None = None
     for attempt in range(RETRIES + 1):
@@ -262,7 +271,10 @@ def _send(client, method: str, path: str, params: dict, query_path: str, id_key:
             continue
         if found:
             return {**found, "_found": True}
+        if sent and not resend:
+            continue
         try:
+            sent = True
             return client.request(method, path, params)
         except NetworkError as e:
             last = e
@@ -322,7 +334,10 @@ def position_amt(client) -> float:
 
 
 def open_algos(client) -> list[dict]:
-    return _get(client, "/fapi/v1/openAlgoOrders", symbol=SYMBOL)
+    rows = _get(client, "/fapi/v1/openAlgoOrders", symbol=SYMBOL)
+    if isinstance(rows, dict):  # 응답 모양이 바뀌어도 목록만 꺼낸다
+        rows = rows.get("orders") or rows.get("rows") or []
+    return [r for r in rows if isinstance(r, dict)]
 
 
 def foreign_orders(client) -> list[str]:
@@ -381,10 +396,16 @@ def market(client, side: str, qty: Decimal, cid: str, reduce: bool) -> dict:
     }
     if reduce:
         params["reduceOnly"] = "true"
-    r = _send(client, "POST", "/fapi/v1/order", params, "/fapi/v1/order", "origClientOrderId")
+    # 진입(reduce=False)은 다시 보내지 않는다. reduceOnly는 포지션을 늘릴 수 없어 다시 보내도 된다
+    r = _send(
+        client, "POST", "/fapi/v1/order", params, "/fapi/v1/order", "origClientOrderId", reduce
+    )
     if float(r.get("avgPrice") or 0) == 0 and r.get("status") != "FILLED":
         _sleep(1)
-        r = _query(client, "/fapi/v1/order", "origClientOrderId", cid) or r
+        try:
+            r = _query(client, "/fapi/v1/order", "origClientOrderId", cid) or r
+        except NetworkError:
+            pass  # 체결 결과는 대사(포지션 조회)가 다시 확인한다
     _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "req": params, "res": _slim(r)})
     return r
 
@@ -423,20 +444,53 @@ def _slim(r: dict) -> dict:
     return {k: r[k] for k in keys if k in r}
 
 
-def stop_is_open(client, cid: str) -> bool:
-    return any(a.get("clientAlgoId") == cid for a in open_algos(client))
+def stop_is_open(client, cid: str, tries: int = 3) -> bool:
+    """걸린 조건부 주문이 목록에 보이나. 방금 건 주문은 목록 반영이 늦을 수 있어 몇 번 본다."""
+    for k in range(tries):
+        if k:
+            _sleep(1)
+        if any(a.get("clientAlgoId") == cid for a in open_algos(client)):
+            return True
+    return False
+
+
+def stop_placed(client, r: dict, cid: str) -> bool:
+    """손절이 걸렸나. 응답이 NEW면 걸린 것으로 보고, 아니면 목록에서 확인한다."""
+    if r.get("algoStatus") == "NEW":
+        return True
+    return r.get("algoStatus") is None and stop_is_open(client, cid)
 
 
 def _close_result(client, pos: dict, close_side: str) -> tuple[float | None, float | None]:
-    """(청산 평균가, 순손익 USDT). 진입 이후 체결로 계산: 실현손익 − 수수료(USDT분)."""
-    trades = _get(client, "/fapi/v1/userTrades", symbol=SYMBOL, startTime=pos["entry_ms"] - 1000)
-    exits = [t for t in trades if t["side"] == close_side and int(t["time"]) >= pos["entry_ms"]]
+    """(청산 평균가, 순손익 USDT). 진입 이후 체결로 계산: 실현손익 − 수수료(USDT분).
+
+    방금 닫은 체결이 조회에 늦게 보일 수 있어 청산 수량이 다 보일 때까지 몇 번 묻는다.
+    userTrades는 한 번에 7일 창이라 진입부터 지금까지를 7일씩 나눠 묻는다.
+    청산 체결을 다 못 찾으면 손익은 None(승률 계산에서 빠진다). BNB로 낸 수수료는 빠진다.
+    """
+    start = int(pos["entry_ms"]) - 1000
+    trades: list[dict] = []
+    for k in range(3):
+        if k:
+            _sleep(1)
+        trades, t0, end = [], start, int(time.time() * 1000) + 60_000
+        while t0 < end:
+            t1 = min(t0 + 7 * 86_400_000 - 1, end)
+            trades += _get(client, "/fapi/v1/userTrades", symbol=SYMBOL, startTime=t0, endTime=t1,
+                           limit=1000)  # fmt: skip
+            t0 = t1 + 1
+        exits = [t for t in trades if t["side"] == close_side and int(t["time"]) >= start]
+        if sum(float(t["qty"]) for t in exits) >= pos["qty"] - 1e-9:
+            break
+    exits = [t for t in trades if t["side"] == close_side and int(t["time"]) >= start]
+    qty = sum(float(t["qty"]) for t in exits)
+    px = sum(float(t["qty"]) * float(t["price"]) for t in exits) / qty if qty else None
+    if qty < pos["qty"] - 1e-9:
+        return px, None
     pnl = sum(float(t["realizedPnl"]) for t in trades) - sum(
         float(t["commission"]) for t in trades if t.get("commissionAsset", "USDT") == "USDT"
     )
-    qty = sum(float(t["qty"]) for t in exits)
-    px = sum(float(t["qty"]) * float(t["price"]) for t in exits) / qty if qty else None
-    return px, (pnl if trades else None)
+    return px, pnl
 
 
 # ---------------------------------------------------------------- 시세·신호
@@ -533,7 +587,11 @@ def chase_ok(side: str, price: float, ref: float, pct: float) -> bool:
 def winrate(mode_: str, now: datetime) -> tuple[int, int]:
     """(최근 WINRATE_DAYS일 청산 수, 이긴 수). 같은 모드만."""
     since = _now_iso(now - timedelta(days=WINRATE_DAYS))
-    rows = [r for r in _read_jsonl("closed.jsonl") if r.get("mode") == mode_ and r["at"] >= since]
+    rows = [
+        r
+        for r in _read_jsonl("closed.jsonl")
+        if r.get("mode") == mode_ and r["at"] >= since and r.get("pnl") is not None
+    ]
     return len(rows), sum(1 for r in rows if (r.get("pnl") or 0) > 0)
 
 
@@ -580,7 +638,7 @@ def check_halts(mode_: str, state: dict, equity: float | None, now: datetime, se
     if n >= WINRATE_MIN_TRADES and wins / n < WINRATE_MIN:
         reason = f"최근 {WINRATE_DAYS}일 승률 {wins}/{n} = {wins / n:.0%} < {WINRATE_MIN:.0%}"
         why.append(reason)
-        set_no_entry(reason, send)
+        set_no_entry(reason + " (30일 창에서 지는 거래가 빠지기 전에는 지워도 다시 걸려요)", send)
     if entries_blocked():
         why.append("NO_ENTRY 파일")
     return why
@@ -598,6 +656,7 @@ class Ctx:
         self.live = live
         self.tag = "" if live else "[드라이런] "
         self.notes: list[str] = []
+        self.ai_streak: int | None = None
 
     def say(self, text: str) -> None:
         self.notes.append(text)
@@ -683,7 +742,7 @@ def reconcile_dry(ctx: Ctx, state: dict, rows15: list[list], now_ms: int) -> Non
         return
 
 
-def ensure_stop(ctx: Ctx, state: dict) -> bool:
+def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
     """실전 엔진 포지션에 손절(·익절)이 걸려 있게 한다. 손절을 못 걸면 시장가로 닫는다.
     익절은 못 걸어도 손절이 지키므로 알리고 익절 없이 간다. 보호되면 True."""
     pos = state["position"]
@@ -695,16 +754,19 @@ def ensure_stop(ctx: Ctx, state: dict) -> bool:
             r = place_stop(ctx.client, pos["side"], Decimal(str(pos["stop"])), cid)
             pos.update(stop_id=cid, stop_n=n)
             _save(DIR / "state.json", state)
-            ok = r.get("algoStatus") in (None, "NEW") and stop_is_open(ctx.client, cid)
+            ok = stop_placed(ctx.client, r, cid)
             why = "" if ok else f"상태 {r.get('algoStatus')}"
         except (Rejected, NetworkError) as e:
             ok, why = False, str(e)
         if not ok:
+            if not with_tp:  # 수동 개입 포지션은 닫지 않는다: 크게 알리기만
+                ctx.say(f"🆘 손절을 다시 걸지 못했어요({why}). 바이낸스 앱에서 직접 확인하세요!")
+                return False
             ctx.say(f"❌ 손절 재설정 실패({why}) → 시장가로 닫아요")
             protect_close(ctx, state, "protect")
             return state.get("position") is None
         ctx.say(f"🛡 손절 주문이 없어 다시 걸었어요: {pos['stop']:,.1f} ({WORKING_TYPE})")
-    if pos.get("tp") and pos.get("tp_id") not in open_ids:
+    if with_tp and pos.get("tp") and pos.get("tp_id") not in open_ids:
         n = pos.get("tp_n", 0) + 1
         cid = f"{PREFIX}{pos['bar'] // 60000}-t{n}"
         try:
@@ -775,14 +837,22 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             o = _query(c, "/fapi/v1/order", "origClientOrderId", pending["close"])
             if o and o.get("status") == "FILLED":
                 why = "signal"
-        if why == "manual" and _triggered(
-            _query(c, "/fapi/v1/algoOrder", "clientAlgoId", pos["stop_id"])
-        ):
-            why = "stop"
-        if why == "manual" and pos.get("tp_id"):
-            if _triggered(_query(c, "/fapi/v1/algoOrder", "clientAlgoId", pos["tp_id"])):
-                why = "tp"
+        for key, label in (("stop_id", "stop"), ("tp_id", "tp")):
+            if why != "manual" or not pos.get(key):
+                continue
+            try:
+                if _triggered(_query(c, "/fapi/v1/algoOrder", "clientAlgoId", pos[key])):
+                    why = label
+            except (Rejected, NetworkError):
+                pass
         px, pnl = _close_result(c, pos, close_side)
+        if why == "manual" and px:
+            # 조건부 주문 기록이 사라졌거나 조회가 안 될 때:
+            # 청산가가 손절·익절가 근처면 그쪽으로 본다
+            if abs(px / pos["stop"] - 1) < 0.005:
+                why = "stop"
+            elif pos.get("tp") and abs(px / pos["tp"] - 1) < 0.005:
+                why = "tp"
         state["position"] = None
         state.pop("pending", None)
         cancel_engine_stops(c)  # 손절·익절 중 남은 쪽을 취소 (OCO처럼)
@@ -801,6 +871,9 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             )
             state["foreign_key"] = key
         set_no_entry("포지션 수량 불일치(수동 개입)", ctx.send)
+        # closePosition 손절은 수량과 상관없이 전체를 지킨다. 없으면 다시 건다(닫지는 않는다)
+        if (amt > 0) == (sign > 0):
+            ensure_stop(ctx, state, with_tp=False)
         return False
     state.pop("foreign_key", None)
     return ensure_stop(ctx, state)
@@ -940,6 +1013,13 @@ def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
         }
     caller = AI_CALLER or (lambda p: btc_ai.call_claude(p, cwd=DIR))
     out = btc_ai.decide(data, caller)
+    streak = _load(DIR / "state.json", {}).get("ai_fallbacks", 0)
+    ctx.ai_streak = streak + 1 if out["fallback"] else 0
+    if ctx.ai_streak >= AI_FALLBACK_ALERT and out["fallback"]:
+        ctx.say(
+            f"⚠️ AI 손절·익절이 {ctx.ai_streak}번 연속 기본값이에요"
+            f"({out['fallback']}). 확인해 주세요"
+        )
     ctx.event(
         event="ai_exits",
         side=side,
@@ -952,6 +1032,30 @@ def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
         secs=out["secs"],
     )
     return out
+
+
+def _recover_open(ctx: Ctx, state: dict, side: str) -> dict | None:
+    """진입 응답을 잃었을 때: 주문 조회와 포지션으로 체결을 확인한다.
+    체결됐으면 주문 응답 모양으로 돌려준다."""
+    pending = state["pending"]
+    sign = 1 if side == "long" else -1
+    for k in range(3):
+        if k:
+            _sleep(2)
+        try:
+            o = _query(ctx.client, "/fapi/v1/order", "origClientOrderId", pending["open"])
+            if o and float(o.get("executedQty") or 0) > 0:
+                return o
+            rows = _get(ctx.client, "/fapi/v2/positionRisk", symbol=SYMBOL)
+        except (Rejected, NetworkError):
+            continue
+        row = next((x for x in rows if x["symbol"] == SYMBOL), None)
+        amt = float(row["positionAmt"]) if row else 0.0
+        if amt and (amt > 0) == (sign > 0):
+            entry = float(row.get("entryPrice") or 0) or pending["ref"]
+            ctx.event(event="recover_open", amt=amt, entry=entry)
+            return {"executedQty": str(abs(amt)), "avgPrice": str(entry), "status": "FILLED"}
+    return None
 
 
 def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan: dict) -> None:
@@ -1069,8 +1173,11 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
         ctx.say(f"⛔ {SIDE_KO[side]} 진입 거부: {e}")
         return
     except NetworkError as e:
-        ctx.say(f"❌ {SIDE_KO[side]} 진입 응답 없음: {e} → 다음 실행에서 대사해요")
-        return  # pending을 남겨 다음 실행이 체결 여부를 확인한다
+        # 다시 보내지 않는다. 포지션이 생겼으면 그 자리에서 이어 받아 손절을 건다
+        r = _recover_open(ctx, state, side)
+        if r is None:
+            ctx.say(f"❌ {SIDE_KO[side]} 진입 응답 없음: {e} → 다음 실행에서 다시 대사해요")
+            return  # pending을 남겨 다음 실행이 체결 여부를 확인한다
     if float(r.get("executedQty") or 0) <= 0:
         state.pop("pending", None)
         ctx.say(f"⛔ {SIDE_KO[side]} 진입 미체결: 상태 {r.get('status')}")
@@ -1080,24 +1187,37 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     pos["opened_at"] = _now_iso(ctx.now)
     state.pop("pending", None)
     _save(DIR / "state.json", state)
+    done = False
     try:
-        s = place_stop(c, side, Decimal(str(pos["stop"])), sid)
-        ok = s.get("algoStatus") in (None, "NEW") and stop_is_open(c, sid)
-        err = "" if ok else f"상태 {s.get('algoStatus')}"
-    except (Rejected, NetworkError) as e:
-        ok, err = False, str(e)
-    if not ok:
-        ctx.say(f"❌ 손절 주문 실패({err}) → 방금 연 {SIDE_KO[side]}을 시장가로 닫아요")
-        protect_close(ctx, state, "protect")
-        return
-    tp_note = ""
-    if pos.get("tp"):
         try:
-            place_stop(c, side, Decimal(str(pos["tp"])), tid, TP_KIND)
+            s = place_stop(c, side, Decimal(str(pos["stop"])), sid)
+            ok = stop_placed(c, s, sid)
+            err = "" if ok else f"상태 {s.get('algoStatus')}"
         except (Rejected, NetworkError) as e:
-            tp_note = f"\n⚠️ 익절 주문 실패({e}) → 익절 없이 손절·반대 신호로 관리"
-            pos.update(tp=None, tp_id=None)
-            _save(DIR / "state.json", state)
+            ok, err = False, str(e)
+        if not ok:
+            ctx.say(f"❌ 손절 주문 실패({err}) → 방금 연 {SIDE_KO[side]}을 시장가로 닫아요")
+            protect_close(ctx, state, "protect")
+            done = True
+            return
+        tp_note = ""
+        if pos.get("tp"):
+            try:
+                place_stop(c, side, Decimal(str(pos["tp"])), tid, TP_KIND)
+            except (Rejected, NetworkError) as e:
+                # 응답만 잃었을 수 있다: 걸려 있으면 그대로 둔다
+                if not (isinstance(e, NetworkError) and stop_is_open(c, tid)):
+                    tp_note = f"\n⚠️ 익절 주문 실패({e}) → 익절 없이 손절·반대 신호로 관리"
+                    pos.update(tp=None, tp_id=None)
+                _save(DIR / "state.json", state)
+        done = True
+    finally:
+        if not done and state.get("position"):
+            # 예상 못 한 오류로 중간에 멈췄다: 손절만은 확인하고 끝낸다
+            try:
+                ensure_stop(ctx, state, with_tp=False)
+            except Exception as e2:  # noqa: BLE001 — 원래 예외를 덮지 않는다
+                ctx.say(f"🆘 진입 뒤 손절 확인 실패: {e2}. 바이낸스 앱에서 확인하세요!")
     ctx.say(
         f"{icon} {SIDE_KO[side]} 진입: {pos['qty']} BTC @ {pos['entry']:,.1f} ({LEVERAGE}배)\n"
         f"{exits_text(pos['stop'], pos.get('tp'))} 걸어 둠 ({WORKING_TYPE})\n{ai_line}\n"
@@ -1124,22 +1244,38 @@ def run(
     first = not state_file.exists()
     state = _load(state_file, {})
     ctx = Ctx(client, market_, send, now, live)
+    t_start = time.monotonic()
     pos = state.get("position")
-    if pos and pos.get("mode") != ("live" if live else "dry"):
-        # 모드가 바뀌었다(드라이런 가상 포지션이 실전에 남으면 안 된다)
-        ctx.event(event="drop_position", position=pos)
+    if live and not pos and state.get("orphan_live"):
+        state["position"] = state.pop(
+            "orphan_live"
+        )  # 실전으로 돌아왔다: 남겨 둔 포지션을 다시 관리
+        ctx.say("🔁 드라이런 동안 남아 있던 실전 포지션을 다시 관리해요")
+    elif pos and pos.get("mode") == "live" and not live:
+        # 실전 포지션이 열린 채 드라이런으로 바뀌었다: 버리지 않고 보관하고 크게 알린다
+        state["orphan_live"] = pos
+        state["position"] = None
+        send(
+            f"🆘 실전 {SIDE_KO[pos['side']]} 포지션이 열린 채 드라이런으로 바뀌었어요. "
+            "거래소 손절은 "
+            "걸려 있지만 반대 신호 청산·손절 확인은 멈춰요. 직접 닫거나 live로 되돌리세요."
+        )
+    elif pos and pos.get("mode") != ("live" if live else "dry"):
+        ctx.event(event="drop_position", position=pos)  # 드라이런 가상 포지션은 실전에서 버린다
         state["position"] = None
 
-    rows15 = market_.klines(INTERVAL)
     can_trade = True
     if live:
+        # 시세가 막혀도 손절 확인·체결 대사는 먼저 한다
         dual = _get(client, "/fapi/v1/positionSide/dual")
         if dual.get("dualSidePosition"):
             ctx.say("❌ 헤지 모드(양방향)라 매매하지 않아요. 단방향(One-way)으로 바꿔 주세요")
             can_trade = False
         else:
             can_trade = reconcile_live(ctx, state)
-    else:
+        _save(state_file, state)
+    rows15 = market_.klines(INTERVAL)
+    if not live:
         reconcile_dry(ctx, state, rows15, now_ms)
     _save(state_file, state)
 
@@ -1156,7 +1292,7 @@ def run(
         if p:
             sign = 1 if p["side"] == "long" else -1
             equity += sign * p["qty"] * (float(rows15[-1][4]) - p["entry"])
-    halts = check_halts("live" if live else "dry", state, equity, now, send)
+    halts = check_halts("live" if live else "dry", state, equity, now, ctx.say)
 
     sig = latest_signal(rows15, now_ms, state.get("last_bar"))
     pos = state.get("position")
@@ -1179,6 +1315,8 @@ def run(
         skip = ""
         if halts:
             skip = f"진입 정지({', '.join(halts)})"
+        elif time.monotonic() - t_start > MAX_RUN_SECS:
+            skip = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
         else:
             flt = filters(client)
             gate = chase_gate(market_, rows15, now_ms)
@@ -1209,12 +1347,15 @@ def run(
             )
         if "pending" not in state:
             state["last_bar"] = sig["bar"]
+    if ctx.ai_streak is not None:
+        state["ai_fallbacks"] = ctx.ai_streak
     _save(state_file, state)
     p = state.get("position")
     summary = {
         "event": "run",
         "bar": _bar_txt(sig["bar"]) if sig.get("bar") else None,
         "signal": sig.get("dir"),
+        "close": sig.get("close"),
         "decision": decision,
         "position": {k: p.get(k) for k in ("side", "qty", "entry", "stop", "tp")} if p else None,
         "halts": halts,
@@ -1304,6 +1445,18 @@ def preflight(client=None) -> list[tuple[bool, str]]:
             f"BTCUSDT 포지션 {amt:+} BTC",
         )
     )
+    for path, key in (
+        ("/fapi/v1/order", "origClientOrderId"),
+        ("/fapi/v1/algoOrder", "clientAlgoId"),
+    ):
+        try:
+            gone = _query(client, path, key, f"{PREFIX}preflight-none") is None
+            note = "-2013(없음)으로 와요" if gone else "없는 주문인데 결과가 와요"
+        except (Rejected, NetworkError) as e:
+            gone, note = False, f"예상 밖 응답 {e} — 중복 방지 조회가 안 맞을 수 있음"
+        out.append((gone, f"없는 주문 조회 {path}: {note}"))
+    raw = _get(client, "/fapi/v1/openAlgoOrders", symbol=SYMBOL)
+    out.append((isinstance(raw, list), f"조건부 미체결 목록 응답 모양: {type(raw).__name__}"))
     orders = _get(client, "/fapi/v1/openOrders", symbol=SYMBOL)
     algos = open_algos(client)
     out.append(
@@ -1424,9 +1577,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(cap, ensure_ascii=False))
             return 0
         summary = run()
-    except (NetworkError, Rejected, OSError, KeyError, ValueError, StopIteration) as e:
-        log.error("btc_trade %s failed: %s", args.command, e)
-        notify.send(f"❌ BTC 자동매매({args.command}) 오류: {type(e).__name__}: {e}")
+    except Exception as e:  # noqa: BLE001 — 어떤 오류든 조용히 멈추면 안 된다(15분마다 알림)
+        log.exception("btc_trade %s failed", args.command)
+        notify.send(f"❌ BTC 자동매매({args.command}) 오류: {type(e).__name__}: {str(e)[:300]}")
         return 1
     print(json.dumps(summary, ensure_ascii=False))
     return 0

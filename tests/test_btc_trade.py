@@ -80,7 +80,8 @@ class FakeExchange:
             self.leverage = int(p["leverage"])
             return {"leverage": self.leverage}
         if path == "/fapi/v1/userTrades":
-            return [t for t in self.trades if t["time"] >= p["startTime"]]
+            end = p.get("endTime", 1 << 62)
+            return [t for t in self.trades if p["startTime"] <= t["time"] <= end]
         if path == "/fapi/v1/exchangeInfo":
             return {"symbols": []}
         if path == "/fapi/v1/order" and method == "GET":
@@ -557,8 +558,12 @@ def test_network_error_retried_at_most_3_times(env, monkeypatch):
     ex = FakeExchange()
     ex.net_fail = {"POST /fapi/v1/order": 10}
     with pytest.raises(bt.NetworkError):
+        bt.market(ex, "SELL", Decimal("0.01"), "mnv-1-c", reduce=True)
+    assert len([c for c in ex.calls if c[0] == "POST"]) == 4  # 청산: 처음 1 + 재시도 3
+    ex.calls.clear()
+    with pytest.raises(bt.NetworkError):
         bt.market(ex, "BUY", Decimal("0.01"), "mnv-1-o", reduce=False)
-    assert len([c for c in ex.calls if c[0] == "POST"]) == 4  # 처음 1 + 재시도 3
+    assert len([c for c in ex.calls if c[0] == "POST"]) == 1  # 진입은 다시 보내지 않는다
 
 
 def test_rejection_not_retried(env):
@@ -589,13 +594,91 @@ def test_open_response_lost_entirely_is_adopted_next_run(env, monkeypatch):
     monkeypatch.setattr(bt, "_query", flaky)
     with_signal(monkeypatch, "long")
     run(env, ex)
-    assert state().get("pending") and state().get("position") is None
-    monkeypatch.setattr(bt, "_query", real_query)
-    with_signal(monkeypatch, None)
-    run(env, ex)
+    # 다시 보내지 않고, 같은 실행 안에서 포지션을 보고 이어 받아 손절까지 건다
+    assert len([w for w in ex.writes if w[1] == "/fapi/v1/order"]) == 1
     pos = state()["position"]
     assert pos and pos["side"] == "long" and "pending" not in state()
     assert any(a["algoStatus"] == "NEW" for a in ex.algos.values())
+
+
+def test_open_never_resent_even_if_query_lags(env, monkeypatch):
+    """응답을 잃고 조회에도 아직 안 보여도 진입은 두 번 보내지 않는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.lose_response = {"POST /fapi/v1/order"}
+    real_query = bt._query
+    hide = {"on": True}
+
+    def lagging(client, path, key, cid):
+        if path == "/fapi/v1/order" and cid.endswith("-o") and hide["on"]:
+            return None
+        return real_query(client, path, key, cid)
+
+    monkeypatch.setattr(bt, "_query", lagging)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert len([w for w in ex.writes if w[1] == "/fapi/v1/order"]) == 1
+    assert ex.amt == pytest.approx(0.029)
+    assert state()["position"]["qty"] == 0.029  # 포지션 조회로 이어 받았다
+
+
+def test_stop_ok_when_open_list_lags(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    real = ex._handle
+
+    def lag(method, path, p):
+        if path == "/fapi/v1/openAlgoOrders":
+            return []  # 목록 반영이 늦다
+        return real(method, path, p)
+
+    ex._handle = lag
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert state()["position"] and ex.amt > 0  # 응답 NEW를 믿고 닫지 않는다
+
+
+def test_live_position_kept_when_switched_to_dry(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    (bt.DIR / "mode").write_text("dry\n")
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert state()["position"] is None and state()["orphan_live"]["side"] == "long"
+    assert any("드라이런으로 바뀌었어요" in m for m in env["sent"])
+    live(env)
+    run(env, ex)
+    assert state()["position"]["mode"] == "live" and not ex.writes
+
+
+def test_mismatch_keeps_a_stop(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.algos.clear()
+    ex.amt = 0.05
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    posts = [x for m, p, x in ex.writes]
+    assert len(posts) == 1 and posts[0]["type"] == "STOP_MARKET" and ex.amt == 0.05
+
+
+def test_unknown_pnl_not_counted_in_winrate(env):
+    for _ in range(8):
+        bt._append("closed.jsonl", {"at": "2026-11-05 10:00:00", "mode": "live", "pnl": None})
+    assert bt.winrate("live", NOW) == (0, 0)
+
+
+def test_ai_fallback_streak_alerts(env, monkeypatch):
+    AI_ANSWER["text"] = "모르겠어요"
+    ex = FakeExchange()
+    for k in range(3):
+        with_signal(monkeypatch, "long" if k % 2 == 0 else "short", bar=BAR + k * bt.BAR_MS)
+        run(env, ex)
+    assert any("3번 연속 기본값" in m for m in env["sent"])
 
 
 # ---------------------------------------------------------------- 정지 규칙

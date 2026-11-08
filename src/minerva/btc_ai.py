@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -194,17 +195,28 @@ def call_claude(prompt: str, timeout: float = TIMEOUT, cwd: Path | None = None) 
         "--output-format",
         "text",
     ]
-    r = subprocess.run(
+    # 새 세션으로 띄워 시간이 넘으면 손자 프로세스까지 묶어 죽인다(출력 통로를 잡고 멈추지 않게)
+    proc = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
         cwd=str(cwd) if cwd else None,
+        start_new_session=True,
     )
-    if r.returncode != 0:
-        raise RuntimeError(f"claude 종료 코드 {r.returncode}: {r.stderr[-200:]}")
-    return r.stdout
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        raise
+    if proc.returncode != 0:
+        raise RuntimeError(f"claude 종료 코드 {proc.returncode}: {err[-200:]}")
+    return out
 
 
 def decide(data: dict, caller: Callable[[str], str] = call_claude) -> dict:

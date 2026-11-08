@@ -19,7 +19,7 @@ import pine_eval as E
 import r5_eval as V
 
 LAB = {"fresh": "fresh 2020-03~2021-10 (untouched)", "val": "validation 2024-07~2025-10",
-       "seen": "seen 2025-11~", "design": "design 2022-01~2024-06"}  # fmt: skip
+       "seen": "seen 2025-11~", "design": "design 2022-01~2024-06", "last30": "last 30 days"}  # fmt: skip
 
 
 def main() -> None:

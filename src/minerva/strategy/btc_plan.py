@@ -8,18 +8,13 @@
 - 매매 봉은 15분·30분(사용자 2026-11-08): 손절 후보·추적 청산은 그 봉으로, 1시간·4시간 방향은 맥락.
 - 큰 흐름: 추세 이탈 규칙(T6D)의 마지막 신호 방향(마감된 일봉만). 백테스트 원본
   `pine_ports.s6_trend_dev` + `daily_wave.features`의 GT 문을 numpy 없이 옮겼다.
-- 실행: `python -m minerva.strategy.btc_plan brief` (텔레그램 아침 브리핑)
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
-import os
 from collections.abc import Sequence
 from datetime import datetime
-from pathlib import Path
 
 from minerva.strategy.indicators import Bar
 
@@ -411,55 +406,3 @@ def size_position(
         "breakeven_stop": round(be, 1),
         "warnings": warnings,
     }
-
-
-# ---------------- 아침 브리핑 ----------------
-def brief_text(data: dict) -> str:
-    p = data.get("plan") or {}
-    lines = [f"☀️ BTC 오늘의 판 ({data.get('generated_at', '')[:16].replace('T', ' ')} KST)"]
-    lines.append(f"현재가 {p.get('price', 0):,.1f} USDT (선물)")
-    if p.get("big_move"):
-        lines.append("큰 움직임 가능성 높음 (방향은 반반): 일봉·4시간·15분 모두 하방")
-    else:
-        lines.append("큰 움직임 표시 없음")
-    ways = p.get("ways") or {}
-    if ways:
-        lines.append(f"상위 방향: 1시간 {ways.get('1h', '-')} · 4시간 {ways.get('4h', '-')}")
-    since = f", {p['t6d_since']} 신호부터" if p.get("t6d_since") else ""
-    lines.append(f"큰 흐름(일봉 T6D): {p.get('t6d_label', '-')}{since}")
-    for k, name in (("15m", "15분"), ("30m", "30분")):
-        f = (p.get("tf") or {}).get(k)
-        if f and f.get("atr_pct") is not None:
-            lines.append(
-                f"{name}봉 ATR(14) {f['atr']:,.1f} ({f['atr_pct']:.2f}%) = 손절 거리 1배 제안"
-            )
-    if p.get("atr_d_pct") is not None:
-        lines.append(f"하루 평균 변동(일봉 ATR): {p['atr_d']:,.1f} ({p['atr_d_pct']}%)")
-    lines.append("손절·크기는 화면의 계산기로. 진입 여부만 직접 정하세요. 주문은 나가지 않아요.")
-    return "\n".join(lines)
-
-
-def main(argv: list[str] | None = None) -> None:
-    from minerva import notify
-    from minerva.strategy import btc
-
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("cmd", choices=["brief"])
-    ap.add_argument("--dry", action="store_true", help="보내지 않고 출력만")
-    args = ap.parse_args(argv)
-    path = Path(os.environ.get("MINERVA_BTC_OUT", str(btc.OUT))).expanduser()
-    data = json.loads(path.read_text()) if path.exists() else {}
-    fresh = data.get("generated_at") and "plan" in data
-    if fresh:
-        age = datetime.now(btc.KST) - datetime.fromisoformat(data["generated_at"])
-        fresh = age.total_seconds() < 3600
-    if not fresh:
-        data = btc.build()
-    text = brief_text(data)
-    print(text)
-    if not args.dry and not notify.send(text):
-        raise SystemExit("텔레그램 전송 실패")
-
-
-if __name__ == "__main__":
-    main()

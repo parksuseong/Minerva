@@ -172,27 +172,3 @@ def test_size_warns_when_fees_eat_a_narrow_stop():
     assert any("손절 폭이 좁아 수수료가 손실의 25%" in w for w in r["warnings"])
     wide = btc_plan.size_position("long", 100_000, 99_000, 10_000, 1.0)
     assert not any("수수료" in w for w in wide["warnings"])
-
-
-def test_brief_text_says_direction_is_coin_flip():
-    data = {
-        "generated_at": "2026-11-09T08:30:00+09:00",
-        "plan": {
-            "price": 80000.0,
-            "big_move": True,
-            "t6d_label": "숏 우위",
-            "t6d_since": "2026-10-23",
-            "atr_d": 2285.5,
-            "atr_d_pct": 2.86,
-            "ways": {"1h": "상방", "4h": "하방"},
-            "tf": {
-                "15m": {"atr": 180.2, "atr_pct": 0.225},
-                "30m": {"atr": 260.0, "atr_pct": 0.325},
-            },
-        },
-    }
-    text = btc_plan.brief_text(data)
-    assert "큰 움직임 가능성 높음 (방향은 반반)" in text
-    assert "숏 우위" in text and "2.86%" in text and "80,000.0" in text
-    assert "15분봉 ATR(14) 180.2 (0.23%)" in text and "1시간 상방 · 4시간 하방" in text
-    assert "하루 평균 변동" in text

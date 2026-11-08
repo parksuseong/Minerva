@@ -1,7 +1,7 @@
-# BTC 아침 브리핑(큰 움직임 표시·일봉 방향·현재가·손절 거리)을 텔레그램으로 보낸다. 주문 없음.
+# BTC 자동매매 엔진 아침 브리핑(모드·포지션·밤사이 청산·시드 대비·정지 거리·신호·방향)을 텔레그램으로. 읽기 전용, 주문 없음.
 # 설치: sudo cp deploy/minerva-btc-brief.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-btc-brief.timer
 [Unit]
-Description=Minerva BTCUSDT morning brief to Telegram
+Description=Minerva BTC auto-trading engine morning brief to Telegram (read-only)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,4 +9,4 @@ Wants=network-online.target
 Type=oneshot
 User=ec2-user
 WorkingDirectory=/home/ec2-user/work/Minerva
-ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.strategy.btc_plan brief
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.btc_brief

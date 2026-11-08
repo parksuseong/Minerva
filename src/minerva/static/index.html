@@ -91,6 +91,8 @@
       font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; cursor: pointer; }
     .filters button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
     .filters label { font-size: 13px; color: var(--muted); }
+    .filters select { font: inherit; font-size: 13px; padding: 3px 6px; border: 1px solid var(--line);
+      border-radius: 8px; background: var(--card); color: var(--text); }
     details.asset summary { list-style: none; cursor: pointer; }
     details.asset summary::-webkit-details-marker { display: none; }
     .mini { font-size: 12px; color: var(--muted); }
@@ -122,6 +124,7 @@
     <button role="tab" data-tab="analysis" aria-selected="false">📈 종목 분석</button>
     <button role="tab" data-tab="account" aria-selected="false">💼 계좌</button>
     <button role="tab" data-tab="office" aria-selected="false">🏢 오피스</button>
+    <button role="tab" data-tab="scrlab" aria-selected="false">🧪 SCR 실험실</button>
   </nav>
 
   <div class="panel" id="tab-today">
@@ -351,6 +354,53 @@
   </section>
   </div>
 
+  <div class="panel" id="tab-scrlab" hidden>
+    <section class="card">
+      <h2>🧪 SCR 실험실 <span class="mini">BTCUSDT 선물 · 숫자를 바꾸면 바로 다시 계산 · 주문 없음</span></h2>
+      <div class="filters" id="lab-tf" role="group" aria-label="봉">
+        <span class="mini">봉</span>
+        <button type="button" data-tf="5m">5분</button>
+        <button type="button" data-tf="15m">15분</button>
+        <button type="button" data-tf="30m">30분</button>
+        <button type="button" data-tf="1h">1시간</button>
+        <button type="button" data-tf="4h">4시간</button>
+      </div>
+      <div class="filters" id="lab-days" role="group" aria-label="기간">
+        <span class="mini">기간</span>
+        <button type="button" data-days="3">3일</button>
+        <button type="button" data-days="7">7일</button>
+        <button type="button" data-days="14">14일</button>
+        <button type="button" data-days="30">30일</button>
+      </div>
+      <div class="sizer" id="lab-params"></div>
+      <div class="filters">
+        <label>필요 지표 수 <select id="lab-need"><option value="3">3개 중 3개</option><option value="2">3개 중 2개</option></select></label>
+        <label>모드 <select id="lab-mode"><option value="cross">기준선 다시 넘어옴</option><option value="zone">구간 안에 있음</option></select></label>
+        <label><input type="checkbox" id="lab-long"> 롱</label>
+        <label><input type="checkbox" id="lab-short"> 숏</label>
+        <button type="button" id="lab-reset">기본값으로</button>
+      </div>
+      <details class="mini" style="margin:6px 0"><summary>규칙 설명</summary>
+        마감된 봉만 써요. <b>롱 열림</b>: 최근 W봉(지금 봉 포함) 안에 Stoch fast %K가 아래선을, CCI(hlc3)가 아래선을, RSI(와일더)가 아래선을 아래에서 위로 다시 넘어오면 신호예요.
+        <b>숏 열림</b>은 반대로 위선을 위에서 아래로 넘어올 때. 조건이 처음 맞은 봉에만 표시하고, 계속 맞는 동안은 다시 찍지 않아요.<br>
+        <b>구간 안에 있음</b>: 넘어옴 대신 최근 W봉 안에 아래선 밑(롱)·위선 위(숏)에 있었으면 그 지표는 맞은 걸로 쳐요.
+        <b>3개 중 2개</b>: 세 지표 중 두 개만 맞아도 신호. 숫자를 바꾸는 동안 기간·봉은 그대로예요.
+      </details>
+      <div id="lab-status" class="mini">탭을 열면 불러와요</div>
+    </section>
+    <section class="card">
+      <h2>차트 <span class="mini">위: 캔들(KST) · 아래: Stoch · CCI · RSI (점선 = 지금 기준선)</span></h2>
+      <div class="mini">● 초록 = 롱 열림, ▼ 빨강 = 숏 열림. 표시는 신호가 난 봉 위치예요.</div>
+      <div id="lab-chart" style="height:640px;margin-top:6px"></div>
+    </section>
+    <section class="card">
+      <h2>신호 목록 <span class="mini">가격 = 신호 봉 종가 · 움직임은 매매 방향 기준</span></h2>
+      <div id="lab-summary"></div>
+      <div id="lab-list" class="placeholder">-</div>
+      <p class="mini">단순 참고용: 수수료·손절 없음, 과거 결과는 미래를 보장하지 않음.</p>
+    </section>
+  </div>
+
   <footer>투자 판단의 책임은 본인에게 있습니다.</footer>
 
   <script>
@@ -438,6 +488,8 @@
   <script src="/static/btcday.js?v=20261108b"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
   <script src="/static/btcml.js?v=20261108b"></script>
+  <script src="/static/scrlab_core.js?v=20261108a"></script>
+  <script src="/static/scrlab.js?v=20261108a"></script>
   <script src="/static/account.js?v=20261108a"></script>
   <script src="/static/trade.js?v=20261029"></script>
   <script src="/static/office.js?v=20261029b"></script>

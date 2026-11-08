@@ -10,6 +10,8 @@
   → `~/.minerva/account/binance.json`. 시드는 `binance_capital.json`, 날짜별 평가액은
   `binance_equity.json` (USDT). 열람 토큰은 계좌와 같다.
 - 자동매매: `python -m minerva.trade` (`minerva-trade-*.timer`) → `~/.minerva/trade/`
+- SCR 실험실: `/api/btc/klines`가 바이낸스 선물 공개 시세(GET, 키 없음)를 잠깐 캐시해 넘긴다.
+  계산은 화면(`static/scrlab_core.js`)이 한다.
 """
 
 from __future__ import annotations
@@ -17,6 +19,10 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import threading
+import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -84,6 +90,80 @@ def btc_ml_tracker() -> dict:
     data = _read(btc_ml_path())
     if data is None:
         return {"status": "pending", "message": "아직 추적 기록이 없어요 (15분마다 자동 실행)"}
+    return data
+
+
+KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
+# SCR 실험실에서 고를 수 있는 봉(분 단위)
+LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+LAB_MAX_DAYS = 30
+# 지표가 자리 잡도록 보여줄 기간 앞에 더 받는 봉 수
+# (RSI 와일더 평균은 앞 값에 기대어 천천히 수렴한다)
+LAB_WARMUP = 300
+LAB_TTL = 45.0
+_kline_cache: dict = {}
+_kline_lock = threading.Lock()
+
+
+def _get_klines(interval: str, start_ms: int, limit: int) -> list[list]:
+    query = urllib.parse.urlencode(
+        {"symbol": "BTCUSDT", "interval": interval, "startTime": start_ms, "limit": limit}
+    )
+    req = urllib.request.Request(f"{KLINE_URL}?{query}", headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)
+
+
+def lab_klines(interval: str, days: int, now_ms: int) -> dict:
+    """보여줄 기간 + 앞쪽 여유 봉. 진행 중인 마지막 봉은 뺀다."""
+    step = LAB_INTERVALS[interval] * 60_000
+    show_from = now_ms - days * 86_400_000
+    start = show_from - LAB_WARMUP * step
+    rows: list[list] = []
+    while start < now_ms:
+        page = _get_klines(interval, start, 1500)
+        if not page:
+            break
+        rows.extend(page)
+        start = int(page[-1][0]) + step
+        if len(page) < 1500:
+            break
+    bars = [
+        [int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
+        for r in rows
+        if int(r[6]) < now_ms
+    ]
+    return {
+        "symbol": "BTCUSDT",
+        "interval": interval,
+        "days": days,
+        "show_from": show_from,
+        "bars": bars,
+        "fetched_at": now_ms,
+    }
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+@router.get("/api/btc/klines")
+def btc_klines(interval: str = "15m", days: int = 7) -> dict:
+    """SCR 실험실용 BTCUSDT 선물 봉(공개 시세, GET만). 같은 요청은 잠깐 캐시한다."""
+    if interval not in LAB_INTERVALS:
+        raise HTTPException(status_code=400, detail="봉은 5m·15m·30m·1h·4h·1d 중 하나예요")
+    days = max(1, min(int(days), LAB_MAX_DAYS))
+    key = (interval, days)
+    with _kline_lock:
+        hit = _kline_cache.get(key)
+        if hit and time.monotonic() - hit[0] < LAB_TTL:
+            return hit[1]
+    try:
+        data = lab_klines(interval, days, _now_ms())
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="바이낸스 시세를 받지 못했어요") from exc
+    with _kline_lock:
+        _kline_cache[key] = (time.monotonic(), data)
     return data
 
 

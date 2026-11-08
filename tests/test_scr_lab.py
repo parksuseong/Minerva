@@ -36,7 +36,8 @@ def close_kst(open_ms: int) -> str:
 
 def test_default_reproduces_last_seven_days_of_15m_signals():
     rows = bars()
-    res = scr_lab.signals(*hlc(rows))
+    # 처음 정한 규칙(Stoch 5, RSI 14). 기본값은 2026-11-08에 Stoch 9·RSI 21로 바뀌었다.
+    res = scr_lab.signals(*hlc(rows), {"stoch_n": 5, "rsi_n": 14})
     # 픽스처 끝(11/8 20:00 KST) 기준 최근 7일
     cut = rows[-1][0] + STEP - 7 * 86_400_000
     got = sorted(
@@ -78,6 +79,16 @@ def test_signal_marked_once_while_condition_holds():
     for side in ("long", "short"):
         idx = res[side]
         assert all(b - a > 1 for a, b in zip(idx, idx[1:]))
+
+
+def test_defaults_are_user_values():
+    d = scr_lab.DEFAULTS
+    assert (d["stoch_n"], d["stoch_lo"], d["stoch_hi"]) == (9, 20, 80)
+    assert (d["cci_n"], d["cci_lo"], d["cci_hi"]) == (20, -100, 100)
+    assert (d["rsi_n"], d["rsi_lo"], d["rsi_hi"]) == (21, 30, 70)
+    assert (d["w"], d["need"], d["mode"]) == (3, 3, "cross")
+    js = CORE_JS.read_text()
+    assert "stoch_n: 9," in js and "rsi_n: 21," in js
 
 
 def test_looser_settings_give_more_signals():
@@ -140,6 +151,31 @@ def test_js_core_matches_python_twin(tmp_path):
 
 
 @pytest.mark.skipif(bun() is None, reason="JS 실행기(bun)가 없다")
+def test_js_switch_sim_stop_flip_and_fees(tmp_path):
+    script = tmp_path / "sim.js"
+    # 봉: 0 롱 신호 → 1 시가 100 진입 → 2 고가 110 → 3 숏 신호(종가 108) → 4 시가 108 뒤집기
+    #     → 5 고가 111.3 (108×1.03=111.24) 숏 손절
+    script.write_text(
+        f"const core = require({json.dumps(str(CORE_JS))});\n"
+        "const o = [100, 100, 105, 109, 108, 109], h = [100, 101, 110, 109, 108, 111.3];\n"
+        "const l = [100, 99, 104, 107, 107, 108], c = [100, 100, 109, 108, 108, 110];\n"
+        "const sigs = [{ i: 0, dir: 1 }, { i: 3, dir: -1 }];\n"
+        "const a = core.switchSim(o, h, l, c, sigs, { stop: 0.03, lev: 3, fee: 0.0005 });\n"
+        "const b = core.switchSim(o, h, l, c, sigs, { stop: 0.03, lev: 1, fee: 0 });\n"
+        "console.log(JSON.stringify([a, b]));\n"
+    )
+    out = subprocess.run([bun(), str(script)], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    a, b = json.loads(out.stdout)
+    assert (b["trades"], b["wins"], b["stops"], b["holding"]) == (2, 1, 1, False)
+    assert b["ret"] == pytest.approx((1.08 * 0.97 - 1) * 100)
+    long_net = 3 * 0.08 - 3 * 0.0005 * (1 + 1.08)
+    short_net = 3 * -0.03 - 3 * 0.0005 * (1 + 1.03)
+    assert a["ret"] == pytest.approx(((1 + long_net) * (1 + short_net) - 1) * 100)
+    assert a["mdd"] > 0
+
+
+@pytest.mark.skipif(bun() is None, reason="JS 실행기(bun)가 없다")
 def test_js_after_is_signed_and_needs_whole_bars(tmp_path):
     script = tmp_path / "after.js"
     script.write_text(
@@ -165,7 +201,10 @@ def kline(open_ms: int, step: int, px: float = 100.0) -> list:
 
 @pytest.fixture
 def fake_binance(monkeypatch):
-    calls = []
+    class Calls(list):
+        fake = None
+
+    calls = Calls()
     routes._kline_cache.clear()
 
     def fake(interval, start_ms, limit):
@@ -173,11 +212,14 @@ def fake_binance(monkeypatch):
         step = routes.LAB_INTERVALS[interval] * 60_000
         now = fake.now
         first = start_ms - start_ms % step
-        return [kline(t, step) for t in range(first, now + 1, step)][:limit]
+        return [kline(t, step) for t in range(first, min(now + 1, first + limit * step), step)]
 
     fake.now = 1_794_134_700_000 + 5 * 60_000  # 마지막 15분봉이 진행 중인 시각
+    fake.mono = 1000.0
     monkeypatch.setattr(routes, "_get_klines", fake)
     monkeypatch.setattr(routes, "_now_ms", lambda: fake.now)
+    monkeypatch.setattr(routes, "_mono", lambda: fake.mono)
+    calls.fake = fake
     yield calls
     routes._kline_cache.clear()
 
@@ -209,15 +251,52 @@ def test_klines_caches_same_request(fake_binance):
     n = len(fake_binance)
     client.get("/api/btc/klines?interval=1h&days=3")
     assert len(fake_binance) == n
-    client.get("/api/btc/klines?interval=1h&days=7")
-    assert len(fake_binance) > n
+
+
+def test_klines_refreshes_only_the_last_chunk(fake_binance):
+    client = TestClient(app)
+    client.get("/api/btc/klines?interval=15m&days=365")
+    first = len(fake_binance)
+    assert first >= 24  # 15분봉 1년 ≈ 3만 5천 봉 ÷ 1500
+    fake_binance.fake.mono += routes.LAB_TTL + 1
+    client.get("/api/btc/klines?interval=15m&days=365")
+    assert len(fake_binance) == first + 1
+    fake_binance.fake.mono += routes.LAB_OLD_TTL + 1
+    client.get("/api/btc/klines?interval=15m&days=365")
+    assert len(fake_binance) == 2 * first + 1
+
+
+def test_klines_one_year_of_15m_bars(fake_binance):
+    client = TestClient(app)
+    d = client.get("/api/btc/klines?interval=15m&days=365").json()
+    assert d["days"] == 365 and d["capped"] is False
+    assert len(d["bars"]) == 365 * 96 + routes.LAB_WARMUP - 1
+    times = [b[0] for b in d["bars"]]
+    assert all(b - a == STEP for a, b in zip(times, times[1:]))
 
 
 def test_klines_caps_days_and_rejects_other_intervals(fake_binance):
     client = TestClient(app)
-    assert client.get("/api/btc/klines?interval=1d&days=999").json()["days"] == routes.LAB_MAX_DAYS
+    d = client.get("/api/btc/klines?interval=1d&days=999").json()
+    assert d["days"] == routes.LAB_MAX_DAYS == 365 and d["capped"] is True
+    d = client.get("/api/btc/klines?interval=5m&days=365").json()
+    assert d["days"] == 90 and d["capped"] is True
     assert client.get("/api/btc/klines?interval=1w").status_code == 400
     assert client.get("/api/btc/klines?interval=1M").status_code == 400
+
+
+def test_klines_gzip_when_asked(fake_binance):
+    client = TestClient(app)
+    r = client.get("/api/btc/klines?interval=4h&days=30", headers={"Accept-Encoding": "gzip"})
+    assert r.headers["content-encoding"] == "gzip"
+    assert r.json()["interval"] == "4h"
+
+
+def test_cache_is_bounded(fake_binance):
+    client = TestClient(app)
+    for iv in ("5m", "15m", "30m", "1h", "4h", "1d"):
+        client.get(f"/api/btc/klines?interval={iv}&days=365")
+    assert len(routes._kline_cache) <= routes.LAB_MAX_CHUNKS
 
 
 def test_klines_upstream_failure_is_502(monkeypatch):
@@ -238,4 +317,5 @@ def test_page_has_lab_tab_and_scripts():
     assert 'data-tab="scrlab"' in page and 'id="tab-scrlab"' in page
     assert "/static/scrlab_core.js" in page and "/static/scrlab.js" in page
     assert "수수료·손절 없음" in page
+    assert 'data-days="365"' in page and 'data-days="180"' in page
     assert client.get("/static/scrlab.js").status_code == 200

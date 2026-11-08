@@ -10,12 +10,13 @@
   → `~/.minerva/account/binance.json`. 시드는 `binance_capital.json`, 날짜별 평가액은
   `binance_equity.json` (USDT). 열람 토큰은 계좌와 같다.
 - 자동매매: `python -m minerva.trade` (`minerva-trade-*.timer`) → `~/.minerva/trade/`
-- SCR 실험실: `/api/btc/klines`가 바이낸스 선물 공개 시세(GET, 키 없음)를 잠깐 캐시해 넘긴다.
+- SCR 실험실: `/api/btc/klines`가 바이낸스 선물 공개 시세(GET, 키 없음)를 덩어리째 캐시해 넘긴다.
   계산은 화면(`static/scrlab_core.js`)이 한다.
 """
 
 from __future__ import annotations
 
+import gzip
 import hmac
 import json
 import os
@@ -23,11 +24,12 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Response
 
 from minerva import perf
 from minerva.strategy import btc_plan
@@ -96,12 +98,18 @@ def btc_ml_tracker() -> dict:
 KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
 # SCR 실험실에서 고를 수 있는 봉(분 단위)
 LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
-LAB_MAX_DAYS = 30
+LAB_MAX_DAYS = 365
+# 5분봉 1년은 10만 봉이 넘어 휴대폰 화면이 버거워 90일까지만 (사용자 요청 2026-11-08 1년 보기)
+LAB_DAY_CAP = {"5m": 90}
 # 지표가 자리 잡도록 보여줄 기간 앞에 더 받는 봉 수
 # (RSI 와일더 평균은 앞 값에 기대어 천천히 수렴한다)
 LAB_WARMUP = 300
-LAB_TTL = 45.0
-_kline_cache: dict = {}
+# 바이낸스 한 번 요청 최대 봉 수. 시각을 이 단위로 잘라 덩어리째 캐시한다.
+LAB_CHUNK = 1500
+LAB_TTL = 45.0  # 아직 끝나지 않은 마지막 덩어리
+LAB_OLD_TTL = 6 * 3600.0  # 다 끝난 덩어리(봉이 더 바뀌지 않는다)
+LAB_MAX_CHUNKS = 80  # 15분봉 1년 25개 + 5분봉 90일 18개 + 나머지, 봉 약 12만 개 이하
+_kline_cache: OrderedDict = OrderedDict()
 _kline_lock = threading.Lock()
 
 
@@ -114,25 +122,47 @@ def _get_klines(interval: str, start_ms: int, limit: int) -> list[list]:
         return json.load(r)
 
 
+def _mono() -> float:
+    return time.monotonic()
+
+
+def _chunk(interval: str, k: int, now_ms: int) -> list[tuple]:
+    """k번째 덩어리(LAB_CHUNK봉)의 봉 (시작 ms, 시, 고, 저, 종). 거래량은 화면에서 안 쓴다."""
+    span = LAB_CHUNK * LAB_INTERVALS[interval] * 60_000
+    key = (interval, k)
+    with _kline_lock:
+        hit = _kline_cache.get(key)
+        if hit:
+            at, rows, done = hit
+            if _mono() - at < (LAB_OLD_TTL if done else LAB_TTL):
+                _kline_cache.move_to_end(key)
+                return rows
+    page = _get_klines(interval, k * span, LAB_CHUNK)
+    rows = [
+        (int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]))
+        for r in page
+        if int(r[6]) < now_ms
+    ]
+    done = (k + 1) * span <= now_ms
+    with _kline_lock:
+        _kline_cache[key] = (_mono(), rows, done)
+        _kline_cache.move_to_end(key)
+        while len(_kline_cache) > LAB_MAX_CHUNKS:
+            _kline_cache.popitem(last=False)
+    return rows
+
+
 def lab_klines(interval: str, days: int, now_ms: int) -> dict:
     """보여줄 기간 + 앞쪽 여유 봉. 진행 중인 마지막 봉은 뺀다."""
     step = LAB_INTERVALS[interval] * 60_000
+    span = LAB_CHUNK * step
     show_from = now_ms - days * 86_400_000
     start = show_from - LAB_WARMUP * step
-    rows: list[list] = []
-    while start < now_ms:
-        page = _get_klines(interval, start, 1500)
-        if not page:
-            break
-        rows.extend(page)
-        start = int(page[-1][0]) + step
-        if len(page) < 1500:
-            break
-    bars = [
-        [int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
-        for r in rows
-        if int(r[6]) < now_ms
-    ]
+    bars: list[tuple] = []
+    for k in range(start // span, (now_ms - 1) // span + 1):
+        bars.extend(
+            b for b in _chunk(interval, k, now_ms) if b[0] >= start and b[0] + step <= now_ms
+        )
     return {
         "symbol": "BTCUSDT",
         "interval": interval,
@@ -148,23 +178,26 @@ def _now_ms() -> int:
 
 
 @router.get("/api/btc/klines")
-def btc_klines(interval: str = "15m", days: int = 7) -> dict:
-    """SCR 실험실용 BTCUSDT 선물 봉(공개 시세, GET만). 같은 요청은 잠깐 캐시한다."""
+def btc_klines(interval: str = "15m", days: int = 7, accept_encoding: str = Header("")) -> Response:
+    """SCR 실험실용 BTCUSDT 선물 봉(공개 시세, GET만). 덩어리째 캐시한다."""
     if interval not in LAB_INTERVALS:
         raise HTTPException(status_code=400, detail="봉은 5m·15m·30m·1h·4h·1d 중 하나예요")
-    days = max(1, min(int(days), LAB_MAX_DAYS))
-    key = (interval, days)
-    with _kline_lock:
-        hit = _kline_cache.get(key)
-        if hit and time.monotonic() - hit[0] < LAB_TTL:
-            return hit[1]
+    want = max(1, int(days))
+    days = min(want, LAB_MAX_DAYS, LAB_DAY_CAP.get(interval, LAB_MAX_DAYS))
     try:
         data = lab_klines(interval, days, _now_ms())
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=502, detail="바이낸스 시세를 받지 못했어요") from exc
-    with _kline_lock:
-        _kline_cache[key] = (time.monotonic(), data)
-    return data
+    data["capped"] = days < want
+    # 15분봉 1년이면 약 2MB라 브라우저가 받으면 압축해서 보낸다(라우트 하나라 미들웨어 대신 여기서)
+    body = json.dumps(data, separators=(",", ":")).encode()
+    if isinstance(accept_encoding, str) and "gzip" in accept_encoding:
+        return Response(
+            gzip.compress(body, 5),
+            media_type="application/json",
+            headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
+        )
+    return Response(body, media_type="application/json")
 
 
 @router.get("/api/btc/size")

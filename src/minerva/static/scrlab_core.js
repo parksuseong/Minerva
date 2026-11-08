@@ -2,9 +2,9 @@
 // 마감된 봉만 넣는다. 지표 값이 아직 없는 앞부분은 null.
 (function (root) {
   const DEFAULTS = {
-    stoch_n: 5, stoch_lo: 20, stoch_hi: 80,
+    stoch_n: 9, stoch_lo: 20, stoch_hi: 80,
     cci_n: 20, cci_lo: -100, cci_hi: 100,
-    rsi_n: 14, rsi_lo: 30, rsi_hi: 70,
+    rsi_n: 21, rsi_lo: 30, rsi_hi: 70,
     w: 3, need: 3, mode: "cross",
   };
 
@@ -100,7 +100,45 @@
     return (c[i + k] / c[i] - 1) * 100 * dir;
   }
 
-  const api = { DEFAULTS, stoch, cci, rsi, crossed, inZone, recent, signals, after };
+  // 롱↔숏 갈아타기 거친 추정(사용자 요청 2026-11-08 "손절 3% · 3배"). 신호 다음 봉 시가에 들어가고,
+  // 반대 신호면 다음 봉 시가에 뒤집는다. 같은 방향 신호는 무시. 진입가 ±stop에 봉 고가·저가가 닿으면
+  // 그 값(시가가 이미 넘었으면 시가)에 나가고 다음 신호까지 쉰다. 같은 봉에 롱·숏이 같이 나면 건너뛴다.
+  // 수수료는 편도 fee × 레버리지(원금 대비). 슬리피지·펀딩비·청산은 없다.
+  function switchSim(o, h, l, c, sigs, opt) {
+    const stop = opt.stop, lev = opt.lev, fee = opt.fee;
+    const at = new Map();
+    sigs.forEach((s) => at.set(s.i, at.has(s.i) && at.get(s.i) !== s.dir ? 0 : s.dir));
+    let eq = 1, peak = 1, mdd = 0, pos = 0, entry = 0, trades = 0, wins = 0, stops = 0;
+    const close = (px) => {
+      const net = lev * pos * (px / entry - 1) - lev * fee * (1 + px / entry);
+      eq = Math.max(0, eq * (1 + net));
+      trades += 1; if (net > 0) wins += 1;
+      pos = 0;
+    };
+    const first = sigs.reduce((m, s) => Math.min(m, s.i + 1), c.length);
+    for (let j = first; j < c.length; j++) {
+      const d = at.get(j - 1);
+      if (d && d !== pos) {
+        if (pos) close(o[j]);
+        pos = d; entry = o[j];
+      }
+      if (pos) {
+        const sp = entry * (1 - pos * stop);
+        if (pos > 0 ? l[j] <= sp : h[j] >= sp) {
+          close(pos > 0 ? Math.min(o[j], sp) : Math.max(o[j], sp));
+          stops += 1;
+        }
+      }
+      const mark = pos ? eq * (1 + lev * pos * (c[j] / entry - 1)) : eq;
+      if (mark > peak) peak = mark;
+      if (peak > 0) mdd = Math.max(mdd, (1 - mark / peak) * 100);
+    }
+    const holding = pos !== 0;
+    if (holding) close(c[c.length - 1]);
+    return { trades, wins, stops, ret: (eq - 1) * 100, mdd, holding };
+  }
+
+  const api = { DEFAULTS, stoch, cci, rsi, crossed, inZone, recent, signals, after, switchSim };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ScrLab = api;
 })(typeof self !== "undefined" ? self : this);

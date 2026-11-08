@@ -4,7 +4,10 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const core = window.ScrLab;
-  const KEY = "minerva-scrlab";
+  // 기본값이 바뀌면 판을 올린다. 옛 판에 저장된 값은 읽지 않아 새 기본값이 한 번 보인다.
+  const KEY = "minerva-scrlab-v2";
+  const DAYS = [3, 7, 14, 30, 90, 180, 365];
+  const MAX_ROWS = 300;
   const GREEN = "#26a69a", RED = "#ef5350";
   const MIN = { "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440 };
   const FIELDS = [
@@ -41,7 +44,7 @@
     if (saved && typeof saved === "object") cfg = Object.assign(cfg, saved);
   } catch (e) { /* 저장된 값이 없거나 막혀도 기본값으로 연다 */ }
   if (!MIN[cfg.interval]) cfg.interval = BASE.interval;
-  if (![3, 7, 14, 30].includes(Number(cfg.days))) cfg.days = BASE.days;
+  if (!DAYS.includes(Number(cfg.days))) cfg.days = BASE.days;
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* 기억만 못 한다 */ } };
 
   let data = null, chart = null, series = null, started = false, timer = null, loading = 0;
@@ -67,9 +70,10 @@
     $("lab-long").onchange = (e) => { cfg.show_long = e.target.checked; later(); };
     $("lab-short").onchange = (e) => { cfg.show_short = e.target.checked; later(); };
     $("lab-reset").onclick = () => {
-      const keep = { interval: cfg.interval, days: cfg.days };
-      cfg = Object.assign(defaults(), keep);
-      save(); syncControls(); recompute();
+      const refetch = cfg.interval !== BASE.interval || Number(cfg.days) !== BASE.days;
+      cfg = defaults();
+      save(); syncControls();
+      if (refetch) load(true); else recompute();
     };
   };
 
@@ -179,6 +183,16 @@
   };
 
   // ---- 목록·요약 ----
+  const simLine = (bars, sigs) => {
+    if (!sigs.length || !core.switchSim) return "";
+    const col = (k) => bars.map((b) => b[k]);
+    const r = core.switchSim(col(1), col(2), col(3), col(4), sigs, { stop: 0.03, lev: 3, fee: 0.0005 });
+    return `<div class="mini" style="margin:4px 0 8px">📐 <b>손절 3% · 3배 단순 계산</b> (거친 추정): 보이는 신호로 롱↔숏 갈아타기 →
+      거래 ${r.trades}번 · 이익 ${r.wins} · 손절 ${r.stops} · 누적 <b>${pct(r.ret)}</b> · 최대 낙폭 −${num(r.mdd, 1)}%${r.holding ? " · 마지막 포지션은 종가로 정리" : ""}<br>
+      신호 다음 봉 시가 진입, 반대 신호에 뒤집기, 진입가 ±3%에 봉 고가·저가가 닿으면 손절 후 다음 신호까지 쉼, 수수료 0.05%/편도.
+      슬리피지·펀딩비·청산 없음, 봉 안에서 값이 움직인 순서는 모름.</div>`;
+  };
+
   const drawList = (bars, sigs) => {
     const c = bars.map((b) => b[4]);
     const step = MIN[data.interval] || 15;
@@ -192,14 +206,15 @@
       <span class="chip">신호 ${rows.length}개</span>
       <span class="chip good">롱 ${longs}</span><span class="chip warn">숏 ${rows.length - longs}</span>
       <span class="chip">4시간 뒤 맞는 방향 ${with4.length ? `${right}/${with4.length} (${num((right / with4.length) * 100, 0)}%)` : "-"}</span>
-      <span class="chip">4시간 평균 ${avg4 == null ? "-" : `${avg4 > 0 ? "+" : ""}${num(avg4, 2)}%`}</span></div>`;
+      <span class="chip">4시간 평균 ${avg4 == null ? "-" : `${avg4 > 0 ? "+" : ""}${num(avg4, 2)}%`}</span></div>${simLine(bars, sigs)}`;
     $("lab-list").innerHTML = rows.length ? `<div style="overflow-x:auto"><table class="acct"><thead><tr>
         <th>봉 마감 (KST)</th><th>방향</th><th>가격</th><th>1시간</th><th>4시간</th><th>24시간</th>
-      </tr></thead><tbody>${rows.slice().reverse().map((r) => `<tr>
+      </tr></thead><tbody>${rows.slice(-MAX_ROWS).reverse().map((r) => `<tr>
         <td>${fmt(kst(bars[r.i][0] + step * 60000), true)}</td>
         <td><span class="chip ${r.dir > 0 ? "good" : "warn"}">${r.dir > 0 ? "● 롱" : "▼ 숏"}</span></td>
         <td>${num(c[r.i], 1)}</td><td>${pct(r.m[0])}</td><td>${pct(r.m[1])}</td><td>${pct(r.m[2])}</td></tr>`).join("")}
-      </tbody></table></div>` : '<p class="placeholder">이 설정으로는 이 기간에 신호가 없어요.</p>';
+      </tbody></table></div>${rows.length > MAX_ROWS ? `<p class="mini">최근 ${MAX_ROWS}개만 표에 보여요 (요약은 전체 ${num(rows.length, 0)}개 기준).</p>` : ""}`
+      : '<p class="placeholder">이 설정으로는 이 기간에 신호가 없어요.</p>';
   };
 
   const recompute = (fit) => {
@@ -219,6 +234,7 @@
       const last = bars[bars.length - 1];
       $("lab-status").innerHTML = `마지막 마감 봉 ${fmt(kst(last[0] + (MIN[data.interval] || 15) * 60000), true)} KST · `
         + `봉 ${num(bars.length - from, 0)}개 (앞쪽 여유 ${num(from, 0)}개는 지표 계산에만 씀)`
+        + (data.capped ? `<br><span class="up">⚠️ 5분봉은 ${num(data.days, 0)}일까지만 볼 수 있어요 (봉이 너무 많아 화면이 느려져요)</span>` : "")
         + (bad.length ? `<br><span class="up">⚠️ ${esc(bad.join(", "))} 값이 범위를 벗어나 기본값으로 계산했어요</span>` : "");
     } catch (e) {
       $("lab-status").textContent = "계산 중 문제가 생겼어요. 기본값으로 버튼을 눌러 보세요.";

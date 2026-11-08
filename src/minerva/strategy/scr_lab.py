@@ -13,14 +13,15 @@ from typing import Optional
 
 Num = Optional[float]
 
+# 기본값: 사용자 지정 2026-11-08 (Stoch 9, CCI 20, RSI 21)
 DEFAULTS: dict = {
-    "stoch_n": 5,
+    "stoch_n": 9,
     "stoch_lo": 20.0,
     "stoch_hi": 80.0,
     "cci_n": 20,
     "cci_lo": -100.0,
     "cci_hi": 100.0,
-    "rsi_n": 14,
+    "rsi_n": 21,
     "rsi_lo": 30.0,
     "rsi_hi": 70.0,
     "w": 3,

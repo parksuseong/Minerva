@@ -136,11 +136,54 @@ def test_today_builds_plan():
         {"frame": "4h", "direction": "하방"},
         {"frame": "1d", "direction": "하방"},
     ]
-    p = btc_plan.today(frames, daily, at, daily, 120.0)
+    intraday = {"15m": daily, "30m": daily[:300]}
+    p = btc_plan.today(frames, daily, at, intraday, {"1h": "상방", "4h": "하방"}, 120.0)
     assert p["big_move"] and p["t6d"] == 1 and p["t6d_label"] == "롱 우위"
     assert p["t6d_since"] == at[391].strftime("%Y-%m-%d")
-    assert p["stops"]["long"]["atr"] == pytest.approx(120 - p["atr_d"], abs=0.11)
-    assert p["stops"]["long"]["swing"] < 120 < p["stops"]["short"]["atr"]
+    assert p["ways"] == {"1h": "상방", "4h": "하방"}
+    assert p["align"] == {"long": "불일치", "short": "불일치"}
+    assert set(p["tf"]) == {"15m", "30m"}
+    f = p["tf"]["15m"]
+    assert f["stops"]["long"]["atr1"] == pytest.approx(120 - f["atr"], abs=0.11)
+    assert f["stops"]["long"]["atr15"] == pytest.approx(120 - 1.5 * f["atr"], abs=0.11)
+    assert f["stops"]["short"]["atr15"] > f["stops"]["short"]["atr1"] > 120
+    assert f["prev_low"] == round(lo[-1], 1) and f["prev_high"] == round(h[-1], 1)
+
+
+def test_frame_plan_stops_use_that_frame():
+    # 직전 봉 저가 99, 고가 101, 스윙 저점(좌우 2봉) 97, 스윙 고점 104
+    lows = [100] * 15 + [98, 97, 98, 99, 99]
+    highs = [102] * 15 + [103, 104, 103, 102, 101]
+    bars = [Bar(date(2025, 1, 1), 100, hi, lo, 100, 1) for hi, lo in zip(highs, lows)]
+    f = btc_plan.frame_plan(bars, 100.0)
+    assert f["stops"]["long"]["swing"] == 97 and f["stops"]["long"]["prev"] == 99
+    assert f["stops"]["short"]["swing"] == 104 and f["stops"]["short"]["prev"] == 101
+    assert f["prev_low"] == 99 and f["prev_high"] == 101
+    # 현재가가 이미 직전 저가 아래면 롱 손절 후보에서 뺀다
+    assert btc_plan.frame_plan(bars, 98.5)["stops"]["long"]["prev"] is None
+
+
+@pytest.mark.parametrize(
+    "side,ways,want",
+    [
+        ("long", {"1h": "상방", "4h": "상방"}, "일치"),
+        ("long", {"1h": "상방", "4h": "중립"}, "일부"),
+        ("long", {"1h": "하방", "4h": "상방"}, "불일치"),
+        ("short", {"1h": "하방", "4h": "하방"}, "일치"),
+        ("short", {"1h": "중립", "4h": "상방"}, "불일치"),
+    ],
+)
+def test_align_with_1h_and_4h(side, ways, want):
+    assert btc_plan.align(side, ways) == want
+
+
+def test_size_warns_when_fees_eat_a_narrow_stop():
+    # 15분봉 손절 0.3%: 왕복 수수료 약 0.1%가 손절 폭의 33%
+    r = btc_plan.size_position("long", 100_000, 99_700, 10_000, 1.0)
+    assert r["fee_share_pct"] == pytest.approx(99.85 / 399.85 * 100, abs=0.1)
+    assert any("손절 폭이 좁아 수수료가 손실의 25%" in w for w in r["warnings"])
+    wide = btc_plan.size_position("long", 100_000, 99_000, 10_000, 1.0)
+    assert not any("수수료" in w for w in wide["warnings"])
 
 
 def test_brief_text_says_direction_is_coin_flip():
@@ -153,8 +196,15 @@ def test_brief_text_says_direction_is_coin_flip():
             "t6d_since": "2026-10-23",
             "atr_d": 2285.5,
             "atr_d_pct": 2.86,
+            "ways": {"1h": "상방", "4h": "하방"},
+            "tf": {
+                "15m": {"atr": 180.2, "atr_pct": 0.225},
+                "30m": {"atr": 260.0, "atr_pct": 0.325},
+            },
         },
     }
     text = btc_plan.brief_text(data)
     assert "큰 움직임 가능성 높음 (방향은 반반)" in text
     assert "숏 우위" in text and "2.86%" in text and "80,000.0" in text
+    assert "15분봉 ATR(14) 180.2 (0.23%)" in text and "1시간 상방 · 4시간 하방" in text
+    assert "하루 평균 변동" in text

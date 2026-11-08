@@ -130,10 +130,14 @@ def _chunk(interval: str, k: int, now_ms: int) -> list[tuple]:
                 _kline_cache.move_to_end(key)
                 return rows
     page = _get_klines(interval, k * span, LAB_CHUNK)
+    if not isinstance(page, list):
+        raise ValueError(f"바이낸스 봉 응답이 목록이 아니다: {str(page)[:100]}")
+    # 시세 공백이 있으면 1500봉이 덩어리 끝을 넘는다: 이웃 덩어리와 겹치지 않게 자른다
+    lo, hi = k * span, (k + 1) * span
     rows = [
         (int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]))
         for r in page
-        if int(r[6]) < now_ms
+        if lo <= int(r[0]) < hi and int(r[6]) < now_ms
     ]
     done = (k + 1) * span <= now_ms
     with _kline_lock:

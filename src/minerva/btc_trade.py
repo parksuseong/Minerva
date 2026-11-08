@@ -144,6 +144,8 @@ _sleep = time.sleep
 _clock = time.monotonic
 
 
+TERMINAL = ("CANCELED", "FILLED", "EXPIRED", "REJECTED")
+
 # ---------------------------------------------------------------- 파일·상태
 
 
@@ -166,7 +168,15 @@ def _read_jsonl(name: str) -> list[dict]:
     path = DIR / name
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    out = []
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:  # 다른 프로세스가 쓰는 중인 마지막 줄
+            log.warning("%s: 읽지 못한 줄을 건너뜀", name)
+    return out
 
 
 def mode() -> str:
@@ -509,6 +519,8 @@ def _close_result(client, pos: dict, close_side: str) -> tuple[float | None, flo
     청산 체결을 다 못 찾으면 손익은 None(승률 계산에서 빠진다). BNB로 낸 수수료는 빠진다.
     """
     start = int(pos["entry_ms"]) - 1000
+    # 갈아타기: 같은 실행에서 닫은 앞 포지션의 체결(손익·수수료)이 이 창에 들어오지 않게
+    after = int(pos.get("after_ms") or 0)
     trades: list[dict] = []
     for k in range(3):
         if k:
@@ -520,6 +532,7 @@ def _close_result(client, pos: dict, close_side: str) -> tuple[float | None, flo
                 client, "/fapi/v1/userTrades", symbol=SYMBOL, startTime=t0, endTime=t1, limit=1000
             )
             t0 = t1 + 1
+        trades = [t for t in trades if int(t["time"]) > after]
         exits = [t for t in trades if t["side"] == close_side and int(t["time"]) >= start]
         if sum(float(t["qty"]) for t in exits) >= pos["qty"] - 1e-9:
             break
@@ -528,6 +541,7 @@ def _close_result(client, pos: dict, close_side: str) -> tuple[float | None, flo
     px = sum(float(t["qty"]) * float(t["price"]) for t in exits) / qty if qty else None
     if qty < pos["qty"] - 1e-9:
         return px, None
+    pos["closed_ms"] = max(int(t["time"]) for t in exits)
     pnl = sum(float(t["realizedPnl"]) for t in trades) - sum(
         float(t["commission"]) for t in trades if t.get("commissionAsset", "USDT") == "USDT"
     )
@@ -665,7 +679,7 @@ def winrate(mode_: str, now: datetime) -> tuple[int, int]:
     rows = [
         r
         for r in _read_jsonl("closed.jsonl")
-        if r.get("mode") == mode_ and r["at"] >= since and r.get("pnl") is not None
+        if r.get("mode") == mode_ and r.get("at", "") >= since and r.get("pnl") is not None
     ]
     return len(rows), sum(1 for r in rows if (r.get("pnl") or 0) > 0)
 
@@ -862,21 +876,35 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
     """보호 못 하는 엔진 포지션을 시장가로 닫는다. 실패하면 크게 알린다."""
     pos = state["position"]
     close_side = "SELL" if pos["side"] == "long" else "BUY"
-    cid = f"{PREFIX}{int(ctx.now.timestamp()) // 60}-x"
+    # ID는 포지션·시도마다(실행 분 단위면 같은 실행의 두 번째 비상 청산이 앞 주문을 찾고 끝난다)
+    # 시도마다 새 ID(앞 시도가 만료·부분 체결이면 같은 ID는 옛 주문을 찾아 아무것도 안 낸다)
+    n = pos.get("x_n", 0) + 1
+    pos["x_n"] = n
+    _save(DIR / "state.json", state)
+    cid = f"{PREFIX}{pos['bar'] // 60000}-x{n}"
     try:
         amt = position_amt(ctx.client)
         if amt:
             market(ctx.client, close_side, _round(abs(amt), "0.001"), cid, reduce=True)
         if position_amt(ctx.client) != 0:
             raise RuntimeError("청산 뒤에도 포지션이 남음")
-        cancel_engine_stops(ctx.client)
-        px, pnl = _close_result(ctx.client, pos, close_side)
-        state["position"] = None
-        _save(DIR / "state.json", state)
-        _record_close(ctx, pos, px, pnl, why)
     except (Rejected, NetworkError, RuntimeError) as e:
         ctx.say(f"🆘 손절 없는 포지션을 닫지 못했어요: {e}\n지금 바이낸스 앱에서 직접 확인하세요!")
         ctx.event(event="unprotected", error=str(e))
+        return
+    # 닫힌 것은 확인됐다: 뒤 조회가 실패해도 포지션을 남기지 않는다
+    # (남기면 다음 실행이 '수동 청산'으로 보고 거짓 정지를 건다)
+    state["position"] = None
+    _save(DIR / "state.json", state)
+    try:
+        cancel_engine_stops(ctx.client)
+    except (Rejected, NetworkError) as e:
+        ctx.event(event="cancel_after_protect_failed", error=str(e))  # 다음 대사가 취소한다
+    try:
+        px, pnl = _close_result(ctx.client, pos, close_side)
+    except (Rejected, NetworkError):
+        px = pnl = None
+    _record_close(ctx, pos, px, pnl, why)
 
 
 def reconcile_live(ctx: Ctx, state: dict) -> bool:
@@ -992,6 +1020,8 @@ def _adopt(state: dict, pending: dict, order: dict) -> dict:
         "opened_at": pending.get("at"),
         "mode": "live",
     }
+    if state.get("closed_through_ms"):
+        pos["after_ms"] = state.pop("closed_through_ms")
     state["position"] = pos
     return pos
 
@@ -1059,10 +1089,19 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
             ctx.say(f"🆘 청산 실패 뒤 상태 확인도 실패: {e2}. 바이낸스 앱에서 확인하세요!")
         _save(DIR / "state.json", state)
         return False
-    px, pnl = _close_result(c, pos, close_side)
+    # 청산은 확인됐다: 손익 조회가 실패해도 포지션은 닫힌 것으로 적는다
     state["position"] = None
     state.pop("pending", None)
+    # 손익 조회가 실패하면 쓰는 값: 거래소와 시계가 조금 어긋나도 새 진입 체결을 빼지 않게 2초 앞
+    state["closed_through_ms"] = int(time.time() * 1000) - 2000
     _save(DIR / "state.json", state)
+    try:
+        px, pnl = _close_result(c, pos, close_side)
+    except (Rejected, NetworkError):
+        px = pnl = None
+    if pos.get("closed_ms"):
+        state["closed_through_ms"] = pos["closed_ms"]
+        _save(DIR / "state.json", state)
     _record_close(ctx, pos, px, pnl, "signal")
     return True
 
@@ -1212,7 +1251,7 @@ class LiveVenue:
             if k:
                 _sleep(1)
             r = self.status(cid)
-            if r and r.get("status") in ("CANCELED", "FILLED", "EXPIRED", "REJECTED"):
+            if r and r.get("status") in TERMINAL:
                 return r
         return r or {"status": "UNKNOWN", "executedQty": "0"}
 
@@ -1269,9 +1308,6 @@ class DryVenue:
 
 class LadderAbort(RuntimeError):
     """지정가 상태를 확신할 수 없어 사다리를 멈춘다(포지션 조회로 마무리)."""
-
-
-TERMINAL = ("CANCELED", "FILLED", "EXPIRED", "REJECTED")
 
 
 def ladder(
@@ -1511,6 +1547,13 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     if ctx.live and not acct.get("canTrade", False):
         ctx.say("❌ 계좌가 거래 불가(canTrade=false)라 진입하지 않아요")
         return
+    if ctx.live and not state.get("position"):
+        # 앞 포지션의 손절·익절(closePosition)이 남아 있으면 새 포지션을 닫아 버린다
+        try:
+            cancel_engine_stops(ctx.client)
+        except (Rejected, NetworkError) as e:
+            ctx.say(f"⏭ {SIDE_KO[side]} 진입 건너뜀: 남은 엔진 손절을 취소하지 못함({e})")
+            return
     avail = float(acct["availableBalance"])
     qty, why = size_qty(avail, price, margin_frac(), flt)
     if not qty:
@@ -1671,7 +1714,11 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
                 place_stop(c, side, Decimal(str(pos["tp"])), tid, TP_KIND)
             except (Rejected, NetworkError) as e:
                 # 응답만 잃었을 수 있다: 걸려 있으면 그대로 둔다
-                if not (isinstance(e, NetworkError) and stop_is_open(c, tid)):
+                try:
+                    tp_live = isinstance(e, NetworkError) and stop_is_open(c, tid)
+                except (Rejected, NetworkError):
+                    tp_live = False  # 확인도 못 하면 없는 것으로 보고 다음 대사가 다시 건다
+                if not tp_live:
                     tp_note = f"\n⚠️ 익절 주문 실패({e}) → 익절 없이 손절·반대 신호로 관리"
                     pos.update(tp=None, tp_id=None)
                 _save(DIR / "state.json", state)
@@ -1721,7 +1768,7 @@ def run(
     pos_before = before if before is not None else state.get("position")
     pos_before = dict(pos_before) if pos_before else None
     ctx = Ctx(client, market_, send, now, live)
-    t_start = time.monotonic()
+    t_start = _clock()
     pos = state.get("position")
     if live and not pos and state.get("orphan_live"):
         state["position"] = state.pop(
@@ -1799,7 +1846,7 @@ def run(
                 f"복구: 신호가 {hours:.1f}시간 전이라 새로 들어가지 않음"
                 "(반대 포지션 정리만, 다음 신호 대기)"
             )
-        elif time.monotonic() - t_start > MAX_RUN_SECS:
+        elif _clock() - t_start > MAX_RUN_SECS:
             skip = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
         else:
             flt = filters(client)

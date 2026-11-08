@@ -71,11 +71,7 @@ def test_build_uses_every_frame_and_only_closed_candles(monkeypatch):
     monkeypatch.setattr(btc, "fetch_price", lambda: 105.0)
     now = datetime.fromtimestamp(rows[-1][0] / 1000 + 60, btc.KST)
     data = btc.build(now)
-    assert data["plan"]["price"] == 105.0 and data["plan"]["t6d_label"] in (
-        "롱 우위",
-        "숏 우위",
-        "중립",
-    )
+    assert "plan" not in data and data["outlook"]["price"] == 105.0
     assert [f["frame"] for f in data["frames"]] == ["15m", "4h", "1d", "1w", "1M"]
     assert data["frames"][0]["close"] == float(rows[-2][4])
 

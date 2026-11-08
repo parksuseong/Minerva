@@ -162,3 +162,15 @@ def test_btc_ml_and_size_routes_removed():
     assert client.get("/api/btc/ml").status_code == 404
     assert client.get("/api/btc/size").status_code == 404
     assert client.get("/static/vendor/lightweight-charts-5.2.1.js").status_code == 200
+
+
+def test_daily_marks_kr_halted(tmp_path, monkeypatch):
+    out = tmp_path / "latest.json"
+    out.write_text(json.dumps({"vix": {"regime": "R1"}, "memo": ["매수 계획"], "plan": ["x"]}))
+    monkeypatch.setenv("MINERVA_DAILY_OUT", str(out))
+    monkeypatch.setenv("MINERVA_TRADE_DIR", str(tmp_path / "trade"))
+    (tmp_path / "trade").mkdir()
+    client = TestClient(app)
+    assert client.get("/api/daily").json()["kr_halted"] is False
+    (tmp_path / "trade" / "HALT").touch()
+    assert client.get("/api/daily").json()["kr_halted"] is True

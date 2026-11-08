@@ -16,7 +16,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from minerva.strategy import btc_plan
+from minerva.strategy import btc_outlook, btc_plan
 from minerva.strategy.indicators import Bar, TMState, tm_states
 
 SYMBOL = "BTCUSDT"
@@ -157,6 +157,7 @@ def build(now: datetime | None = None) -> dict:
         "summary": summary(frames),
         "entry_gate": entry_gate(frames),
         "plan": btc_plan.today(frames, *raw["1d"], intraday, ways, price),
+        "outlook": btc_outlook.build({k: raw[k][0] for k, _ in btc_outlook.FRAMES}, price),
     }
 
 

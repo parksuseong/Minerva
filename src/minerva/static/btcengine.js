@@ -173,6 +173,37 @@
       실제로는 신호 봉 종가 기준으로, AI 답을 받은 뒤 다시 한 번 재요.</div>`;
   };
 
+  // ---- 큰 그림(4시간·일·주·월, /api/btc의 outlook) ----
+  const WAY = { "상방": "good", "하방": "warn" };
+  const sigAgo = (x, unit) => (x ? `${x.level}단 · ${x.bars_ago === 0 ? "마지막 봉" : `${x.bars_ago}${unit} 전`}` : "-");
+  const UNIT_AGO = { "4h": "봉", "1d": "일", "1w": "주", "1M": "달" };
+  const lvList = (arr) => (arr || []).map((c) => `<div>${num(c.price, 0)} <span class="mini">(${c.pct > 0 ? "+" : ""}${num(c.pct, 2)}% · ${esc(c.what)})</span></div>`).join("") || "-";
+  const renderOutlook = () => {
+    if (!$("bte-outlook")) return;
+    const o = gate && gate.outlook;
+    if (!o || !o.summary) { $("bte-outlook").innerHTML = '<p class="placeholder">큰 그림 계산 대기 중</p>'; return; }
+    const s = o.summary;
+    const tone = { up: "good", down: "warn" }[s.tone] || "";
+    const rows = o.frames.map((f) => `<tr><td>${esc(f.name)}</td>
+        <td><span class="chip ${WAY[f.direction] || ""}">${esc(f.direction)}</span> <span class="mini">${esc(f.zone)}</span></td>
+        <td>${num(f.stoch, 0)} <span class="mini">${f.stoch_turn === "오름" ? "↑" : f.stoch_turn === "내림" ? "↓" : ""}</span> / ${num(f.cci, 0)} / ${num(f.rsi, 0)}</td>
+        <td>${esc(s.ma[f.frame] || "")}</td>
+        <td><span class="up">롱 ${sigAgo(f.last_long, UNIT_AGO[f.frame])}</span><br><span class="down">숏 ${sigAgo(f.last_short, UNIT_AGO[f.frame])}</span></td>
+        <td>±${num(f.atr_pct, 1)}%</td></tr>`).join("");
+    $("bte-outlook").innerHTML = `<div class="regime"><span class="chip ${tone}">${{ up: "위쪽 우세", down: "아래쪽 우세", mixed: "엇갈림" }[s.tone] || "-"}</span>
+        <span class="mini">지금 ${num(o.price, 1)}</span></div>
+      <div style="margin:6px 0"><b>${esc(s.verdict)}</b></div>
+      ${(s.watch || []).length ? `<ul style="margin:4px 0 8px;padding-left:18px">${s.watch.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin:6px 0">
+        <div style="flex:1;min-width:150px"><b>위 저항</b> <span class="mini">가까운 순</span>${lvList(s.resist)}</div>
+        <div style="flex:1;min-width:150px"><b>아래 지지</b> <span class="mini">가까운 순</span>${lvList(s.support)}</div>
+      </div>
+      <div class="detail">보통 움직임(ATR 14): 하루 ${num(s.range_day.down, 0)} ~ ${num(s.range_day.up, 0)} · 한 주 ${num(s.range_week.down, 0)} ~ ${num(s.range_week.up, 0)}</div>
+      <div style="overflow-x:auto;margin-top:6px"><table class="acct"><thead><tr><th>봉</th><th>방향</th><th>Stoch/CCI/RSI</th><th>이평선</th><th>최근 SCR 신호</th><th>봉 하나 폭</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+      <p class="mini">${esc(o.note)} 방향 = CCI·RSI 중심선(둘 다 위 상방, 둘 다 아래 하방). 이평선: 4시간·일 20/50/200, 주·월 10/20/50. 저항·지지 = 이평선과 20봉 고저.</p>`;
+  };
+
   // ---- 차트 ----
   const buildChart = () => {
     const LC = window.LightweightCharts;
@@ -273,7 +304,7 @@
       eng = e || { status: "error" };
       if (k && k.bars) { bars = k.bars; bars.showFrom = k.show_from; }
       gate = g;
-      renderStatus(); renderGate(); recompute();
+      renderStatus(); renderGate(); renderOutlook(); recompute();
     });
 
   window.addEventListener("hashchange", () => setTimeout(recompute, 50));

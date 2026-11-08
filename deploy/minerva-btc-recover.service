@@ -1,0 +1,21 @@
+# BTC 자동매매 복구 실행: 서버(EC2)가 켜지면 한 번 돈다(사용자 2026-11-09 "다시 올라오면 리커버리 모드").
+# 그동안 바이낸스에서 체결된 손절·익절을 기록하고, 손절이 빠졌으면 다시 걸고, 꺼져 있던 동안의
+# 신호를 처리한 뒤 텔레그램으로 복구 보고를 보낸다. 네트워크·시계가 잡힐 때까지 30초 간격으로 480초 동안 다시 시도(요청 한도 429·418은 바로 멈춤).
+# 부팅 뒤 타이머가 먼저 돌았으면(그 실행이 이미 복구) 건너뛴다.
+# 설치: sudo cp deploy/minerva-btc-recover.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable minerva-btc-recover.service
+[Unit]
+Description=Minerva BTC auto trading recovery run at boot
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.btc_trade recover
+# 재시도는 480초 안(RECOVER_DEADLINE_S) + 마지막 실행의 AI(60초)·지정가 사다리(70초)·주문 대기
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

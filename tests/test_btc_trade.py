@@ -304,7 +304,7 @@ def live(env, base: float = 1000.0):
 
 def with_signal(monkeypatch, d, close=100_000.0, bar=BAR, **extra):
     sig = {"dir": d, "bar": bar, "close": close, **extra}
-    monkeypatch.setattr(bt, "latest_signal", lambda r, n, last: dict(sig))
+    monkeypatch.setattr(bt, "latest_signal", lambda r, n, last, lookback=2: dict(sig))
 
 
 def run(env, ex, mk=None):
@@ -1421,3 +1421,189 @@ def test_deadline_stops_ladder_without_market(env, monkeypatch):
     with_signal(monkeypatch, "long")
     run(env, ex)
     assert not _markets(ex) and state()["position"]["qty"] == pytest.approx(0.010)
+
+
+# ---------------------------------------------------------------- 복구 모드(EC2 재부팅)
+
+
+def _set_last_run(minutes_ago: float) -> None:
+    st = state()
+    st["last_run_ms"] = NOW_MS - int(minutes_ago * 60_000)
+    bt._save(bt.DIR / "state.json", st)
+
+
+def test_latest_signal_lookback_counts_missed(monkeypatch):
+    r = rows(300, 100.0)
+    monkeypatch.setattr(bt.scr_lab, "signals", _fake_signals([280], [290]))
+    last = BAR - 40 * bt.BAR_MS
+    assert bt.latest_signal(r, NOW_MS, last)["dir"] is None  # 평소 2봉 창 밖
+    sig = bt.latest_signal(r, NOW_MS, last, lookback=40)
+    assert sig["dir"] == "short" and sig["age"] == 9 and sig["missed"] == 2
+
+
+def test_run_saves_last_run_and_normal_gap_no_recover(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    _set_last_run(15)
+    with_signal(monkeypatch, None)
+    s = run(env, ex)
+    assert state()["last_run_ms"] == NOW_MS
+    assert "recover" not in s and not [m for m in env["sent"] if "복구" in m]
+
+
+def test_long_gap_runs_recovery_and_reports(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    _set_last_run(180)
+    seen = {}
+
+    def fake(r, n, last, lookback=2):
+        seen["lookback"] = lookback
+        return {
+            "dir": "short",
+            "bar": BAR - 1 * bt.BAR_MS,
+            "close": 100_000.0,
+            "age": 1,
+            "missed": 3,
+            "bar_txt": "11-08 21:15",
+        }
+
+    monkeypatch.setattr(bt, "latest_signal", fake)
+    s = run(env, ex)
+    assert seen["lookback"] == 13  # 180분 / 15 + 1
+    assert s["recover"]["gap_min"] == 180 and state()["position"]["side"] == "short"
+    msg = next(m for m in env["sent"] if "복구" in m)
+    assert "약 180분" in msg and "놓친 신호 3개" in msg and "손절 주문 걸려 있음" in msg
+
+
+def test_recovery_old_signal_closes_but_does_not_enter(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    _set_last_run(600)
+    with_signal(monkeypatch, "short", bar=BAR - 20 * bt.BAR_MS, age=20, missed=1)
+    s = run(env, ex)
+    assert ex.amt == 0 and state()["position"] is None  # 반대 신호였던 롱은 정리
+    assert not [w for w in ex.writes if w[2].get("side") == "SELL" and not w[2].get("reduceOnly")]
+    assert "복구" in s["decision"]
+    assert any("정리됨" in m for m in env["sent"])
+
+
+def test_boot_recover_reports_even_short_gap(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    _set_last_run(5)
+    with_signal(monkeypatch, None)
+    s = bt.run(now=NOW, client=ex, market_=FakeMarket(ex.price), send=env["send"], boot=True)
+    assert s["recover"]["gap_min"] == 5
+    assert any("복구" in m and "놓친 신호 없음" in m for m in env["sent"])
+
+
+def test_recover_retries_network_then_succeeds(monkeypatch):
+    calls = []
+
+    def fake_run(boot=False, before=None):
+        calls.append(boot)
+        if len(calls) < 3:
+            raise OSError("dns")
+        return {"ok": True}
+
+    monkeypatch.setattr(bt, "run", fake_run)
+    monkeypatch.setattr(bt, "_uptime", lambda: 0.0)
+    monkeypatch.setattr(bt, "_sleep", lambda s: None)
+    assert bt.recover() == {"ok": True} and calls == [True, True, True]
+
+
+def test_recover_does_not_retry_real_rejection(monkeypatch):
+    monkeypatch.setattr(bt, "_uptime", lambda: 0.0)
+    monkeypatch.setattr(
+        bt,
+        "run",
+        lambda boot=False, before=None: (_ for _ in ()).throw(bt.Rejected(-2019, "margin")),
+    )
+    monkeypatch.setattr(bt, "_sleep", lambda s: None)
+    with pytest.raises(bt.Rejected):
+        bt.recover()
+
+
+def test_recover_skips_if_timer_already_ran_after_boot(env, monkeypatch):
+    bt._save(bt.DIR / "state.json", {"last_run_ms": int(bt.time.time() * 1000) - 60_000})
+    monkeypatch.setattr(bt, "_uptime", lambda: 600.0)
+    monkeypatch.setattr(
+        bt, "run", lambda boot=False, before=None: pytest.fail("run 호출 안 돼야 함")
+    )
+    assert "skipped" in bt.recover()
+
+
+def test_recovery_three_hour_old_signal_does_not_enter(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    _set_last_run_raw(NOW_MS - 300 * 60_000)
+    with_signal(monkeypatch, "long", bar=BAR - 12 * bt.BAR_MS, age=12, missed=1)
+    s = run(env, ex)
+    assert not ex.writes and ex.amt == 0 and "복구" in s["decision"]
+
+
+def _set_last_run_raw(ms):
+    bt._save(bt.DIR / "state.json", {"last_run_ms": ms, "last_bar": BAR - 30 * bt.BAR_MS})
+
+
+def test_recovery_report_flags_missing_stop(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    _set_last_run(60)
+    with_signal(monkeypatch, None)
+    monkeypatch.setattr(bt, "ensure_stop", lambda ctx, st, with_tp=True: True)
+    ex.algos[pos["stop_id"]]["algoStatus"] = "CANCELED"  # 거래소에 손절이 없다
+    monkeypatch.setattr(bt, "_sleep", lambda s: None)
+    s = run(env, ex)
+    assert s["recover"]["stop_ok"] is False
+    assert any("🆘" in m and "손절" in m for m in env["sent"])
+
+
+def test_recovery_report_over_24h_warns(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    _set_last_run(30 * 60)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert any("24시간을 넘어" in m for m in env["sent"])
+
+
+def test_recover_gives_up_at_deadline(monkeypatch):
+    t = {"now": 0.0}
+    monkeypatch.setattr(bt, "_uptime", lambda: 0.0)
+    monkeypatch.setattr(bt, "_clock", lambda: t["now"])
+
+    def slp(sec):
+        t["now"] += sec
+
+    def boom(boot=False, before=None):
+        t["now"] += 60
+        raise OSError("down")
+
+    monkeypatch.setattr(bt, "_sleep", slp)
+    monkeypatch.setattr(bt, "run", boom)
+    with pytest.raises(RuntimeError, match="복구 실행"):
+        bt.recover()
+    assert t["now"] <= bt.RECOVER_DEADLINE_S + 60
+
+
+def test_recover_does_not_hammer_rate_limit(monkeypatch):
+    import urllib.error
+
+    monkeypatch.setattr(bt, "_uptime", lambda: 0.0)
+    err = urllib.error.HTTPError("u", 429, "Too Many", {}, None)
+    monkeypatch.setattr(bt, "run", lambda boot=False, before=None: (_ for _ in ()).throw(err))
+    monkeypatch.setattr(bt, "_sleep", lambda s: pytest.fail("다시 하면 안 됨"))
+    with pytest.raises(urllib.error.HTTPError):
+        bt.recover()

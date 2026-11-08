@@ -99,6 +99,19 @@ RETRIES = 3
 RETRY_GAP = 10
 # 타이머가 한 번 빠져도 따라잡되, 30분 넘은 신호로는 진입하지 않는다
 MAX_SIGNAL_BARS = 2
+# 복구 모드(사용자 2026-11-09 "EC2 껐다 켰을 때 문제 안 되도록, 다시 올라오면 리커버리 모드"):
+# 지난 실행에서 이만큼 넘게 지났으면 서버가 꺼졌거나 타이머가 빠진 것으로 본다
+# (한 번 건너뛴 실행은 평소 2봉 창이 따라잡으므로 그보다 길게)
+RECOVER_GAP_MS = 35 * 60_000
+# 복구 때 놓친 신호를 찾아보는 최대 봉 수(24시간)
+RECOVER_MAX_BARS = 96
+# 복구 때 새 진입은 평소와 같은 2봉(30분) 안 신호만. 더 오래된 신호는 반대 포지션 정리만 한다
+# (레드팀 2026-11-09: 늦은 진입은 백테스트에 없는 규칙)
+RECOVER_ENTRY_BARS = MAX_SIGNAL_BARS
+# 부팅 직후 네트워크·시계가 덜 잡혔을 수 있어 복구 실행은 이 시간 안에서 다시 시도한다
+# (systemd TimeoutStartSec 900초보다 넉넉히 짧게: 강제 종료되면 알림도 못 보낸다)
+RECOVER_DEADLINE_S = 480
+RECOVER_TRY_GAP = 30
 # 마지막 마감 봉이 이보다 오래됐으면 시세가 멈춘 것으로 보고 새 진입을 하지 않는다
 STALE_MS = 2 * BAR_MS
 # 거래소 지연으로 실행이 길어지면 새 진입은 하지 않는다(systemd 제한 600초 전에 손절까지 끝나게)
@@ -571,10 +584,13 @@ class Market:
             return float(json.load(r)["lastFundingRate"])
 
 
-def latest_signal(rows: list[list], now_ms: int, last_bar: int | None) -> dict:
-    """마감된 봉에서 아직 처리하지 않은 가장 최근 신호(최근 MAX_SIGNAL_BARS봉 안).
+def latest_signal(
+    rows: list[list], now_ms: int, last_bar: int | None, lookback: int = MAX_SIGNAL_BARS
+) -> dict:
+    """마감된 봉에서 아직 처리하지 않은 가장 최근 신호(최근 lookback봉 안, 복구 때만 길다).
 
-    {"dir": long/short/None, "bar": 봉 시작 ms, "close": 종가, "conflict": 같은 봉 양쪽 신호}
+    {"dir": long/short/None, "bar": 봉 시작 ms, "close": 종가, "conflict": 같은 봉 양쪽 신호,
+     "missed": 그 창 안에서 처리 안 한 신호 수}
     """
     closed = [r for r in rows if int(r[6]) < now_ms]
     h = [float(r[2]) for r in closed]
@@ -592,19 +608,25 @@ def latest_signal(rows: list[list], now_ms: int, last_bar: int | None) -> dict:
         for i in sig[d]:
             at[i] = "both" if i in at and at[i] != d else d
     n = len(c)
-    for i in range(n - 1, max(n - 1 - MAX_SIGNAL_BARS, -1), -1):
+    found = None
+    missed = 0
+    for i in range(n - 1, max(n - 1 - lookback, -1), -1):
         if last_bar is None and i != n - 1:
             break
         if last_bar is not None and t[i] <= last_bar:
             break
         if i in at:
-            out.update(bar=t[i], close=c[i], age=n - 1 - i, bar_txt=_bar_txt(t[i]))
-            out["at_signal"] = {k: _r(sig[k][i]) for k in ("stoch", "cci", "rsi")}
-            if at[i] == "both":
-                out["conflict"] = True
-            else:
-                out["dir"] = at[i]
-            return out
+            missed += 1
+            found = i if found is None else found
+    if found is not None:
+        i = found
+        out.update(bar=t[i], close=c[i], age=n - 1 - i, bar_txt=_bar_txt(t[i]), missed=missed)
+        out["at_signal"] = {k: _r(sig[k][i]) for k in ("stoch", "cci", "rsi")}
+        if at[i] == "both":
+            out["conflict"] = True
+        else:
+            out["dir"] = at[i]
+        return out
     out["indicators"] = {
         "stoch": _r(sig["stoch"][-1]),
         "cci": _r(sig["cci"][-1]),
@@ -1678,7 +1700,10 @@ def run(
     client=None,
     market_: Market | None = None,
     send: Callable[[str], Any] = notify.send,
+    boot: bool = False,
+    before: dict | None = None,
 ) -> dict:
+    """한 번 실행. boot=True는 부팅 직후 복구 실행(공백이 짧아도 복구 보고를 보낸다)."""
     now = now or datetime.now(KST)
     now_ms = int(now.timestamp() * 1000)
     DIR.mkdir(parents=True, exist_ok=True)
@@ -1688,6 +1713,13 @@ def run(
     state_file = DIR / "state.json"
     first = not state_file.exists()
     state = _load(state_file, {})
+    gap_ms = now_ms - state["last_run_ms"] if state.get("last_run_ms") else None
+    recovering = boot or (gap_ms is not None and gap_ms > RECOVER_GAP_MS)
+    lookback = MAX_SIGNAL_BARS
+    if recovering and gap_ms is not None:
+        lookback = min(max(MAX_SIGNAL_BARS, gap_ms // BAR_MS + 1), RECOVER_MAX_BARS)
+    pos_before = before if before is not None else state.get("position")
+    pos_before = dict(pos_before) if pos_before else None
     ctx = Ctx(client, market_, send, now, live)
     t_start = time.monotonic()
     pos = state.get("position")
@@ -1740,7 +1772,7 @@ def run(
             equity += sign * p["qty"] * (float(rows15[-1][4]) - p["entry"])
     halts = check_halts("live" if live else "dry", state, equity, now, ctx.say)
 
-    sig = latest_signal(rows15, now_ms, state.get("last_bar"))
+    sig = latest_signal(rows15, now_ms, state.get("last_bar"), lookback=lookback)
     pos = state.get("position")
     decision = "대기"
     if sig.get("error") or sig.get("stale"):
@@ -1761,6 +1793,12 @@ def run(
         skip = ""
         if halts:
             skip = f"진입 정지({', '.join(halts)})"
+        elif sig.get("age", 0) > RECOVER_ENTRY_BARS:
+            hours = sig["age"] * BAR_MS / 3_600_000
+            skip = (
+                f"복구: 신호가 {hours:.1f}시간 전이라 새로 들어가지 않음"
+                "(반대 포지션 정리만, 다음 신호 대기)"
+            )
         elif time.monotonic() - t_start > MAX_RUN_SECS:
             skip = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
         else:
@@ -1795,6 +1833,7 @@ def run(
             state["last_bar"] = sig["bar"]
     if ctx.ai_streak is not None:
         state["ai_fallbacks"] = ctx.ai_streak
+    state["last_run_ms"] = now_ms
     _save(state_file, state)
     p = state.get("position")
     summary = {
@@ -1808,6 +1847,22 @@ def run(
         "equity": round(equity, 2),
         "indicators": sig.get("indicators"),
     }
+    if recovering and not first:
+        summary["recover"] = {
+            "gap_min": round(gap_ms / 60_000) if gap_ms else None,
+            "lookback": lookback,
+            "missed": sig.get("missed", 0),
+        }
+        stop_ok = None
+        if p and live and p.get("stop_id"):
+            try:
+                stop_ok = stop_is_open(client, p["stop_id"])
+            except (Rejected, NetworkError):
+                stop_ok = False
+        elif p and live:
+            stop_ok = False
+        summary["recover"]["stop_ok"] = stop_ok
+        send(recover_text(live, gap_ms, sig, pos_before, p, decision, halts, state, stop_ok))
     ctx.event(**summary)
     if first:
         mode_ko = "실전" if live else "드라이런(주문 없음)"
@@ -1820,6 +1875,61 @@ def run(
             + (f"\n진입 정지: {', '.join(halts)}" if halts else "")
         )
     return summary
+
+
+def recover_text(
+    live: bool,
+    gap_ms: int | None,
+    sig: dict,
+    before: dict | None,
+    after: dict | None,
+    decision: str,
+    halts: list[str],
+    state: dict,
+    stop_ok: bool | None = None,
+) -> str:
+    """복구 실행 보고. 꺼져 있던 시간, 놓친 신호, 포지션·손절 상태, 한 일."""
+    tag = "" if live else "[드라이런] "
+    gap = f"약 {gap_ms // 60_000}분" if gap_ms is not None else "알 수 없음(기록 없음)"
+    lines = [f"🛟 {tag}BTC 자동매매 복구 실행 — 지난 실행 뒤 {gap} 공백"]
+    missed = sig.get("missed", 0)
+    if sig.get("dir") or sig.get("conflict"):
+        last = SIDE_KO.get(sig.get("dir"), "롱·숏 동시")
+        lines.append(f"놓친 신호 {missed}개 · 가장 최근 {sig.get('bar_txt')} {last}")
+    else:
+        lines.append("놓친 신호 없음")
+
+    def held(p: dict | None) -> str:
+        if not p:
+            return "없음"
+        stop = f"손절 {p['stop']:,.1f}" if p.get("stop") else "손절 없음"
+        return f"{SIDE_KO[p['side']]} {p['qty']} BTC @ {p['entry']:,.1f} · {stop}"
+
+    if before and not after:
+        lines.append(f"포지션: {held(before)} → 정리됨")
+    elif before and after and before.get("entry") != after.get("entry"):
+        lines.append(f"포지션: {held(before)} → {held(after)}")
+    else:
+        lines.append(f"포지션: {held(after)}")
+    if after and not live:
+        lines.append("가상 손절(드라이런, 거래소 주문 없음)")
+    elif after:
+        lines.append(
+            "바이낸스 손절 주문 걸려 있음 ✅"
+            if stop_ok
+            else "🆘 바이낸스에 손절 주문이 안 보여요. 앱에서 바로 확인하세요!"
+        )
+    if gap_ms is not None and gap_ms > RECOVER_MAX_BARS * BAR_MS:
+        lines.append(
+            f"⚠️ 공백이 {RECOVER_MAX_BARS * BAR_MS // 3_600_000}시간을 넘어 "
+            "그 전 신호는 확인하지 못했어요"
+        )
+    lines.append(f"처리: {decision}")
+    if halts:
+        lines.append(f"진입 정지: {', '.join(halts)}")
+    if state.get("pending"):
+        lines.append("⚠️ 끝나지 않은 주문이 있어 다음 실행이 이어 받아요")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------- 점검·실전 시작
@@ -1973,6 +2083,47 @@ def status() -> dict:
     }
 
 
+def _uptime() -> float:
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+def recover() -> dict:
+    """부팅 직후 복구 실행(`minerva-btc-recover.service`). 네트워크·시계가 잡힐 때까지 다시 한다.
+
+    거래소 손절·익절 주문은 서버가 꺼져 있어도 바이낸스에서 작동한다. 여기서는 그동안 닫힌
+    포지션을 기록하고, 손절이 빠졌으면 다시 걸고, 놓친 신호를 처리한다(`run(boot=True)`).
+    """
+    st = _load(DIR / "state.json", {})
+    booted_ms = int((time.time() - _uptime()) * 1000)
+    if st.get("last_run_ms", 0) > booted_ms:
+        return {"event": "recover", "skipped": "부팅 뒤 이미 실행됨(타이머가 먼저 복구)"}
+    before = st.get("position")  # 재시도 중 앞 시도가 닫아도 보고는 처음 상태 기준
+    last: Exception | None = None
+    t0 = _clock()
+    k = 0
+    while True:
+        k += 1
+        try:
+            return run(boot=True, before=before)
+        except urllib.error.HTTPError as e:
+            if e.code in (418, 429):  # 요청 한도: 빨리 다시 하면 차단이 길어진다
+                raise
+            last = e
+        except (NetworkError, OSError) as e:  # 부팅 직후 DNS·네트워크가 덜 올라옴
+            last = e
+        except Rejected as e:
+            if e.code != -1021:  # 시계가 덜 맞춰짐(timestamp outside recvWindow)만 다시
+                raise
+            last = e
+        log.warning("recover try %d failed: %s", k, last)
+        if _clock() - t0 + RECOVER_TRY_GAP > RECOVER_DEADLINE_S:
+            raise RuntimeError(f"복구 실행 {k}번 실패({RECOVER_DEADLINE_S}초): {last}")
+        _sleep(RECOVER_TRY_GAP)
+
+
 def _lock(timeout: float = 60):
     import fcntl
 
@@ -1995,7 +2146,10 @@ def main(argv: list[str] | None = None) -> int:
         description="BTCUSDT 선물 자동매매 (mode 파일이 live일 때만 실주문)"
     )
     parser.add_argument(
-        "command", nargs="?", default="run", choices=["run", "preflight", "start-live", "status"]
+        "command",
+        nargs="?",
+        default="run",
+        choices=["run", "recover", "preflight", "start-live", "status"],
     )
     parser.add_argument("--confirm", action="store_true", help="start-live: 실전 시작 확인")
     parser.add_argument("--notify", action="store_true", help="preflight: 결과를 텔레그램으로")
@@ -2022,7 +2176,10 @@ def main(argv: list[str] | None = None) -> int:
             cap = start_live()
             print(json.dumps(cap, ensure_ascii=False))
             return 0
-        summary = run()
+        if args.command == "recover":
+            summary = recover()
+        else:
+            summary = run()
     except Exception as e:  # noqa: BLE001 — 어떤 오류든 조용히 멈추면 안 된다(15분마다 알림)
         log.exception("btc_trade %s failed", args.command)
         notify.send(f"❌ BTC 자동매매({args.command}) 오류: {type(e).__name__}: {str(e)[:300]}")

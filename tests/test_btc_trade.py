@@ -1607,3 +1607,50 @@ def test_recover_does_not_hammer_rate_limit(monkeypatch):
     monkeypatch.setattr(bt, "_sleep", lambda s: pytest.fail("다시 하면 안 됨"))
     with pytest.raises(urllib.error.HTTPError):
         bt.recover()
+
+
+# ---------------------------------------------------------------- 리팩터링 버그 수정(2026-11-09)
+
+
+def test_flip_pnl_excludes_previous_close(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["side"] == "short" and pos.get("after_ms")
+    old_close = next(t for t in ex.trades if t["side"] == "SELL")
+    old_close["realizedPnl"] = "-30"  # 앞 롱의 손실
+    ex.trigger_stop(pos["stop_id"], 103_000.0)
+    ex.trades[-1]["realizedPnl"] = "10"
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    last = jsonl("closed.jsonl")[-1]
+    assert last["side"] == "short" and last["why"] == "stop"
+    assert last["pnl"] == pytest.approx(10 - 0.05 - 0.004, abs=0.02)  # 앞 롱의 −30 안 섞임
+
+
+def test_protect_close_id_is_per_position(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.reject_stop = True
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    cids = [w[2]["newClientOrderId"] for w in ex.writes if w[2].get("reduceOnly") == "true"]
+    assert cids and all(c.startswith(f"mnv-{BAR // 60000}-x") for c in cids)
+
+
+def test_protect_close_lookup_failure_still_clears_position(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.reject_stop = True
+    monkeypatch.setattr(bt, "_close_result", lambda *a: (_ for _ in ()).throw(bt.NetworkError("x")))
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert ex.amt == 0 and state()["position"] is None
+    assert jsonl("closed.jsonl")[-1]["why"] == "protect"
+    assert not [m for m in env["sent"] if "닫지 못했어요" in m]

@@ -5,7 +5,8 @@
 
 - 큰 움직임 표시: 일봉·4시간·15분 방향(CCI20>0·RSI14>50 = 상방, 둘 다 아래 = 하방)이 모두 하방.
   등록 시험(2026-11-08 deep, V5)에서 다음 24시간 범위가 무작위의 1.03~1.20배, 방향은 반반이었다.
-- 일봉 방향: 추세 이탈 규칙(T6D)의 마지막 신호 방향(마감된 일봉만). 백테스트 원본
+- 매매 봉은 15분·30분(사용자 2026-11-08): 손절 후보·추적 청산은 그 봉으로, 1시간·4시간 방향은 맥락.
+- 큰 흐름: 추세 이탈 규칙(T6D)의 마지막 신호 방향(마감된 일봉만). 백테스트 원본
   `pine_ports.s6_trend_dev` + `daily_wave.features`의 GT 문을 numpy 없이 옮겼다.
 - 실행: `python -m minerva.strategy.btc_plan brief` (텔레그램 아침 브리핑)
 """
@@ -265,20 +266,64 @@ def _r(v: float | None, n: int = 1) -> float | None:
     return None if v is None or _nan(v) else round(v, n)
 
 
+TRADE_FRAMES = ("15m", "30m")
+CONTEXT_FRAMES = ("1h", "4h")
+FEE_WARN = 0.2  # 왕복 수수료가 손절 폭의 20%를 넘으면 경고
+
+
+def align(side: str, ways: dict[str, str]) -> str:
+    """상위 방향(1시간·4시간)이 고른 쪽과 맞는지: 일치 / 불일치 / 일부."""
+    want, against = ("상방", "하방") if side == "long" else ("하방", "상방")
+    picked = [ways.get(k) for k in CONTEXT_FRAMES]
+    if all(w == want for w in picked):
+        return "일치"
+    if any(w == against for w in picked):
+        return "불일치"
+    return "일부"
+
+
+def frame_plan(bars: list[Bar], price: float) -> dict:
+    """매매 봉 하나의 손절 후보: ATR(14) 1배·1.5배, 마지막 스윙(좌우 2봉), 직전 봉 저가·고가."""
+    h, lo, c = [b.high for b in bars], [b.low for b in bars], [b.close for b in bars]
+    a = atr(h, lo, c, 14)[-1]
+    lo_i, hi_i = last_pivot(lo, low=True), last_pivot(h, low=False)
+    swing_lo = lo[lo_i] if lo_i is not None else None
+    swing_hi = h[hi_i] if hi_i is not None else None
+    return {
+        "atr": _r(a, 1),
+        "atr_pct": _r(a / price * 100, 3) if price and not _nan(a) else None,
+        "prev_low": _r(lo[-1], 1),
+        "prev_high": _r(h[-1], 1),
+        "stops": {
+            "long": {
+                "atr1": _r(price - a, 1),
+                "atr15": _r(price - 1.5 * a, 1),
+                "swing": _r(swing_lo, 1) if swing_lo is not None and swing_lo < price else None,
+                "prev": _r(lo[-1], 1) if lo[-1] < price else None,
+            },
+            "short": {
+                "atr1": _r(price + a, 1),
+                "atr15": _r(price + 1.5 * a, 1),
+                "swing": _r(swing_hi, 1) if swing_hi is not None and swing_hi > price else None,
+                "prev": _r(h[-1], 1) if h[-1] > price else None,
+            },
+        },
+    }
+
+
 def today(
     frames: list[dict],
     daily: list[Bar],
     daily_at: list[datetime],
-    h4: list[Bar],
+    intraday: dict[str, list[Bar]],
+    ways: dict[str, str],
     price: float,
 ) -> dict:
-    """오늘의 판: 큰 움직임 표시, 일봉 방향(T6D), 손절 후보(일봉 ATR, 4시간 스윙)."""
+    """오늘의 판: 큰 움직임, 15분·30분 손절 후보, 1시간·4시간 방향, 큰 흐름(일봉 T6D)."""
     dh, dl, dc = [b.high for b in daily], [b.low for b in daily], [b.close for b in daily]
     state, at = t6d_state(dh, dl, dc)
     atr_d = atr(dh, dl, dc, 14)[-1]
-    hh, hl, hc = [b.high for b in h4], [b.low for b in h4], [b.close for b in h4]
-    atr_4h = atr(hh, hl, hc, 14)[-1]
-    lo_i, hi_i = last_pivot(hl, low=True), last_pivot(hh, low=False)
+    ctx = {k: ways.get(k, "중립") for k in CONTEXT_FRAMES}
     return {
         "price": _r(price, 1),
         "big_move": big_move(frames),
@@ -288,21 +333,9 @@ def today(
         "t6d_since": daily_at[at].strftime("%Y-%m-%d") if at is not None else None,
         "atr_d": _r(atr_d, 1),
         "atr_d_pct": _r(atr_d / price * 100, 2) if price and not _nan(atr_d) else None,
-        "atr_4h": _r(atr_4h, 1),
-        "swing_low_4h": _r(hl[lo_i], 1) if lo_i is not None else None,
-        "swing_high_4h": _r(hh[hi_i], 1) if hi_i is not None else None,
-        "prev_4h_low": _r(hl[-1], 1) if hl else None,
-        "prev_4h_high": _r(hh[-1], 1) if hh else None,
-        "stops": {
-            "long": {
-                "atr": _r(price - atr_d, 1),
-                "swing": _r(hl[lo_i], 1) if lo_i is not None else None,
-            },
-            "short": {
-                "atr": _r(price + atr_d, 1),
-                "swing": _r(hh[hi_i], 1) if hi_i is not None else None,
-            },
-        },
+        "ways": ctx,
+        "align": {side: align(side, ctx) for side in ("long", "short")},
+        "tf": {k: frame_plan(intraday[k], price) for k in TRADE_FRAMES},
     }
 
 
@@ -351,6 +384,10 @@ def size_position(
         warnings.append(
             f"주문 금액 {notional:,.1f} USDT가 바이낸스 최소 {MIN_NOTIONAL:g} USDT보다 작아요"
         )
+    fee_cost = fee * (entry + stop)
+    fee_share = fee_cost / per_btc * 100
+    if qty > 0 and fee_cost > FEE_WARN * dist:
+        warnings.append(f"손절 폭이 좁아 수수료가 손실의 {fee_share:.0f}%예요")
     be = entry * (1 + fee) / (1 - fee) if side == "long" else entry * (1 - fee) / (1 + fee)
     return {
         "side": side,
@@ -367,7 +404,8 @@ def size_position(
         "leverage_wanted": round(want * entry / equity, 2),
         "loss_at_stop": round(loss, 2),
         "loss_pct": round(loss / equity * 100, 2),
-        "fees_round_trip": round(qty * fee * (entry + stop), 2),
+        "fees_round_trip": round(qty * fee_cost, 2),
+        "fee_share_pct": round(fee_share, 1),
         "r": round(dist, 1),
         "r_levels": {f"{k}R": round(entry + sign * k * dist, 1) for k in (1, 2, 3)},
         "breakeven_stop": round(be, 1),
@@ -384,10 +422,19 @@ def brief_text(data: dict) -> str:
         lines.append("큰 움직임 가능성 높음 (방향은 반반): 일봉·4시간·15분 모두 하방")
     else:
         lines.append("큰 움직임 표시 없음")
+    ways = p.get("ways") or {}
+    if ways:
+        lines.append(f"상위 방향: 1시간 {ways.get('1h', '-')} · 4시간 {ways.get('4h', '-')}")
     since = f", {p['t6d_since']} 신호부터" if p.get("t6d_since") else ""
-    lines.append(f"일봉 방향(T6D): {p.get('t6d_label', '-')}{since}")
+    lines.append(f"큰 흐름(일봉 T6D): {p.get('t6d_label', '-')}{since}")
+    for k, name in (("15m", "15분"), ("30m", "30분")):
+        f = (p.get("tf") or {}).get(k)
+        if f and f.get("atr_pct") is not None:
+            lines.append(
+                f"{name}봉 ATR(14) {f['atr']:,.1f} ({f['atr_pct']:.2f}%) = 손절 거리 1배 제안"
+            )
     if p.get("atr_d_pct") is not None:
-        lines.append(f"손절 거리 제안: 일봉 ATR 1배 = {p['atr_d']:,.1f} ({p['atr_d_pct']}%)")
+        lines.append(f"하루 평균 변동(일봉 ATR): {p['atr_d']:,.1f} ({p['atr_d_pct']}%)")
     lines.append("손절·크기는 화면의 계산기로. 진입 여부만 직접 정하세요. 주문은 나가지 않아요.")
     return "\n".join(lines)
 

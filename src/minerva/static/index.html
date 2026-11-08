@@ -192,10 +192,20 @@
     <div id="an-bn" hidden>
     <section class="card" id="btcplan">
       <h2>🧭 오늘의 판 <span class="mini">덜 잃고 크게 먹기 · 진입은 직접, 주문 없음</span></h2>
+      <div class="filters" data-tf role="group" aria-label="매매 봉">
+        <span class="mini">매매 봉</span>
+        <button type="button" data-v="15m" class="on">15분</button>
+        <button type="button" data-v="30m">30분</button>
+      </div>
       <div id="btcplan-today" class="placeholder">불러오는 중…</div>
     </section>
     <section class="card">
       <h2>📏 손절·크기 계산 <span class="mini">계산만 해요 · 저장·주문 없음</span></h2>
+      <div class="filters" data-tf role="group" aria-label="매매 봉">
+        <span class="mini">매매 봉</span>
+        <button type="button" data-v="15m" class="on">15분</button>
+        <button type="button" data-v="30m">30분</button>
+      </div>
       <div class="filters" id="sz-side" role="group" aria-label="롱/숏">
         <button type="button" data-v="long" class="on">롱</button>
         <button type="button" data-v="short">숏</button>
@@ -424,7 +434,7 @@
   </script>
   <script src="/static/daily.js?v=20261031b"></script>
   <script src="/static/btc.js?v=20261108a"></script>
-  <script src="/static/btcplan.js?v=20261108a"></script>
+  <script src="/static/btcplan.js?v=20261108b"></script>
   <script src="/static/btcday.js?v=20261108b"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
   <script src="/static/btcml.js?v=20261108b"></script>

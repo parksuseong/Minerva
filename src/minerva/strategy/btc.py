@@ -1,7 +1,9 @@
 """비트코인 탭: BTCUSDT 롱/숏 분석. 표시 전용이고 주문과 연결되지 않는다 (사용자 요청 2026-10-31).
 
 봉마다 마감된 봉으로 삼중 모멘텀을 계산한다. 방향은 CCI·RSI가 기준선 위아래에 있는지로 본다.
-자료는 바이낸스 공개 시세다. api.binance.com은 미국 서버를 막아서 시세 전용 주소를 쓴다.
+자료는 바이낸스 USDⓈ-M 선물 공개 시세다(사용자 결정 2026-11-07: 모든 분석은 선물가격).
+추격 한도(사용자 결정 2026-11-08): 신호 봉 종가에서 1% 넘게 벌어지면 들어가지 않는다.
+일봉·4시간·15분 방향이 모두 같으면(큰 움직임 조건) 3%까지 허용한다.
 실행: `python -m minerva.strategy.btc`
 """
 
@@ -17,9 +19,9 @@ from pathlib import Path
 from minerva.strategy.indicators import Bar, TMState, tm_states
 
 SYMBOL = "BTCUSDT"
-URL = "https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval={iv}&limit={n}"
+URL = "https://fapi.binance.com/fapi/v1/klines?symbol={sym}&interval={iv}&limit={n}"
 LIMIT = 1000
-FRAMES = (("4h", "4시간봉"), ("1d", "일봉"), ("1w", "주봉"), ("1M", "월봉"))
+FRAMES = (("15m", "15분봉"), ("4h", "4시간봉"), ("1d", "일봉"), ("1w", "주봉"), ("1M", "월봉"))
 OUT = Path(os.environ.get("MINERVA_BTC_OUT", "~/.minerva/btc/latest.json")).expanduser()
 KST = timezone(timedelta(hours=9))
 
@@ -96,6 +98,27 @@ def summary(frames: list[dict]) -> list[str]:
     return out
 
 
+CHASE_PCT, CHASE_BIG_PCT = 1.0, 3.0
+BIG_FRAMES = ("15m", "4h", "1d")
+
+
+def entry_gate(frames: list[dict]) -> dict:
+    """추격 한도. 큰 움직임 조건 = 15분·4시간·일봉 방향이 모두 상방이거나 모두 하방."""
+    ways = {f["frame"]: f["direction"] for f in frames}
+    picked = [ways.get(k) for k in BIG_FRAMES]
+    big = picked[0] in ("상방", "하방") and all(w == picked[0] for w in picked)
+    pct = CHASE_BIG_PCT if big else CHASE_PCT
+    close = next((f["close"] for f in frames if f["frame"] == "15m"), None)
+    return {
+        "big": big,
+        "big_way": picked[0] if big else None,
+        "pct": pct,
+        "ref_close": close,
+        "long_max": _r(close * (1 + pct / 100), 1) if close else None,
+        "short_min": _r(close * (1 - pct / 100), 1) if close else None,
+    }
+
+
 def build(now: datetime | None = None) -> dict:
     now = now or datetime.now(KST)
     now_ms = int(now.timestamp() * 1000)
@@ -110,6 +133,7 @@ def build(now: datetime | None = None) -> dict:
         "symbol": SYMBOL,
         "frames": frames,
         "summary": summary(frames),
+        "entry_gate": entry_gate(frames),
     }
 
 

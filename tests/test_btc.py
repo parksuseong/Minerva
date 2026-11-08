@@ -70,7 +70,7 @@ def test_build_uses_every_frame_and_only_closed_candles(monkeypatch):
     monkeypatch.setattr(btc, "fetch", lambda iv: rows)
     now = datetime.fromtimestamp(rows[-1][0] / 1000 + 60, btc.KST)
     data = btc.build(now)
-    assert [f["frame"] for f in data["frames"]] == ["4h", "1d", "1w", "1M"]
+    assert [f["frame"] for f in data["frames"]] == ["15m", "4h", "1d", "1w", "1M"]
     assert data["frames"][0]["close"] == float(rows[-2][4])
 
 
@@ -78,3 +78,32 @@ def test_build_refuses_short_history(monkeypatch):
     monkeypatch.setattr(btc, "fetch", lambda iv: _rows(5))
     with pytest.raises(ValueError):
         btc.build(datetime(2030, 1, 1, tzinfo=btc.KST))
+
+
+def _gate_frames(w15, w4, w1d, close=100.0):
+    return [
+        {"frame": "15m", "direction": w15, "close": close},
+        {"frame": "4h", "direction": w4, "close": close},
+        {"frame": "1d", "direction": w1d, "close": close},
+        {"frame": "1w", "direction": "중립", "close": close},
+    ]
+
+
+def test_entry_gate_default_one_percent():
+    g = btc.entry_gate(_gate_frames("하방", "하방", "상방"))
+    assert (g["big"], g["pct"], g["long_max"], g["short_min"]) == (False, 1.0, 101.0, 99.0)
+
+
+def test_entry_gate_widens_when_all_frames_agree():
+    g = btc.entry_gate(_gate_frames("하방", "하방", "하방"))
+    assert (g["big"], g["big_way"], g["pct"], g["long_max"], g["short_min"]) == (
+        True,
+        "하방",
+        3.0,
+        103.0,
+        97.0,
+    )
+
+
+def test_entry_gate_neutral_is_not_big():
+    assert btc.entry_gate(_gate_frames("중립", "중립", "중립"))["big"] is False

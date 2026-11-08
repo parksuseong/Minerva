@@ -38,7 +38,7 @@ def bars15(m: dict, a: int, z: int) -> dict:
             "h": np.maximum.reduceat(sl(m["h"]), st), "l": np.minimum.reduceat(sl(m["l"]), st)}  # fmt: skip
 
 
-def chart(out: Path, trades: list, sigs: list, title: str, fname: str) -> None:
+def chart(out: Path, trades: list, sigs: list, title: str, fname: str, rib: bool = False) -> None:
     m = PD.load_1m(out)
     z = int(m["t"][-1]) + PD.MIN
     a = z - 30 * PD.DAY
@@ -48,10 +48,11 @@ def chart(out: Path, trades: list, sigs: list, title: str, fname: str) -> None:
     show = B["t"] >= a
     x = mdates.date2num([dt(t + 7.5 * PD.MIN) for t in B["t"]])
     w = 15 / 1440 * 0.7
-    fig = plt.figure(figsize=(22, 13))
-    gs = fig.add_gridspec(4, 1, height_ratios=[5, 1.1, 1.1, 1.1], hspace=0.05)
+    np_ = 5 if rib else 4
+    fig = plt.figure(figsize=(22, 14 if rib else 13))
+    gs = fig.add_gridspec(np_, 1, height_ratios=[5, 1.1, 1.1, 1.1] + ([0.9] if rib else []), hspace=0.05)
     ax = fig.add_subplot(gs[0])
-    axs = [ax] + [fig.add_subplot(gs[i], sharex=ax) for i in (1, 2, 3)]
+    axs = [ax] + [fig.add_subplot(gs[i], sharex=ax) for i in range(1, np_)]
     up = B["c"] >= B["o"]
     for msk, col in ((show & up, "#9db8a5"), (show & ~up, "#d2a3a3")):
         ax.vlines(x[msk], B["l"][msk], B["h"][msk], color=col, lw=0.5)
@@ -70,8 +71,9 @@ def chart(out: Path, trades: list, sigs: list, title: str, fname: str) -> None:
         px_ = mdates.date2num(dt(t["pt"] - 7.5 * PD.MIN))
         ex = mdates.date2num(dt(t["T"]))
         # 트레이딩뷰 라벨 자리(피벗 봉, 사후 5봉): 흐린 표시 + 현실 진입까지 점선
-        ax.scatter(px_, t["pext"], s=70, marker=mk, color=c_in, alpha=0.25, lw=0)
-        ax.plot([px_, ex], [t["pext"], t["e"]], color="#777", lw=0.7, ls=":")
+        if not rib:
+            ax.scatter(px_, t["pext"], s=70, marker=mk, color=c_in, alpha=0.25, lw=0)
+            ax.plot([px_, ex], [t["pext"], t["e"]], color="#777", lw=0.7, ls=":")
         ax.scatter(ex, t["e"], s=70, marker=mk, color=c_in, edgecolors="black", lw=0.6, zorder=5)
         ax.hlines(t["stop"], ex, mdates.date2num(dt(int(m["t"][t["kx"]]))), color="#555", lw=0.6)
         for kx, px, wgt in t["exits"]:
@@ -92,7 +94,28 @@ def chart(out: Path, trades: list, sigs: list, title: str, fname: str) -> None:
           Line2D([], [], marker="o", ls="", color=GREEN, alpha=0.3, label="pivot bar = where TradingView draws the label (5 bars of hindsight)"),
           Line2D([], [], color="#777", ls=":", label="hindsight gap: pivot -> real entry"),
           Line2D([], [], color="#555", lw=0.6, label="stop (pivot extreme)")]  # fmt: skip
+    if rib:
+        hs = hs[:4] + [hs[6]]
     ax.legend(handles=hs, fontsize=8, loc="upper left", ncol=2)
+    if rib:
+        F = {"c": B["c"]}
+        PD.ribbon(F)
+        cols = {1: "#32cd32", 2: "#800000", -1: "#ff0000", -2: "#006400", 0: "#cccccc"}
+        lead = F["lead"]
+        sa = axs[4]
+        for v, col in cols.items():
+            mk_ = show & (lead == v)
+            sa.bar(x[mk_], 1, 15 / 1440, 0, color=col, lw=0)
+        mas = np.array([PD.ema(B["c"], n) for n in range(10, 95, 5)])
+        full = (np.diff(mas, axis=1) > 0).mean(0)
+        sa.plot(x[1:][show[1:]], full[show[1:]], color="black", lw=0.6)
+        sa.set_ylim(0, 1)
+        sa.set_ylabel("ribbon 15m\nlead / rising share", fontsize=7)
+        from matplotlib.patches import Patch
+
+        sa.legend(handles=[Patch(color=cols[1], label="LIME up"), Patch(color=cols[2], label="MAROON dip in up"),
+                           Patch(color=cols[-1], label="RED down"), Patch(color=cols[-2], label="GREEN bounce in down")],
+                  fontsize=7, ncol=4, loc="upper left")  # fmt: skip
     for axx, ys, lv, nm in ((axs[1], [(k, "#333"), (dline, "#e66101")], (20, 80), "Stoch 5,3"),
                             (axs[2], [(cci, "#5e3c99")], (-100, 0, 100), "CCI 20"),
                             (axs[3], [(rsi, "#0571b0")], (30, 50, 70), "RSI 14")):  # fmt: skip
@@ -146,7 +169,23 @@ def main() -> None:
              f"Same trades at the pivot bar (chart-visible, impossible): 1% risk {100 * q['hind']['risk1']['ret']:+.1f}%")  # fmt: skip
     chart(out, q["trades"], q["sigs"], title, "chart_d30.png")
     if mode == "full":
-        equity(out, sys.argv[3] if len(sys.argv) > 3 else "15·ALL·X")
+        allr = json.loads((out / "result.json").read_text())
+        res, vd = allr["res"], allr["verdict"]
+        tj = json.loads((out / "trades.json").read_text())
+        rank = lambda n: (sum(vd[n][g] for g in ("g1", "g2", "g3", "g4", "g5")), res[n]["design"]["risk1"]["ret"])  # noqa: E731
+        bf = max([n for n in res if n.startswith("F")], key=rank)
+        br = max([n for n in res if n.startswith("R")], key=rank)
+        for nm, fn, rb in ((bf, "chart_d30_fixed.png", False), (br, "chart_d30_ribbon.png", True)):
+            r = res[nm]["d30"]
+            if not r["n"]:
+                print("no d30 trades", nm)
+                continue
+            ti = (f"{nm} (best by registered rule) - last 30 days, 15m view, 1m fills, fees+funding: {r['n']} trades, "
+                  f"win {100 * r['win']:.0f}%, 1% risk {100 * r['risk1']['ret']:+.1f}%, 5x/100% {100 * r['x5_100']['ret']:+.1f}%, "
+                  f"5x/40% {100 * r['x5_40']['ret']:+.1f}%. Last 30 days are in-sample for this fix")  # fmt: skip
+            chart(out, tj[nm]["d30"], [] if rb else q["sigs"], ti, fn, rib=rb)
+            print(fn, nm)
+        equity(out, sys.argv[3] if len(sys.argv) > 3 else bf)
     print("ok")
 
 

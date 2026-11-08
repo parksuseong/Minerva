@@ -23,7 +23,7 @@ import numpy as np
 
 MIN, DAY = 60_000, 86_400_000
 TAKER, MAKER, SLIP = 0.0005, 0.0002, 0.0001
-N_BONF, N_BEFORE = 20, 6500
+N_BONF, N_BEFORE = 36, 6500  # 20 + 사후 추가 8 + 리본 8
 N_CUM = N_BEFORE + N_BONF
 FUT = Path("~/.minerva/data/btc/futures").expanduser()
 MAINW = ("fresh", "design", "val", "year")
@@ -42,6 +42,32 @@ for tf in (15, 30):
 for tf in (15, 30):
     for t in ("SM", "W"):
         SPEC[f"{tf}·{t}·X·G"] = {"tf": tf, "tier": t, "exit": "X", "gate": True}
+# 사후 추가 8개(30일 매매를 보고 찾음, 30일은 표본 안). 등록 문서 "추가 등록".
+def FX(trail, be, gate):
+    return {"tf": 15, "tier": "ALL", "exit": "X", "gate": gate, "trail": trail, "be": be, "fix": True}
+
+
+SPEC.update({
+    "F1·ATR2": FX("atr", 1.0, False), "F2·T30": FX(30, 1.0, False), "F3·T1h": FX(60, 1.0, False),
+    "F4·BE2": FX(15, 2.0, False), "F5·G64": FX(15, 1.0, "G64"), "F6·T1h·BE1.5·G64": FX(60, 1.5, "G64"),
+    "F7·T1h·BE1.5·G6": FX(60, 1.5, "G6"), "F8·ATR2·BE2·G64": FX("atr", 2.0, "G64"),
+})  # fmt: skip
+# 추가 등록 2: MMAR 리본. "best" = F1~F8 중 design 1% 위험 수익 최대 안의 추적·본전(실행 중 정함).
+def RG(gate):
+    return {"tf": 15, "tier": "ALL", "exit": "X", "gate": gate, "trail": "best", "be": "best", "fix": True}
+
+
+def RS(tf, fixed):
+    tb = "best" if fixed else tf
+    return {"tf": tf, "tier": "R", "exit": "X", "gate": False, "trail": tb, "be": "best" if fixed else 1.0,
+            "src": "rib", "fix": True}  # fmt: skip
+
+
+SPEC.update({
+    "R1·RB1h": RG("RB1h"), "R2·RB15": RG("RB15"), "R3·RB1hL": RG("RB1hL"), "R4·RB15L": RG("RB15L"),
+    "R5·RIB15·fix": RS(15, True), "R6·RIB30·fix": RS(30, True), "R7·RIB15·X": RS(15, False), "R8·RIB30·X": RS(30, False),
+})  # fmt: skip
+TIERS["R"] = ("R",)
 assert len(SPEC) == N_BONF
 
 
@@ -150,6 +176,47 @@ def stoch(h, l, c, n=5, s=3):  # noqa: E741
     return k, sma(np.nan_to_num(k, nan=50.0), s)
 
 
+def ema(x: np.ndarray, n: int) -> np.ndarray:
+    a = 2 / (n + 1)
+    out = np.empty_like(x)
+    out[0] = x[0]
+    for i in range(1, len(x)):
+        out[i] = out[i - 1] + a * (x[i] - out[i - 1])
+    return out
+
+
+def ribbon(F: dict) -> None:
+    """MMAR 스타일 리본 선두 상태: LIME 1, MAROON 2, RED -1, GREEN -2(0 = 정의 안 됨)."""
+    c = F["c"]
+    m5, m90, m100 = ema(c, 5), ema(c, 90), ema(c, 100)
+    ch = np.r_[0.0, np.diff(m5)]
+    up = m5 > m100
+    dn = m5 < m100
+    st = np.zeros(len(c), np.int8)
+    st[(ch >= 0) & up] = 1
+    st[(ch < 0) & up] = 2
+    st[(ch <= 0) & dn] = -1
+    st[(ch >= 0) & dn & (ch > 0)] = -2
+    st[(ch == 0) & dn] = -1
+    F["lead"] = st
+    F["rup"] = np.where(up, 1, np.where(dn, -1, 0))
+    F["m90up"] = np.r_[0, np.sign(np.diff(m90))]
+
+
+def rib_signals(F: dict) -> list:
+    """되진입: MAROON → LIME(ma90 상승) 롱, GREEN → RED(ma90 하락) 숏. 손절 = 눌림 구간 + 신호 봉 극값."""
+    st, out = F["lead"], []
+    for i in range(1, len(st)):
+        for d, back, now in ((1, 2, 1), (-1, -2, -1)):
+            if st[i] == now and st[i - 1] == back and F["m90up"][i] == d:
+                j = i - 1
+                while j > 0 and st[j - 1] == back:
+                    j -= 1
+                ext = F["l"][j : i + 1].min() if d == 1 else F["h"][j : i + 1].max()
+                out.append({"p": int(j), "c": int(i), "d": d, "tier": "R", "ext": float(ext)})
+    return out
+
+
 def last_closed(F: dict, T: np.ndarray) -> np.ndarray:
     """시각 T에 마감돼 있던 마지막 봉 위치."""
     return np.searchsorted(F["ct"], T, "right") - 1
@@ -193,7 +260,8 @@ def signals(F: dict) -> list:
 
 # ---------------- 매매 흉내 ----------------
 class Sim:
-    def __init__(self, m: dict, fund: tuple):
+    def __init__(self, m: dict, fund: tuple, f15: dict | None = None):
+        self.f15 = f15
         self.m = m
         self.t = m["t"]
         self.ft, self.fr = fund
@@ -213,7 +281,7 @@ class Sim:
         px = min(o, stop) if d == 1 else max(o, stop)
         return px * (1 - d * slip)
 
-    def run(self, k0, d, stop, mode, tf, fee=1.0, slip=SLIP):
+    def run(self, k0, d, stop, mode, tf, fee=1.0, slip=SLIP, trail=None, be_at=1.0):
         """k0 = 진입 분(그 분 시가). 반환 dict 또는 None(진입가가 손절 밖)."""
         m = self.m
         h, l, o, c, t = m["h"], m["l"], m["o"], m["c"], self.t
@@ -235,14 +303,16 @@ class Sim:
         else:
             l1, l2 = e + d * R, e + 2 * d * R
             be = e * (1 + TAKER) / (1 - TAKER) if d == 1 else e * (1 - TAKER) / (1 + TAKER)
+            if be_at > 1.0:
+                l1 = e + d * be_at * R
             kf = self.first(k0, kmax + 1, fav(l1))
             if ka >= 0 and (kf < 0 or ka <= kf):
                 parts.append((1.0, self.fill_stop(ka, d, stop, slip), F_T, ka, "stop"))
             elif kf < 0:
                 parts.append((1.0, c[kmax] * (1 - d * slip), F_T, kmax, "time"))
             else:
-                kb = self.first(kf + 1, kmax + 1, adv(be))
-                k2 = self.first(kf, kmax + 1, fav(l2))
+                kb = self.first(kf + 1, kmax + 1, adv(be)) if be_at < 2.0 else -1
+                k2 = self.first(kf, kmax + 1, fav(l2)) if be_at < 2.0 else kf
                 if kb >= 0 and (k2 < 0 or kb <= k2):
                     parts.append((1.0, self.fill_stop(kb, d, be, slip), F_T, kb, "be"))
                 elif k2 < 0:
@@ -254,10 +324,21 @@ class Sim:
                     if a >= z:
                         parts.append((2 / 3, c[kmax] * (1 - d * slip), F_T, kmax, "time"))
                     else:
-                        tfm = tf * MIN
+                        tw = trail or tf
+                        tfm = (15 if tw == "atr" else tw) * MIN
                         bar = t[k2:z] // tfm
                         st = np.r_[0, np.nonzero(np.diff(bar))[0] + 1]
-                        ext = (np.minimum.reduceat(l[k2:z], st) if d == 1 else np.maximum.reduceat(h[k2:z], st))
+                        if tw == "atr":
+                            # 샹들리에: 진입 뒤 최고가(숏 최저가) ∓ 2 × ATR(15분, 14), 봉 마감 때 값
+                            j15 = np.clip(np.searchsorted(self.f15["t"], bar[st] * tfm), 0, len(self.f15["t"]) - 1)
+                            atr = self.f15["atr"][j15]
+                            pre = h[k0:k2].max(initial=e) if d == 1 else l[k0:k2].min(initial=e)
+                            if d == 1:
+                                ext = np.maximum.accumulate(np.maximum(np.maximum.reduceat(h[k2:z], st), pre)) - 2 * atr
+                            else:
+                                ext = np.minimum.accumulate(np.minimum(np.minimum.reduceat(l[k2:z], st), pre)) + 2 * atr
+                        else:
+                            ext = (np.minimum.reduceat(l[k2:z], st) if d == 1 else np.maximum.reduceat(h[k2:z], st))
                         # 봉 j의 분들에 쓰는 손절 = be와 봉 0..j-1(마감된 봉) 극값의 추적
                         if d == 1:
                             trail = np.maximum(be, np.r_[-np.inf, np.maximum.accumulate(ext)[:-1]])
@@ -301,20 +382,48 @@ def build_trades(S: Sim, F: dict, sigs: list, spec: dict, ctx: dict, lat=0, fee=
         if k0 >= len(t1) - 2 or k0 <= busy or t1[k0] - T > 30 * MIN + lat * MIN:
             continue
         d = s["d"]
-        if spec["gate"] and (ctx["g1h"][s["c"]] == -d or ctx["g4h"][s["c"]] == -d):
+        if not gate_ok(spec, ctx, s["c"], d):
             continue
         cc = F["c"][i]
         e = S.m["o"][k0]
         lim = 0.03 if ctx["agree"][s["c"]] == d else 0.01
         if not hindsight and d * (e - cc) / cc >= lim:
             continue
-        tr = S.run(k0, d, s["ext"], spec["exit"], tf, fee, slip)
+        tr = S.run(k0, d, s["ext"], spec["exit"], tf, fee, slip, spec.get("trail"), spec.get("be", 1.0))
         if tr is None:
             continue
         tr.update({"tier": s["tier"], "pt": int(F["ct"][s["p"]]), "pext": s["ext"], "T": T})
         out.append(tr)
         busy = tr["kx"]
     return out
+
+
+def gate_ok(spec: dict, ctx: dict, i: int, d: int) -> bool:
+    g = spec["gate"]
+    if not g:
+        return True
+    if g == "G6":
+        return ctx["t6d"][i] == d
+    if g in ("RB1h", "RB1hL"):
+        ok = ctx["rup1h"][i] == d
+        return ok and (g == "RB1h" or ctx["lead1h"][i] == 2 * d)
+    if g in ("RB15", "RB15L"):
+        ok = ctx["rup"][i] == d
+        return ok and (g == "RB15" or ctx["lead"][i] == 2 * d)
+    if g == "G64":
+        return ctx["t6d"][i] == d and ctx["g4h"][i] == d
+    return ctx["g1h"][i] != -d and ctx["g4h"][i] != -d
+
+
+def t6d_daily(D: dict) -> np.ndarray:
+    """일봉 T6D 마지막 신호 방향(daily_wave.features의 GT와 같은 방법), 마감 일봉 위치별."""
+    import pine_ports as P
+
+    ev = P.s6_trend_dev(D["h"], D["l"], D["c"]).astype(float)
+    st = np.where(ev != 0, ev, np.nan)
+    idx = np.where(~np.isnan(st), np.arange(len(st)), 0)
+    np.maximum.accumulate(idx, out=idx)
+    return np.nan_to_num(st[idx], nan=0.0)
 
 
 def ctx_for(F: dict, Fs: dict) -> dict:
@@ -324,7 +433,13 @@ def ctx_for(F: dict, Fs: dict) -> dict:
         j = last_closed(Fs[k], T)
         g[k] = np.where(j >= 0, Fs[k]["dir"][np.clip(j, 0, None)], 0)
     agree = np.where((g["15"] == g["4h"]) & (g["4h"] == g["1d"]), g["1d"], 0)
-    return {"g1h": g["1h"], "g4h": g["4h"], "agree": agree}
+    jd = last_closed(Fs["1d"], T)
+    t6 = np.where(jd >= 0, Fs["1d"]["t6d"][np.clip(jd, 0, None)], 0)
+    j1 = last_closed(Fs["1h"], T)
+    j1c = np.clip(j1, 0, None)
+    return {"g1h": g["1h"], "g4h": g["4h"], "agree": agree, "t6d": t6,
+            "rup1h": np.where(j1 >= 0, Fs["1h"]["rup"][j1c], 0), "lead1h": np.where(j1 >= 0, Fs["1h"]["lead"][j1c], 0),
+            "rup": F["rup"], "lead": F["lead"]}  # fmt: skip
 
 
 def windows(t_end: int) -> dict:
@@ -388,7 +503,8 @@ def random_for(S: Sim, F: dict, tr: list, spec: dict, ctx: dict, cache: dict, ns
     out = np.full((len(tr), nsim), np.nan)
     ct = F["ct"]
     for i, x in enumerate(tr):
-        key = (spec["tf"], spec["exit"], spec["gate"], x["T"], x["d"], round(x["Rp"], 6))
+        key = (spec["tf"], spec["exit"], spec["gate"], spec.get("trail"), spec.get("be", 1.0), x["T"], x["d"],
+               round(x["Rp"], 6))  # fmt: skip
         if key in cache:
             out[i] = cache[key]
             continue
@@ -398,14 +514,14 @@ def random_for(S: Sim, F: dict, tr: list, spec: dict, ctx: dict, cache: dict, ns
         while len(res) < nsim and tries < nsim * 5:
             tries += 1
             j = int(rng.integers(a, z))
-            if spec["gate"] and (ctx["g1h"][j] == -x["d"] or ctx["g4h"][j] == -x["d"]):
+            if not gate_ok(spec, ctx, j, x["d"]):
                 continue
             k0 = int(np.searchsorted(S.t, ct[j]))
             if k0 >= len(S.t) - 2 or S.t[k0] - ct[j] > 30 * MIN:
                 continue
             e = S.m["o"][k0] * (1 + x["d"] * SLIP)
             stop = e * (1 - x["d"] * x["Rp"])
-            rr = S.run(k0, x["d"], stop, spec["exit"], spec["tf"])
+            rr = S.run(k0, x["d"], stop, spec["exit"], spec["tf"], trail=spec.get("trail"), be_at=spec.get("be", 1.0))
             if rr is not None:
                 res.append(rr["r"])
         v = np.array(res + [np.nan] * (nsim - len(res)))[:nsim]
@@ -490,7 +606,19 @@ def main() -> None:
             Fs[k][x] = Fs[k][x][keep]
     del b5
     Fr = {15: Fs["15"], 30: Fs["30"]}
+    Fs["1d"]["t6d"] = t6d_daily(Fs["1d"])
+    f = Fs["15"]
+    trr = np.maximum(f["h"] - f["l"], np.maximum(np.abs(f["h"] - np.r_[f["c"][0], f["c"][:-1]]),
+                                                 np.abs(f["l"] - np.r_[f["c"][0], f["c"][:-1]])))  # fmt: skip
+    atr = np.empty_like(trr)
+    atr[0] = trr[0]
+    for i in range(1, len(trr)):
+        atr[i] = atr[i - 1] + (trr[i] - atr[i - 1]) / 14
+    S.f15 = {"t": f["t"], "atr": atr}
+    for k in ("15", "30", "1h"):
+        ribbon(Fs[k])
     sigs = {tf: signals(Fr[tf]) for tf in Fr}
+    rsig = {tf: rib_signals(Fr[tf]) for tf in Fr}
     ctx = {tf: ctx_for(Fr[tf], Fs) for tf in Fr}
     W = windows(t_end)
     print(f"loaded {time.time() - t0:.0f}s; t_end {datetime.fromtimestamp(t_end / 1000, timezone.utc)}; "
@@ -512,10 +640,23 @@ def main() -> None:
     diag = diagnostics(S, Fr, sigs, W)
     print("diag done", f"{time.time() - t0:.0f}s", flush=True)
     res, trj, cache, hind = {}, {}, {}, {}
+    best = None
     for name, spec in SPEC.items():
         tf = spec["tf"]
         F = Fr[tf]
-        tr = build_trades(S, F, sigs[tf], spec, ctx[tf])
+        if spec.get("trail") == "best" or spec.get("be") == "best":
+            if best is None:
+                fx = [n for n in res if n.startswith("F")]
+                best = max(fx, key=lambda n: res[n]["design"]["risk1"]["ret"])
+                print("best fix by design 1% risk:", best, flush=True)
+            spec = dict(spec)
+            if spec["trail"] == "best":
+                spec["trail"] = SPEC[best]["trail"]
+            if spec["be"] == "best":
+                spec["be"] = SPEC[best]["be"]
+            SPEC[name] = spec
+        sg = rsig[tf] if spec.get("src") == "rib" else sigs[tf]
+        tr = build_trades(S, F, sg, spec, ctx[tf])
         r = {w: summ(in_w(tr, *W[w]), *W[w]) for w in WINS}
         # 무작위(pool + year)
         rnd = {}
@@ -530,7 +671,7 @@ def main() -> None:
         red = {}
         for rk, kw in (("lat1m", {"lat": 1}), ("lat1bar", {"lat": tf}), ("slip+2", {"slip": SLIP + 0.0002}),
                        ("fee1.5", {"fee": 1.5})):  # fmt: skip
-            t2 = build_trades(S, F, sigs[tf], spec, ctx[tf], **kw)
+            t2 = build_trades(S, F, sg, spec, ctx[tf], **kw)
             red[rk] = {w: summ(in_w(t2, *W[w]), *W[w]) for w in ("val", "year")}
         r["red"] = red
         yrs = {}
@@ -538,7 +679,7 @@ def main() -> None:
             a_, z_ = ms(f"{y}-01-01"), min(ms(f"{y + 1}-01-01"), t_end)
             yrs[y] = summ(in_w(tr, a_, z_), a_, z_)
         r["years"] = yrs
-        if spec["exit"] == "X":
+        if spec["exit"] == "X" and spec.get("src") != "rib":
             th = build_trades(S, F, sigs[tf], spec, ctx[tf], hindsight=True)
             hind[name] = {w: summ(in_w(th, *W[w]), *W[w]) for w in WINS}
         res[name] = r
@@ -565,6 +706,7 @@ def main() -> None:
         verdict[n] = {"g1": bool(g1), "g2": bool(g2), "g3": bool(g3), "g4": bool(g4), "g5": bool(g5),
                       "holm": holm[n], "cum": min(1.0, ps[n] * N_CUM), "pass": bool(g1 and g2 and g3 and g4 and g5)}  # fmt: skip
     (out / "result.json").write_text(json.dumps({"res": res, "diag": diag, "hind": hind, "verdict": verdict,
+                                                  "best_fix": best, "spec": SPEC,
                                                   "t_end": t_end, "secs": time.time() - t0}, default=float))  # fmt: skip
     (out / "trades.json").write_text(json.dumps(trj, default=float))
     print("pass:", [n for n in verdict if verdict[n]["pass"]], f"{time.time() - t0:.0f}s")

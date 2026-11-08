@@ -1290,12 +1290,12 @@ def test_crash_with_resting_limit_is_recovered(env, monkeypatch):
     ex.limit_script = ["partial:0.012"]
 
     def boom(*a, **k):
-        raise RuntimeError("죽음")
+        raise KeyboardInterrupt  # 프로세스가 죽은 것과 같다(정리 코드도 못 돈다)
 
     real_cancel = bt.LiveVenue.cancel
     monkeypatch.setattr(bt.LiveVenue, "cancel", boom)
     with_signal(monkeypatch, "long")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyboardInterrupt):
         run(env, ex)
     resting = next(iter(ex.limits.values()))
     assert resting["status"] == "PARTIALLY_FILLED" and state()["pending"]
@@ -1323,3 +1323,101 @@ def test_entry_config_override(env):
     )
     cfg = bt.entry_cfg()
     assert cfg["ladder_rounds"] == 3 and cfg["fast_1m_pct"] == 0.3
+
+
+def test_error_mid_ladder_is_protected_in_same_run(env, monkeypatch):
+    """사다리 도중 오류(예: 호가 조회 실패): 같은 실행에서 지정가 취소·포지션 확인·손절."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["partial:0.012"]
+
+    class Flaky(FakeMarket):
+        n = 0
+
+        def book(self):
+            self.n += 1
+            if self.n > 1:
+                raise bt.NetworkError("호가 조회 실패")
+            return super().book()
+
+    with_signal(monkeypatch, "long")
+    run(env, ex, Flaky())
+    pos = state()["position"]
+    assert pos["qty"] == pytest.approx(0.012) and "pending" not in state()
+    assert all(
+        o["status"] != "NEW" and o["status"] != "PARTIALLY_FILLED" for o in ex.limits.values()
+    )
+    assert any(a["type"] == "STOP_MARKET" and a["algoStatus"] == "NEW" for a in ex.algos.values())
+    assert any("진입 중 오류" in m for m in env["sent"])
+
+
+def test_one_tick_spread_keeps_resting_order(env, monkeypatch):
+    """스프레드가 1틱이면 새 가격이 같다: 취소·재주문 없이 그대로 두어 대기열을 지킨다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["none"]
+    mk = FakeMarket()
+    mk.spread = 0.1
+    with_signal(monkeypatch, "long")
+    run(env, ex, mk)
+    assert len(_limits(ex)) == 1  # 한 번만 걸었다
+    assert len(_markets(ex)) == 1  # 시간이 다 돼 남은 수량 시장가
+
+
+def test_uncertain_cancel_stops_ladder(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["none", "fill"]
+    monkeypatch.setattr(
+        bt.LiveVenue, "cancel", lambda self, cid: {"status": "NEW", "executedQty": "0"}
+    )
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert len(_limits(ex)) == 1 and not _markets(ex)  # 끝 상태를 모르면 더 내지 않는다
+
+
+def test_position_lag_is_waited_for(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    real = bt.position_row
+    calls = {"n": 0}
+
+    def lagging(client):
+        calls["n"] += 1
+        return {"amt": 0.0, "entry": 0.0} if calls["n"] == 1 else real(client)
+
+    monkeypatch.setattr(bt, "position_row", lagging)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert state()["position"]["qty"] == pytest.approx(0.029) and calls["n"] >= 2
+
+
+def test_position_unreadable_keeps_pending(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+
+    def down(client):
+        raise bt.NetworkError("down")
+
+    monkeypatch.setattr(bt, "position_row", down)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert state()["pending"]["open"].endswith("-o") and state().get("position") is None
+    assert any("포지션을 확인하지 못했어요" in m for m in env["sent"])
+    monkeypatch.undo()
+
+
+def test_deadline_stops_ladder_without_market(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["partial:0.010"] + ["none"] * 10
+    monkeypatch.setattr(bt, "RUN_DEADLINE_S", 15)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert not _markets(ex) and state()["position"]["qty"] == pytest.approx(0.010)

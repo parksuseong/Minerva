@@ -116,6 +116,8 @@ ENTRY_DEFAULTS: dict = {
     "ladder_max_s": 70,  # 사다리 전체 시간 한도(넘으면 남은 수량 시장가)
 }
 MAKER_FEE = 0.0002
+# 한 실행의 전체 시간 한도(systemd 600초 전에 손절까지 끝나게). 넘으면 사다리는 시장가 없이 멈춘다
+RUN_DEADLINE_S = 420
 GTX_REJECT = (-5022,)  # post-only가 바로 체결될 가격이라 거부됨 → 새 호가로 다시
 # AI가 연달아 기본값으로 돌아가면(인증 만료·한도) 알린다
 AI_FALLBACK_ALERT = 3
@@ -534,23 +536,32 @@ class Market:
         return self._cache[interval]
 
     def price(self) -> float:
-        return btc.fetch_price()
+        try:
+            return btc.fetch_price()
+        except (OSError, ValueError, KeyError) as e:
+            raise NetworkError(f"시세 조회 실패: {type(e).__name__}") from None
 
     def book(self) -> tuple[float, float]:
         """최우선 매수·매도 호가(공개, 캐시 안 함)."""
         req = urllib.request.Request(
             f"{BASE}/fapi/v1/ticker/bookTicker?symbol={SYMBOL}", headers={"User-Agent": "minerva"}
         )
-        with urllib.request.urlopen(req, timeout=10) as r:
-            d = json.load(r)
-        return float(d["bidPrice"]), float(d["askPrice"])
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                d = json.load(r)
+            return float(d["bidPrice"]), float(d["askPrice"])
+        except (OSError, ValueError, KeyError) as e:
+            raise NetworkError(f"호가 조회 실패: {type(e).__name__}") from None
 
     def minutes(self, n: int = 20) -> list[list]:
         """최근 1분봉(공개, 캐시 안 함). 마지막은 진행 중인 봉."""
         url = f"{BASE}/fapi/v1/klines?symbol={SYMBOL}&interval=1m&limit={n}"
         req = urllib.request.Request(url, headers={"User-Agent": "minerva"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.load(r)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.load(r)
+        except (OSError, ValueError) as e:
+            raise NetworkError(f"1분봉 조회 실패: {type(e).__name__}") from None
 
     def funding(self) -> float | None:
         req = urllib.request.Request(
@@ -700,6 +711,7 @@ class Ctx:
         self.notes: list[str] = []
         self.ai_streak: int | None = None
         self.rows15: list[list] = []
+        self.deadline = _clock() + RUN_DEADLINE_S
         self.now_ms = int(now.timestamp() * 1000)
 
     def say(self, text: str) -> None:
@@ -918,6 +930,7 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             set_no_entry("엔진 포지션이 손절·익절·신호 없이 닫힘(수동 또는 강제 청산)", ctx.send)
         return why != "manual"
     state.pop("pending", None)
+    cancel_engine_entries(c)  # 남은 진입 지정가가 체결되면 수량이 어긋난다
     if abs(amt - sign * pos["qty"]) > 1e-9:
         key = f"{amt}/{pos['qty']}"
         if state.get("foreign_key") != key:
@@ -1119,7 +1132,7 @@ def fast_market(
         return f"신호 봉 종가에서 이미 {moved:+.2f}%"
     try:
         mins = market.minutes(20)
-    except (OSError, ValueError, KeyError):
+    except (NetworkError, OSError, ValueError, KeyError):
         return ""
     closed = [r for r in mins if int(r[6]) < now_ms]
     if closed:
@@ -1232,6 +1245,13 @@ class DryVenue:
         }
 
 
+class LadderAbort(RuntimeError):
+    """지정가 상태를 확신할 수 없어 사다리를 멈춘다(포지션 조회로 마무리)."""
+
+
+TERMINAL = ("CANCELED", "FILLED", "EXPIRED", "REJECTED")
+
+
 def ladder(
     venue,
     side: str,
@@ -1241,12 +1261,16 @@ def ladder(
     flt: dict,
     base: str,
     price_now: Callable[[], float],
+    deadline: float | None = None,
 ) -> dict:
     """post-only 지정가 사다리. 1회차는 최우선 호가(롱=매수 호가, 숏=매도 호가),
-    회차마다 그때 호가에서 한 틱씩 더 시장 쪽으로. 시간이 다 되면 남은 수량은 시장가.
+    회차마다 그때 호가에서 한 틱씩 더 시장 쪽으로. 새 가격이 걸어 둔 가격과 같으면(스프레드 1틱)
+    취소하지 않고 그대로 둬 대기열 순서를 지킨다. 시간이 다 되면 남은 수량은 시장가.
 
     추격 한도를 넘으면 멈춘다(그때까지 체결된 수량은 그대로 둔다).
     남은 수량이 최소 수량·최소 주문 금액보다 작으면 그대로 받아들인다.
+    deadline(_clock 기준)을 넘으면 시장가 없이 멈춘다(실행 전체 시간 한도).
+    지정가 끝 상태를 확인하지 못하면 LadderAbort(더 내지 않는다).
     """
     cfg = entry_cfg()
     order_side = "BUY" if side == "long" else "SELL"
@@ -1256,12 +1280,30 @@ def ladder(
     t0 = _clock()
     path, rounds, note = "", 0, ""
     steps: list[dict] = []
+    cur: dict | None = None  # 걸려 있는 지정가 {"cid", "px"}
 
     def small(rest: Decimal, px: float) -> bool:
         return float(rest) < flt["min_qty"] or float(rest) * px < flt["min_notional"]
 
+    def settle(cid: str, px: Decimal, r: dict | None) -> None:
+        """끝난 지정가의 체결 수량을 센다. 끝 상태가 아니면 멈춘다(이중 체결 방지)."""
+        nonlocal filled, cost, maker
+        if not r or r.get("status") not in TERMINAL:
+            raise LadderAbort(f"{cid} 상태 확인 안 됨({(r or {}).get('status')})")
+        q = Decimal(str(r.get("executedQty") or 0))
+        if q:
+            filled += q
+            maker += q
+            cost += float(q) * (float(r.get("avgPrice") or 0) or float(px))
+        steps.append({"cid": cid, "px": float(px), "filled": float(q), "status": r.get("status")})
+
+    def late() -> bool:
+        return deadline is not None and _clock() >= deadline
+
     for k in range(1, int(cfg["ladder_rounds"]) + 1):
-        rest = qty - filled
+        if late():
+            path, note = "abandon", "실행 시간 한도"
+            break
         bid, ask = venue.book()
         if side == "long":
             px = Decimal(str(bid)) + (k - 1) * tick
@@ -1271,48 +1313,58 @@ def ladder(
             px = Decimal(str(ask)) - (k - 1) * tick
             if float(px) <= bid:
                 px = Decimal(str(bid)) + tick
-        if rest <= 0 or small(rest, float(px)):
-            break
-        if not chase_ok(side, float(px), sig["close"], gate["pct"]):
-            path, note = "abandon", f"{k}회차 호가 {float(px):,.1f}가 추격 한도 밖"
-            break
-        cid = f"{base}{k}"
         rounds = k
-        try:
-            r = venue.place(cid, order_side, rest, px)
-        except Rejected as e:
-            if e.code not in GTX_REJECT:
-                raise
-            steps.append({"k": k, "px": float(px), "result": "GTX 거부"})
-            _sleep(1)
-            continue
-        if r.get("status") == "EXPIRED" and not float(r.get("executedQty") or 0):
-            steps.append({"k": k, "px": float(px), "result": "GTX 만료"})
-            _sleep(1)
-            continue
-        deadline = _clock() + cfg["ladder_wait_s"]
-        while r.get("status") != "FILLED" and _clock() < deadline:
+        if cur and cur["px"] != px:
+            settle(cur["cid"], cur["px"], venue.cancel(cur["cid"]))
+            cur = None
+        if not cur:
+            rest = qty - filled
+            if rest <= 0 or small(rest, float(px)):
+                break
+            if not chase_ok(side, float(px), sig["close"], gate["pct"]):
+                path, note = "abandon", f"{k}회차 호가 {float(px):,.1f}가 추격 한도 밖"
+                break
+            cid = f"{base}{k}"
+            try:
+                r = venue.place(cid, order_side, rest, px)
+            except Rejected as e:
+                if e.code not in GTX_REJECT:
+                    raise
+                steps.append({"cid": cid, "px": float(px), "result": "GTX 거부"})
+                _sleep(1)
+                continue
+            if r.get("status") == "EXPIRED" and not float(r.get("executedQty") or 0):
+                steps.append({"cid": cid, "px": float(px), "result": "GTX 만료"})
+                _sleep(1)
+                continue
+            cur = {"cid": cid, "px": px, "r": r}
+        wait_end = _clock() + cfg["ladder_wait_s"]
+        if deadline is not None:
+            wait_end = min(wait_end, deadline)
+        r = cur["r"]
+        while r.get("status") != "FILLED" and _clock() < wait_end:
             _sleep(cfg["ladder_poll_s"])
-            r = venue.status(cid) or r
-        if r.get("status") != "FILLED":
-            r = venue.cancel(cid)
-        q = Decimal(str(r.get("executedQty") or 0))
-        if q:
-            filled += q
-            maker += q
-            cost += float(q) * (float(r.get("avgPrice") or 0) or float(px))
-        steps.append({"k": k, "px": float(px), "filled": float(q), "status": r.get("status")})
-        if filled >= qty:
-            path = "limit"
-            break
+            r = venue.status(cur["cid"]) or r
+        cur["r"] = r
+        if r.get("status") == "FILLED":
+            settle(cur["cid"], cur["px"], r)
+            cur = None
+            if filled >= qty:
+                path = "limit"
+                break
         if _clock() - t0 >= cfg["ladder_max_s"]:
             break
+    if cur:
+        settle(cur["cid"], cur["px"], venue.cancel(cur["cid"]))
+        cur = None
     rest = qty - filled
-    if path != "abandon" and rest > 0:
+    if filled >= qty:
+        path = "limit"
+    elif path != "abandon" and rest > 0:
         now_px = price_now()
         if small(rest, now_px):
             note = note or f"남은 {rest} BTC는 최소 주문보다 작아 그대로 둠"
-            path = path or ("limit" if filled else "none")
+            path = "limit" if filled else "none"
         elif not chase_ok(side, now_px, sig["close"], gate["pct"]):
             path, note = "abandon", f"시간이 다 됐을 때 가격 {now_px:,.1f}가 추격 한도 밖"
         else:
@@ -1377,28 +1429,21 @@ def position_row(client) -> dict:
     return {"amt": float(row["positionAmt"]), "entry": float(row.get("entryPrice") or 0)}
 
 
-def _recover_open(ctx: Ctx, state: dict, side: str) -> dict | None:
-    """진입 중 통신이 끊겼을 때: 남은 진입 지정가를 취소하고 포지션으로 체결을 확인한다.
-    체결된 게 있으면 주문 응답 모양으로 돌려준다."""
-    sign = 1 if side == "long" else -1
-    for k in range(3):
+def _settle_entry(ctx: Ctx, want: float | None, tries: int = 5) -> dict | None:
+    """진입 마무리: 엔진 진입 지정가를 취소하고 포지션을 읽는다. 센 수량(want)만큼 보일 때까지
+    0.5초 간격으로 다시 읽는다. 끝내 못 읽으면 None(0과 구별한다)."""
+    row = None
+    for k in range(tries):
         if k:
-            _sleep(2)
+            _sleep(0.5)
         try:
             cancel_engine_entries(ctx.client)
             row = position_row(ctx.client)
         except (Rejected, NetworkError):
             continue
-        if row["amt"] and (row["amt"] > 0) == (sign > 0):
-            ctx.event(event="recover_open", amt=row["amt"], entry=row["entry"])
-            return {
-                "executedQty": str(abs(row["amt"])),
-                "avgPrice": str(row["entry"]),
-                "status": "FILLED",
-                "updateTime": int(time.time() * 1000),
-            }
-        return None
-    return None
+        if not want or abs(row["amt"]) >= want - 1e-9:
+            return row
+    return row
 
 
 def _enter(
@@ -1423,7 +1468,7 @@ def _enter(
             "secs": 0.0,
             "steps": [],
         }
-    return ladder(venue, side, qty, sig, gate, flt, base, ctx.market.price)
+    return ladder(venue, side, qty, sig, gate, flt, base, ctx.market.price, ctx.deadline)
 
 
 def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan: dict) -> None:
@@ -1544,34 +1589,35 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
         "reason": used["reason"],
     }
     _save(DIR / "state.json", state)
-    fill = None
+    fill, err = None, None
     try:
         fill = _enter(ctx, LiveVenue(ctx), side, qty, sig, gate, flt, oid)
-        cancel_engine_entries(c)  # 혹시 남은 지정가
-        row = position_row(c)
-    except (Rejected, NetworkError) as e:
-        # 다시 보내지 않는다. 남은 지정가를 취소하고 생긴 포지션이 있으면 이어 받아 손절을 건다
-        r = _recover_open(ctx, state, side)
-        if r is None:
-            if isinstance(e, Rejected):
-                state.pop("pending", None)
-            ctx.say(f"❌ {SIDE_KO[side]} 진입 실패: {e} → 다음 실행에서 다시 대사해요")
-            return  # 통신 오류면 pending을 남겨 다음 실행이 확인한다
-        row = {
-            "amt": float(r["executedQty"]) * (1 if side == "long" else -1),
-            "entry": float(r["avgPrice"]),
-        }
+    except Exception as e:  # noqa: BLE001 — 무엇이 깨져도 아래에서 취소·포지션 확인·손절로 마무리
+        err = e
+        ctx.event(event="enter_error", error=f"{type(e).__name__}: {e}")
+    # 남은 진입 지정가를 취소하고 거래소 포지션을 진실로 삼는다(체결 직후 늦게 보일 수 있어 몇 번)
+    row = _settle_entry(ctx, fill["qty"] if fill else None)
+    why = f"{type(err).__name__}: {err}" if err else ""
+    if row is None:
+        ctx.say(
+            f"🆘 {SIDE_KO[side]} 진입 뒤 포지션을 확인하지 못했어요({why or '조회 실패'}). "
+            "다음 실행에서 대사하고 손절을 걸어요. 바이낸스 앱도 확인하세요!"
+        )
+        return  # pending을 남긴다
     sign = 1 if side == "long" else -1
-    if not row["amt"] or (row["amt"] > 0) != (sign > 0):
-        state.pop("pending", None)
-        if row["amt"]:
-            ctx.say(
-                f"🆘 진입 뒤 포지션 방향이 이상해요({row['amt']:+}). 바이낸스 앱에서 확인하세요!"
-            )
-            set_no_entry("진입 뒤 포지션 방향 불일치", ctx.send)
-        else:
-            ctx.say(f"⏭ {SIDE_KO[side]} 진입 안 됨: {fill_text(fill) if fill else '체결 없음'}")
+    if row["amt"] and (row["amt"] > 0) != (sign > 0):
+        ctx.say(f"🆘 진입 뒤 포지션 방향이 이상해요({row['amt']:+}). 바이낸스 앱에서 확인하세요!")
+        set_no_entry("진입 뒤 포지션 방향 불일치", ctx.send)
         return
+    if not row["amt"]:
+        if fill and fill["qty"] > 0:
+            ctx.say("🆘 체결을 셌는데 포지션이 아직 0으로 보여요 → 다음 실행에서 다시 대사해요")
+            return  # pending을 남긴다
+        state.pop("pending", None)
+        ctx.say(f"⏭ {SIDE_KO[side]} 진입 안 됨: {fill_text(fill) if fill else why}")
+        return
+    if err:
+        ctx.say(f"⚠️ 진입 중 오류({why}) → 체결된 {abs(row['amt'])} BTC를 이어 받아 손절을 걸어요")
     real = abs(row["amt"])
     entry = fill["avg"] if fill and fill["avg"] and abs(real - fill["qty"]) < 1e-9 else row["entry"]
     if fill and abs(real - fill["qty"]) > 1e-9:

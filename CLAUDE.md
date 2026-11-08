@@ -94,7 +94,7 @@ Minerva/
 - ₿ 비트코인 화면(사용자 2026-11-08 22:22·22:27·22:35 "실전 기준으로 다 수정", "쓰지도 않는 모델링 결과 빼"): 실전 전략(엔진)만 보여준다. 근원은 하나, 읽기 전용 `/api/btc/engine`(`btc_view.py`, 엔진 파일만 읽음).
   - 종목 분석 > 비트코인: 자동매매 상태(모드·포지션·마지막 신호와 처리·정지 게이지), 15분봉 7일 차트(SCR ① 신호 + 엔진 진입·청산 + 진입·손절·익절선, Stoch·CCI·RSI 따로), 지금 지표와 신호까지 남은 거리, 추격 한도(`/api/btc`의 `entry_gate`), AI 손절·익절 결정, 엔진 거래(드라이런이면 드라이런 표시). `static/btcengine.js`.
   - 오늘 할 일 > 비트코인: 같은 엔진 상태 요약. 계좌 > 비트코인: "자동매매 손익"(실전 시작 이후 엔진 거래만).
-  - 뺀 것(2026-11-08): 오늘의 판·손절·크기 계산기(1% 위험·5배, 엔진 3배·100% 크기와 어긋남), ML 규칙 기록, TM 봉별 표, 비트코인 일일 카드. JS(`btc.js`·`btcplan.js`·`btcday.js`·`btcml.js`)와 `/api/btc/ml`·`/api/btc/size`를 지웠다. 자료 파일은 남겼다. `strategy/btc.py`·`btc_plan.py`는 `/api/btc`(추격 한도)와 아침 브리핑(`minerva-btc-brief.timer`, 08:30)이 아직 쓴다.
+  - 뺀 것(2026-11-08): 오늘의 판·손절·크기 계산기(1% 위험·5배, 엔진 3배·100% 크기와 어긋남), ML 규칙 기록, TM 봉별 표, 비트코인 일일 카드. JS(`btc.js`·`btcplan.js`·`btcday.js`·`btcml.js`)와 `/api/btc/ml`·`/api/btc/size`를 지웠다. 자료 파일은 남겼다. `strategy/btc.py`·`btc_plan.py`는 `/api/btc`(추격 한도)가 아직 쓴다. 옛 "오늘의 판" 아침 브리핑은 2026-11-08에 엔진 브리핑으로 바꿨다.
   - `minerva-btc-mltrack.timer`(옛 ML 모의 추적, 워크트리 `wt-btc-ma`에서 돎)는 2026-11-08에 껐다(`systemctl disable --now`). 기록 `~/.minerva/research/btc-ml-tracker/`는 남겼다.
   - 차트는 TradingView Lightweight Charts 5.2.1(Apache-2.0, `static/vendor/`, npm 무결성 확인).
 - 🧪 SCR 실험실(`#scrlab`, 사용자 요청 2026-11-08): SCR 3단 숫자(길이·기준선·확인 창 W·필요 지표 수·넘어옴/구간 모드)를 바꿔 BTCUSDT 롱·숏 열림 신호를 바로 다시 그린다. 계산은 화면 `static/scrlab_core.js`, 파이썬 쌍둥이 `strategy/scr_lab.py`(테스트가 bun으로 둘을 맞춰 봄). 기본값 Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70)·W 3·3개 중 3개·넘어옴·15분·7일(사용자 지정 2026-11-08, 저장 키 `minerva-scrlab-v2`). 기간 3일~1년. 봉은 `/api/btc/klines`(바이낸스 선물 공개 시세 GET, 5m~1d, 최대 365일·5분봉 90일 + 앞쪽 300봉, 진행 중 봉 제외, gzip). 서버는 1500봉 덩어리로 캐시한다(끝난 덩어리 6시간, 마지막 덩어리 45초, 최대 80덩어리). 요약 아래 "손절 3% · 3배 단순 계산"은 롱↔숏 갈아타기 거친 추정(`switchSim`). 참고용이고 주문과 연결되지 않는다.
@@ -115,6 +115,7 @@ Minerva/
 - 정지(신규 진입만 막고 보유·손절·반대 신호 청산은 계속): `NO_ENTRY` 파일 + 텔레그램. 평가액 < 시드 × 0.80, 최근 30일 청산 승률 < 50%(8회 이상, 같은 모드끼리), 수동 `HALT` 파일, 엔진이 열지 않은 포지션·수량 불일치·엔진 포지션이 손절·익절·신호 없이 닫힘(실전). 엔진 밖 미체결 주문이 있으면 그 진입만 건너뛴다. 다시 열려면 사용자가 `rm ~/.minerva/btc_trade/NO_ENTRY`.
 - 매 실행 대사: 포지션·조건부 주문·체결을 조회해 손절·익절 체결을 적고(`closed.jsonl`), 손절이 없으면 다시 건다. 주문 ID는 `mnv-<신호 봉 시작 분>-<o|c|s|t>`. 보내기 전에 같은 ID를 조회해 중복을 막고, 통신 오류만 10초 간격 최대 3회 다시 보낸다. 거래소 거부는 다시 보내지 않는다. 진입 응답을 잃으면 `pending`을 남기고 다음 실행이 체결을 확인해 이어 받는다.
 - 드라이런: 계산·AI 호출까지 다 하고 낼 주문을 `dry.jsonl`에, 텔레그램은 "[드라이런] …". POST 없음. 가상 포지션은 봉 고저로 손절·익절을 본다. 시드는 첫 실행 평가액.
+- 아침 브리핑: `minerva-btc-brief.timer` 매일 08:30 KST → `python -m minerva.btc_brief`(읽기 전용, `btc_view` + 공개 시세). 모드·포지션(진입·손절·익절·평가손익)·지난 브리핑 뒤 청산·시드 대비 평가액·정지 규칙까지 거리·마지막 신호·1h/4h/1d 방향과 SCR① 값. 지난 보낸 시각은 `~/.minerva/btc_trade/brief.json`. 시험 `--dry`.
 - 점검(GET만): `.venv/bin/python -m minerva.btc_trade preflight [--notify]`. 상태: `... btc_trade status`.
 - **실전 전환은 사용자만 한다**: `.venv/bin/python -m minerva.btc_trade start-live --confirm`. 포지션·미체결이 없고 단방향인지 확인한 뒤 그 시각 순평가액을 `~/.minerva/account/binance_capital.json`에 `{"live": true, "since", "since_at", "base", "asset": "USDT", "deposits": []}`로 적고(`previous`는 남김) `mode`를 `live`로 쓴다. Claude가 대신 실행하지 않는다.
 - 멈추기: 신규 진입만 `touch ~/.minerva/btc_trade/HALT`, 주문 전체를 끄려면 `echo dry > ~/.minerva/btc_trade/mode`(이미 걸린 거래소 손절·익절은 남는다).

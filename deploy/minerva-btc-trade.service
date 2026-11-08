@@ -1,0 +1,17 @@
+# BTCUSDT 선물 자동매매 엔진(src/minerva/btc_trade.py). minerva-btc-trade.timer가 15분 봉 마감 20초 뒤 실행한다.
+# 바이낸스 POST/DELETE(주문)는 이 프로세스만 보낸다. 실주문은 ~/.minerva/btc_trade/mode 가 live일 때만(기본 드라이런).
+# 키: ~/.minerva/binance.env (저장소 밖). 진입 때 손절·익절 폭은 `claude -p`로 묻는다(btc_ai.py, 60초 제한).
+# 설치: sudo cp deploy/minerva-btc-trade.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-btc-trade.timer
+[Unit]
+Description=Minerva BTCUSDT futures auto trading (dry unless mode=live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.btc_trade run
+# 대기(재시도 10초×3)·AI(60초)를 넉넉히 덮되 다음 봉(15분) 전에 끝나게
+TimeoutStartSec=600

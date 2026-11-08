@@ -1,0 +1,11 @@
+# 15분 봉이 닫힌 뒤 20초(바이낸스 봉 확정 여유). 놓친 실행은 따라 하지 않는다(엔진이 최근 2봉까지 따라잡는다).
+[Unit]
+Description=Run Minerva BTC auto trading 20s after each 15m bar close
+
+[Timer]
+OnCalendar=*-*-* *:00/15:20
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

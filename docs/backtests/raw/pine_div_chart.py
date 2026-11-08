@@ -91,7 +91,7 @@ def chart(out: Path, trades: list, sigs: list, title: str, fname: str, rib: bool
           Line2D([], [], marker="o", ls="", color=RED, mec="k", label="long close"),
           Line2D([], [], marker="^", ls="", color=RED, mec="k", label="short open (real)"),
           Line2D([], [], marker="^", ls="", color=GREEN, mec="k", label="short close"),
-          Line2D([], [], marker="o", ls="", color=GREEN, alpha=0.3, label="pivot bar = where TradingView draws the label (5 bars of hindsight)"),
+          Line2D([], [], marker="o", ls="", color=GREEN, alpha=0.3, label="pivot bar = where TradingView draws the label (hindsight: known only R bars later)"),
           Line2D([], [], color="#777", ls=":", label="hindsight gap: pivot -> real entry"),
           Line2D([], [], color="#555", lw=0.6, label="stop (pivot extreme)")]  # fmt: skip
     if rib:

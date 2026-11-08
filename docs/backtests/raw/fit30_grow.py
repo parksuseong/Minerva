@@ -267,7 +267,6 @@ def search(C: Ctx, Z, a, z, n_rand, rng, n_refine, passes, gate=None):
     days = (z - a) / 96
     Zs = Z[:, a:z]
     full = np.zeros(len(C.t), np.int64)
-    gw = None if gate is None else gate[a:z]
 
     qs = np.array(F.QS)
     gfull = np.zeros(len(C.t), np.int64) if gate is None else gate.astype(np.int64)
@@ -472,22 +471,114 @@ def cmd_wf(out: Path, addon: str, n_rand: int, n_refine: int) -> None:
         json.dump({str(k): v for k, v in res.items()}, fh)
 
 
-def rand_trades(C: Ctx, folds, rng) -> list:
-    hod = (C.t // M15) % 96
-    allt = []
-    for f in folds:
-        a, z = f["a"], f["z"]
-        if z - a < 8:
+@nb.njit(cache=True)
+def rand_fold(o, h, l, c, t, atr, big, ft, fcum, a, z, sidx, dirs, nsim, seed):
+    """같은 주 안, 같은 UTC 15분 칸(=하루 단위로만 섞음), 같은 방향 무작위 신호 → 1배 순손익 합 nsim개."""
+    np.random.seed(seed)
+    out = np.zeros(nsim)
+    sig = np.zeros(len(t), np.int64)
+    for k in range(nsim):
+        for j in range(len(sidx)):
+            hod = sidx[j] % 96
+            base = a + ((hod - a % 96) % 96)
+            m = (z - 3 - base + 95) // 96
+            if m <= 0:
+                continue
+            sig[base + 96 * np.random.randint(m)] = dirs[j]
+        D, E, Xi, EP, XP, RR, WO, WHY, SI = sim_core(o, h, l, c, t, atr, big, sig, ft, fcum, a, z, 0, 1.0, 0.0,
+                                                     T_BARS, SL_ATR)  # fmt: skip
+        out[k] = RR.sum()
+        for j in range(a, z):
+            sig[j] = 0
+    return out
+
+
+def wins(end: int) -> dict:
+    return {"A": (ms("2024-07-01"), end), "Y1": (end - 365 * DAY, end), "M6": (end - 183 * DAY, end),
+            "D30": (end - 30 * DAY, end), "B": (ms("2022-01-01"), ms("2024-07-01")),
+            "C": (ms("2020-09-01"), ms("2022-01-01"))}  # fmt: skip
+
+
+def cmd_report(out: Path, nsim: int) -> None:
+    C = Ctx()
+    t = C.t
+    end = int(t[-1]) + M15
+    W = wins(end)
+    rep = {}
+    for addon in ADDONS:
+        fp = out / f"wf_{addon}.json"
+        if not fp.exists():
             continue
-        idx = np.arange(a, z - 3)
-        sig = np.zeros(len(C.t), np.int64)
-        for x in f["base"]:
-            cand = idx[hod[idx] == hod[x["sig"]]]
-            if len(cand):
-                sig[rng.choice(cand)] = x["d"]
-        D, E, Xi, EP, XP, RR, WO, WHY, SI = C.run(sig, a, z)
-        allt.append(RR.sum())
-    return allt
+        allf = json.loads(fp.read_text())
+        for N, folds in allf.items():
+            key = f"{addon}-{N}"
+            t0 = time.time()
+            # 무작위: 주마다 nsim개 1배 합
+            RM = np.zeros((len(folds), nsim))
+            for fi, f in enumerate(folds):
+                if f["base"] and f["z"] - f["a"] >= 8:
+                    sidx = np.array([x["sig"] for x in f["base"]], np.int64)
+                    dirs = np.array([x["d"] for x in f["base"]], np.int64)
+                    RM[fi] = rand_fold(C.o, C.h, C.l, C.c, t, C.atr, C.big, C.ft, C.fcum, f["a"], f["z"], sidx,
+                                       dirs, nsim, 7 + fi)  # fmt: skip
+            starts = np.array([f["start"] for f in folds], np.int64)
+            r = {}
+            for wn, (wa, wz) in W.items():
+                sel = [i for i, f in enumerate(folds) if wa <= f["start"] < wz]
+                if not sel:
+                    continue
+                if wn == "D30":  # 최근 30일은 주 경계와 안 맞아 매매 진입 시각으로 자른다
+                    pick = lambda tag: [x for f in folds for x in f[tag] if wa <= x["te"] < wz]  # noqa: E731
+                    days = 30.0
+                else:
+                    pick = lambda tag: [x for i in sel for x in folds[i][tag]]  # noqa: E731
+                    days = len(sel) * 7.0
+                tr = pick("base")
+                sm = summ(tr, days)
+                for tag in ("delay1", "fee15", "slip"):
+                    q = summ(pick(tag), days)
+                    sm[tag] = {"x5_f0.4": q["x5_f0.4"], "x5_f1.0": q["x5_f1.0"], "sum1": q["sum1"]}
+                if wn != "D30":
+                    rs = RM[sel].sum(0)
+                    sm["random"] = {"p": float((rs >= sm["sum1"]).mean()), "med_sum1": float(np.median(rs)),
+                                    "z": float((sm["sum1"] - rs.mean()) / (rs.std() + 1e-12))}  # fmt: skip
+                ws = [int(starts[i]) for i in sel]
+                for frac in (0.4, 1.0):
+                    for kill in ("perm", "pause"):
+                        kept, halts = guard(tr, frac, kill, ws)
+                        g = summ(kept, days)
+                        sm[f"guard_{kill}_f{frac}"] = {"n": g["n"], "x5": g[f"x5_f{frac}"],
+                                                        "halts": halts[:5], "n_halts": len(halts)}  # fmt: skip
+                r[wn] = sm
+            years = {}
+            for f in folds:
+                for x in f["base"]:
+                    years.setdefault(datetime.fromtimestamp(x["te"] / 1000, timezone.utc).year, []).append(x)
+            r["by_year"] = {y: summ(v, 365) for y, v in sorted(years.items())}
+            Wm = np.array([f["w"] for f in folds])
+            nzm = Wm != 0
+            r["w_pos_share"] = (np.where(nzm, Wm > 0, False).sum(0) / np.maximum(nzm.sum(0), 1)).round(2).tolist()
+            r["w_mean"] = Wm.mean(0).round(3).tolist()
+            cs = [float(u @ v / (np.linalg.norm(u) * np.linalg.norm(v) + 1e-12)) for u, v in zip(Wm[:-1], Wm[1:])]
+            r["w_cos_next_week"] = round(float(np.mean(cs)), 3)
+            A = r.get("A")
+            if A:
+                ok = {
+                    "1_A_pos_mdd_noliq": A["x5_f0.4"]["ret"] > 0 and A["x5_f0.4"]["mdd"] <= 0.4
+                    and A["x5_f1.0"]["liq"] == 0,
+                    "2_Y1_M6_B_pos": all(r[k]["x5_f0.4"]["ret"] > 0 for k in ("Y1", "M6", "B") if k in r)
+                    and "B" in r,
+                    "3_freq_sides": A["per_day"] >= 1 and min(A["long"], A["short"]) >= 0.3 * max(A["n"], 1),
+                    "4_random_bonf": A["random"]["p"] < 0.05 / N_TESTS,
+                    "5_delay_fee": A["delay1"]["x5_f0.4"]["ret"] > 0 and A["fee15"]["x5_f0.4"]["ret"] > 0,
+                }
+                r["gates"] = ok
+                r["pass"] = all(ok.values())
+            rep[key] = r
+            print(key, round(time.time() - t0), {k: (r[k]["n"], round(r[k]["per_day"], 2), r[k]["win"] and round(r[k]["win"], 2),
+                  round(r[k]["x5_f0.4"]["ret"], 3), round(r[k]["x5_f1.0"]["ret"], 3), r[k].get("random", {}).get("p"))
+                  for k in W if k in r}, r.get("pass"), flush=True)  # fmt: skip
+    (out / "report.json").write_text(json.dumps(rep, indent=1, default=float))
 
 
 def main() -> None:
@@ -527,6 +618,8 @@ def main() -> None:
         cmd_fixed(out)
     elif a.cmd == "wf":
         cmd_wf(out, a.addon, a.nrand, a.nrefine)
+    else:
+        cmd_report(out, a.nsim)
 
 
 if __name__ == "__main__":

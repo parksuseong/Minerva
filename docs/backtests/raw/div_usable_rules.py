@@ -99,11 +99,13 @@ def main():
         row = {}
         for w in (*MAINW, "pool"):
             a_, b_ = dv[w], pv[w]
-            row[w] = {"div": a_.get("hit"), "piv": b_.get("hit"), "rand": a_.get("rand"), "n_div": a_["n"],
-                      "n_piv": b_["n"], "p": two_prop(a_["hit"], a_["n"], b_["hit"], b_["n"]) if a_["n"] else None}  # fmt: skip
+            # 레드팀 고침: 피벗 전체는 자기 무작위(같은 손절 거리)와 비교한다. 손절 거리 분포가 달라 원 적중끼리는 못 비교.
+            row[w] = {"div": a_.get("hit"), "piv": b_.get("hit"), "rand": a_.get("rand"), "rand_piv": b_.get("rand"),
+                      "ex_div": a_.get("ex"), "ex_piv": b_.get("ex"), "n_div": a_["n"], "n_piv": b_["n"],
+                      "p_raw": two_prop(a_["hit"], a_["n"], b_["hit"], b_["n"]) if a_["n"] else None}  # fmt: skip
         ctl[f"{fk}|R{R}|{metric}"] = row
         pl = row["pool"]
-        print("ctl", fk, R, metric, f"div {pl['div']:.3f} piv {pl['piv']:.3f} rand {pl['rand']:.3f} p {pl['p']:.2g}",
+        print("ctl", fk, R, metric, f"div {pl['div']:.3f}/{pl['rand']:.3f} piv {pl['piv']:.3f}/{pl['rand_piv']:.3f}",
               f"{time.time() - t0:.0f}s", flush=True)  # fmt: skip
     res["control"] = ctl
 

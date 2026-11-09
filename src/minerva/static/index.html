@@ -312,6 +312,7 @@
         <button type="button" data-days="365">1년</button>
       </div>
       <div class="sizer" id="lab-params"></div>
+      <div class="sizer" id="lab-exits" aria-label="손절·익절"></div>
       <div class="filters">
         <label>필요 지표 수 <select id="lab-need"><option value="3">3개 중 3개</option><option value="2">3개 중 2개</option></select></label>
         <label>모드 <select id="lab-mode"><option value="cross">기준선 다시 넘어옴</option><option value="zone">구간 안에 있음</option></select></label>
@@ -324,7 +325,7 @@
         <b>숏 열림</b>은 반대로 위선을 위에서 아래로 넘어올 때. 조건이 처음 맞은 봉에만 표시하고, 계속 맞는 동안은 다시 찍지 않아요.<br>
         <b>구간 안에 있음</b>: 넘어옴 대신 최근 W봉 안에 아래선 밑(롱)·위선 위(숏)에 있었으면 그 지표는 맞은 걸로 쳐요.
         <b>3개 중 2개</b>: 세 지표 중 두 개만 맞아도 신호. 숫자를 바꾸는 동안 기간·봉은 그대로예요.<br>
-        기본값: Stoch 9 (20/80) · CCI 20 (−100/+100) · RSI 21 (30/70) · W 3 · 3개 중 3개 · 기준선 다시 넘어옴 · 15분 · 7일 ("기본값으로"는 봉·기간도 되돌려요). 5분봉은 90일까지.
+        기본값: Stoch 9 (20/80) · CCI 20 (−100/+100) · RSI 21 (30/70) · W 3 · 3개 중 3개 · 기준선 다시 넘어옴 · 손절 3% · 익절 없음 · 15분 · 7일 ("기본값으로"는 봉·기간도 되돌려요). 5분봉은 90일까지.
       </details>
       <div id="lab-status" class="mini">탭을 열면 불러와요</div>
     </section>
@@ -424,8 +425,8 @@
   </script>
   <script src="/static/daily.js?v=20261109a"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
-  <script src="/static/scrlab_core.js?v=20261108b"></script>
-  <script src="/static/scrlab.js?v=20261108b"></script>
+  <script src="/static/scrlab_core.js?v=20261110a"></script>
+  <script src="/static/scrlab.js?v=20261110a"></script>
   <script src="/static/btcengine.js?v=20261109a"></script>
   <script src="/static/account.js?v=20261108a"></script>
   <script src="/static/trade.js?v=20261029"></script>

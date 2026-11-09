@@ -176,6 +176,38 @@ def test_js_switch_sim_stop_flip_and_fees(tmp_path):
 
 
 @pytest.mark.skipif(bun() is None, reason="JS 실행기(bun)가 없다")
+def test_js_switch_sim_take_profit_and_open_lines(tmp_path):
+    script = tmp_path / "tp.js"
+    # 봉: 0 롱 신호 → 1 시가 100 진입 → 2 고가 105 (익절 4% = 104) → 3 숏 신호 → 4 시가 100 숏 진입
+    #     → 5 고가 103.5, 저가 99 (손절 3% 103, 익절 4% 96 안 닿음) 손절
+    #     두 번째 계산: 같은 봉들인데 마지막 숏을 열어 둔 채 끝나 열린 선을 돌려준다
+    script.write_text(
+        f"const core = require({json.dumps(str(CORE_JS))});\n"
+        "const o = [100, 100, 103, 101, 100, 101], h = [100, 101, 105, 101, 100, 103.5];\n"
+        "const l = [100, 99, 102, 100, 99, 99], c = [100, 100, 103, 100, 100, 102];\n"
+        "const sigs = [{ i: 0, dir: 1 }, { i: 3, dir: -1 }];\n"
+        "const opt = { stop: 0.03, tp: 0.04, lev: 1, fee: 0 };\n"
+        "const a = core.switchSim(o, h, l, c, sigs, opt);\n"
+        "const k = (x) => x.slice(0, 5);\n"
+        "const b = core.switchSim(k(o), k(h), k(l), k(c), sigs, opt);\n"
+        "const n = core.switchSim(o, h, l, c, sigs, { stop: 0.03, lev: 1, fee: 0 });\n"
+        "console.log(JSON.stringify([a, b, n]));\n"
+    )
+    out = subprocess.run([bun(), str(script)], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    a, b, n = json.loads(out.stdout)
+    assert (a["trades"], a["tps"], a["stops"], a["holding"]) == (2, 1, 1, False)
+    assert [x["kind"] for x in a["exits"]] == ["tp", "stop"]
+    assert [x["from"] for x in a["exits"]] == [1, 4]
+    assert a["exits"][0]["px"] == pytest.approx(104)
+    assert a["ret"] == pytest.approx((1.04 * 0.97 - 1) * 100)
+    assert b["open"]["dir"] == -1 and b["open"]["entry"] == 100
+    assert b["open"]["stop"] == pytest.approx(103) and b["open"]["tp"] == pytest.approx(96)
+    # 익절 없음: 롱은 숏 신호에서 뒤집기로 닫힌다
+    assert n["tps"] == 0 and n["exits"][0]["kind"] == "flip" and n["open"] is None
+
+
+@pytest.mark.skipif(bun() is None, reason="JS 실행기(bun)가 없다")
 def test_js_after_is_signed_and_needs_whole_bars(tmp_path):
     script = tmp_path / "after.js"
     script.write_text(

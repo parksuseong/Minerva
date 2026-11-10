@@ -21,8 +21,10 @@
     ["w", "확인 창 W (봉)", 1, 50, true],
   ];
   // 손절·익절(%): 진입가 기준. 익절 0 = 없음. 엔진 기본값(손절 3%, 익절 없음)과 같게 시작한다.
-  const EXIT_FIELDS = [["stop_pct", "손절 %", 0.1, 50], ["tp_pct", "익절 % (0=없음)", 0, 100]];
-  const BASE = { interval: "15m", days: 7, show_long: true, show_short: true, stop_pct: 3, tp_pct: 0 };
+  // [키, 이름, 최소, 최대, 켜기 칸 키]. 켜기를 끄면 그 청산은 계산에서 뺀다.
+  const EXIT_FIELDS = [["stop_pct", "손절 %", 0.1, 50, "use_stop"], ["tp_pct", "익절 %", 0.1, 100, "use_tp"]];
+  const BASE = { interval: "15m", days: 7, show_long: true, show_short: true,
+    use_stop: true, stop_pct: 3, use_tp: false, tp_pct: 3 };
   const defaults = () => Object.assign({}, core ? core.DEFAULTS : {}, BASE);
 
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;",
@@ -43,7 +45,14 @@
   let cfg = defaults();
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) || "null");
-    if (saved && typeof saved === "object") cfg = Object.assign(cfg, saved);
+    if (saved && typeof saved === "object") {
+      // 켜기 칸이 생기기 전(익절 0 = 없음)에 저장된 값을 옮긴다.
+      if (saved.use_tp === undefined && "tp_pct" in saved) {
+        saved.use_tp = Number(saved.tp_pct) > 0;
+        if (!saved.use_tp) saved.tp_pct = BASE.tp_pct;
+      }
+      cfg = Object.assign(cfg, saved);
+    }
   } catch (e) { /* 저장된 값이 없거나 막혀도 기본값으로 연다 */ }
   if (!MIN[cfg.interval]) cfg.interval = BASE.interval;
   if (!DAYS.includes(Number(cfg.days))) cfg.days = BASE.days;
@@ -61,10 +70,11 @@
         save(); syncControls(); load(true);
       };
     });
-    $("lab-exits").innerHTML = EXIT_FIELDS.map(([k, name, lo, hi]) =>
-      `<label>${esc(name)}<input data-k="${k}" type="number" inputmode="decimal" min="${lo}" max="${hi}" step="0.1"></label>`).join("");
+    $("lab-exits").innerHTML = EXIT_FIELDS.map(([k, name, lo, hi, on]) =>
+      `<label><input type="checkbox" data-on="${on}"> ${esc(name)}<input data-k="${k}" type="number" inputmode="decimal" min="${lo}" max="${hi}" step="0.1"></label>`).join("");
     $("lab-exits").addEventListener("input", (e) => {
-      const k = e.target.dataset.k;
+      const k = e.target.dataset.k, on = e.target.dataset.on;
+      if (on) { cfg[on] = e.target.checked; syncControls(); later(); return; }
       if (!k) return;
       cfg[k] = e.target.value;
       later();
@@ -90,7 +100,13 @@
   const syncControls = () => {
     document.querySelectorAll("#lab-tf button").forEach((b) => b.classList.toggle("on", b.dataset.tf === cfg.interval));
     document.querySelectorAll("#lab-days button").forEach((b) => b.classList.toggle("on", Number(b.dataset.days) === Number(cfg.days)));
-    document.querySelectorAll("#lab-params input, #lab-exits input").forEach((i) => { i.value = cfg[i.dataset.k]; });
+    document.querySelectorAll("#lab-params input[data-k], #lab-exits input[data-k]").forEach((i) => { i.value = cfg[i.dataset.k]; });
+    EXIT_FIELDS.forEach(([k, , , , on]) => {
+      const box = document.querySelector(`#lab-exits input[data-on="${on}"]`);
+      const field = document.querySelector(`#lab-exits input[data-k="${k}"]`);
+      if (box) box.checked = cfg[on] !== false && cfg[on] !== "false";
+      if (field) field.disabled = !box.checked;
+    });
     $("lab-need").value = String(cfg.need);
     $("lab-mode").value = cfg.mode === "zone" ? "zone" : "cross";
     $("lab-long").checked = cfg.show_long !== false;
@@ -109,10 +125,11 @@
       }
       out[k] = v;
     });
-    EXIT_FIELDS.forEach(([k, name, lo, hi]) => {
+    EXIT_FIELDS.forEach(([k, name, lo, hi, on]) => {
+      out[on] = cfg[on] === true || cfg[on] === "true";
       let v = Number(cfg[k]);
-      if (cfg[k] === "" || !Number.isFinite(v) || v < lo || v > hi) { bad.push(name); v = BASE[k]; }
-      out[k] = v;
+      if (out[on] && (cfg[k] === "" || !Number.isFinite(v) || v < lo || v > hi)) { bad.push(name); v = BASE[k]; }
+      out[k] = out[on] ? v : 0;
     });
     out.need = [2, 3].includes(Number(cfg.need)) ? Number(cfg.need) : 3;
     out.mode = cfg.mode === "zone" ? "zone" : "cross";
@@ -190,7 +207,8 @@
       const pl = (price, color, title, style) => [series.candle, series.candle.createPriceLine({ price, color,
         lineWidth: 1, lineStyle: style, axisLabelVisible: true, title })];
       series.lines.push(pl(o.entry, css("--muted") || "#888", o.dir > 0 ? "롱 진입" : "숏 진입", 0));
-      series.lines.push(pl(o.stop, RED, `손절 −${num(p.stop_pct, 1)}%`, 2));
+      if (o.stop) series.lines.push(pl(o.stop, RED, `손절 −${num(p.stop_pct, 1)}%`, 2));
+      else series.lines.push(pl(o.liq, RED, `청산가 (${LEV}배)`, 1));
       if (o.tp) series.lines.push(pl(o.tp, GREEN, `익절 +${num(p.tp_pct, 1)}%`, 2));
     }
     // 롱 열림 = 초록 동그라미(봉 아래), 숏 열림 = 빨강 삼각형(봉 위). 사용자 표시 규칙.
@@ -202,12 +220,12 @@
       text: s.dir > 0 ? "롱" : "숏",
     }));
     // 손절·익절 청산 표시: 롱 청산 = 빨강 동그라미, 숏 청산 = 초록 삼각형(사용자 표시 규칙).
-    if (sim) sim.exits.filter((x) => (x.kind === "stop" || x.kind === "tp") && x.i >= from).forEach((x) => marks.push({
+    if (sim) sim.exits.filter((x) => ["stop", "tp", "liq"].includes(x.kind) && x.i >= from).forEach((x) => marks.push({
       time: kst(bars[x.i][0]),
       position: x.dir > 0 ? "aboveBar" : "belowBar",
       color: x.dir > 0 ? RED : GREEN,
       shape: x.dir > 0 ? "circle" : "arrowUp",
-      text: x.kind === "tp" ? "익절" : "손절",
+      text: KIND[x.kind],
     }));
     marks.sort((a, b) => a.time - b.time);
     const bare = marks.map((m) => Object.assign({}, m, { text: "" }));
@@ -226,15 +244,17 @@
   const simLine = (r, p) => {
     if (!r) return "";
     const tpTxt = p.tp_pct > 0 ? `익절 ${num(p.tp_pct, 1)}%` : "익절 없음";
+    const stTxt = p.stop_pct > 0 ? `손절 ${num(p.stop_pct, 1)}%` : "손절 없음";
     const o = r.open;
-    const openTxt = o ? `<br>📍 지금 ${o.dir > 0 ? "롱" : "숏"} 보유 (계산상): 진입 ${num(o.entry, 1)} · 손절 ${num(o.stop, 1)}`
+    const openTxt = o ? `<br>📍 지금 ${o.dir > 0 ? "롱" : "숏"} 보유 (계산상): 진입 ${num(o.entry, 1)} · `
+      + (o.stop ? `손절 ${num(o.stop, 1)}` : `손절 없음 (청산가 ${num(o.liq, 1)})`)
       + (o.tp ? ` · 익절 ${num(o.tp, 1)}` : "") : "";
-    return `<div class="mini" style="margin:4px 0 8px">📐 <b>손절 ${num(p.stop_pct, 1)}% · ${tpTxt} · ${LEV}배 단순 계산</b> (거친 추정): 보이는 신호로 롱↔숏 갈아타기 →
-      거래 ${r.trades}번 · 이익 ${r.wins} · 손절 ${r.stops} · 익절 ${r.tps} · 누적 <b>${pct(r.ret)}</b> · 최대 낙폭 −${num(r.mdd, 1)}%${r.holding ? " · 마지막 포지션은 종가로 정리" : ""}${openTxt}<br>
+    return `<div class="mini" style="margin:4px 0 8px">📐 <b>${stTxt} · ${tpTxt} · ${LEV}배 단순 계산</b> (거친 추정): 보이는 신호로 롱↔숏 갈아타기 →
+      거래 ${r.trades}번 · 이익 ${r.wins} · 손절 ${r.stops} · 익절 ${r.tps}${r.liqs ? ` · <span class="down">강제 청산 ${r.liqs}</span>` : ""} · 누적 <b>${pct(r.ret)}</b> · 최대 낙폭 −${num(r.mdd, 1)}%${r.holding ? " · 마지막 포지션은 종가로 정리" : ""}${openTxt}<br>
       신호 다음 봉 시가 진입, 반대 신호에 뒤집기, 진입가 기준 손절·익절선에 봉 고가·저가가 닿으면 청산 후 다음 신호까지 쉼(한 봉에서 둘 다 닿으면 손절로 침), 수수료 0.05%/편도.
-      슬리피지·펀딩비·청산 없음. 실전 엔진은 진입마다 AI가 손절·익절을 따로 정하니 결과가 달라요.</div>`;
+      손절을 끄면 진입가 ±${num(100 / LEV, 1)}%(${LEV}배 청산가, 유지증거금 무시)에서 강제 청산으로 쳐요. 슬리피지·펀딩비 없음. 실전 엔진은 진입마다 AI가 손절·익절을 따로 정하니 결과가 달라요.</div>`;
   };
-  const KIND = { stop: "손절", tp: "익절", flip: "뒤집기", end: "보유 중" };
+  const KIND = { stop: "손절", tp: "익절", flip: "뒤집기", end: "보유 중", liq: "강제 청산" };
   const outcome = (r, sim) => {
     const x = sim && sim.exits.find((e) => e.from === r.i + 1);
     if (!x) return '<span class="mini">-</span>';

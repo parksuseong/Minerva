@@ -208,6 +208,31 @@ def test_js_switch_sim_take_profit_and_open_lines(tmp_path):
 
 
 @pytest.mark.skipif(bun() is None, reason="JS 실행기(bun)가 없다")
+def test_js_switch_sim_without_stop_rides_until_liquidation(tmp_path):
+    script = tmp_path / "nostop.js"
+    # 봉: 0 롱 신호 → 1 시가 100 진입 → 2 저가 90 (손절 3%면 걸림, 끄면 버팀)
+    #     → 3 저가 66 (3배 청산가 66.67)
+    script.write_text(
+        f"const core = require({json.dumps(str(CORE_JS))});\n"
+        "const o = [100, 100, 95, 80], h = [100, 101, 96, 81], l = [100, 99, 90, 66];\n"
+        "const c = [100, 100, 92, 70];\n"
+        "const sigs = [{ i: 0, dir: 1 }];\n"
+        "const off = core.switchSim(o, h, l, c, sigs, { stop: 0, lev: 3, fee: 0 });\n"
+        "const on = core.switchSim(o, h, l, c, sigs, { stop: 0.03, lev: 3, fee: 0 });\n"
+        "const k = (x) => x.slice(0, 3);\n"
+        "const held = core.switchSim(k(o), k(h), k(l), k(c), sigs, { stop: 0, lev: 3, fee: 0 });\n"
+        "console.log(JSON.stringify([off, on, held]));\n"
+    )
+    out = subprocess.run([bun(), str(script)], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    off, on, held = json.loads(out.stdout)
+    assert (off["stops"], off["liqs"], off["exits"][0]["kind"]) == (0, 1, "liq")
+    assert off["exits"][0]["i"] == 3 and off["ret"] == pytest.approx(-100, abs=1e-6)
+    assert (on["stops"], on["liqs"], on["exits"][0]["i"]) == (1, 0, 2)
+    assert held["open"]["stop"] is None and held["open"]["liq"] == pytest.approx(100 * (1 - 1 / 3))
+
+
+@pytest.mark.skipif(bun() is None, reason="JS 실행기(bun)가 없다")
 def test_js_after_is_signed_and_needs_whole_bars(tmp_path):
     script = tmp_path / "after.js"
     script.write_text(

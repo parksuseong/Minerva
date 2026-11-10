@@ -104,13 +104,16 @@
   // 반대 신호면 다음 봉 시가에 뒤집는다. 같은 방향 신호는 무시. 진입가 ±stop에 봉 고가·저가가 닿으면
   // 그 값(시가가 이미 넘었으면 시가)에 나가고 다음 신호까지 쉰다. 같은 봉에 롱·숏이 같이 나면 건너뛴다.
   // 수수료는 편도 fee × 레버리지(원금 대비). 슬리피지·펀딩비·청산은 없다.
-  // opt.stop, opt.tp: 진입가 대비 비율(0.03 = 3%). tp가 0이거나 없으면 익절 없음.
+  // opt.stop, opt.tp: 진입가 대비 비율(0.03 = 3%). 0이거나 없으면 그 청산은 쓰지 않는다.
+  // 손절이 없거나 청산가(진입가 ±1/레버리지, 유지증거금 무시)보다 멀면 청산가에서 강제 청산("liq")으로 친다.
   // 한 봉에서 손절선과 익절선을 둘 다 건드리면 순서를 모르니 손절로 친다(보수적).
   function switchSim(o, h, l, c, sigs, opt) {
-    const stop = opt.stop, tp = opt.tp > 0 ? opt.tp : 0, lev = opt.lev, fee = opt.fee;
+    const tp = opt.tp > 0 ? opt.tp : 0, lev = opt.lev, fee = opt.fee;
+    const liqAt = 1 / lev, useStop = opt.stop > 0 && opt.stop < liqAt;
+    const stop = useStop ? opt.stop : liqAt;
     const at = new Map();
     sigs.forEach((s) => at.set(s.i, at.has(s.i) && at.get(s.i) !== s.dir ? 0 : s.dir));
-    let eq = 1, peak = 1, mdd = 0, pos = 0, entry = 0, opened = 0, trades = 0, wins = 0, stops = 0, tps = 0;
+    let eq = 1, peak = 1, mdd = 0, pos = 0, entry = 0, opened = 0, trades = 0, wins = 0, stops = 0, tps = 0, liqs = 0;
     const exits = [];
     const close = (px, j, kind) => {
       const net = lev * pos * (px / entry - 1) - lev * fee * (1 + px / entry);
@@ -130,8 +133,8 @@
         const sp = entry * (1 - pos * stop);
         const tpx = tp ? entry * (1 + pos * tp) : 0;
         if (pos > 0 ? l[j] <= sp : h[j] >= sp) {
-          close(pos > 0 ? Math.min(o[j], sp) : Math.max(o[j], sp), j, "stop");
-          stops += 1;
+          close(pos > 0 ? Math.min(o[j], sp) : Math.max(o[j], sp), j, useStop ? "stop" : "liq");
+          if (useStop) stops += 1; else liqs += 1;
         } else if (tp && (pos > 0 ? h[j] >= tpx : l[j] <= tpx)) {
           close(pos > 0 ? Math.max(o[j], tpx) : Math.min(o[j], tpx), j, "tp");
           tps += 1;
@@ -142,10 +145,11 @@
       if (peak > 0) mdd = Math.max(mdd, (1 - mark / peak) * 100);
     }
     const holding = pos !== 0;
-    const open = holding ? { i: opened, dir: pos, entry, stop: entry * (1 - pos * stop),
+    const open = holding ? { i: opened, dir: pos, entry, stop: useStop ? entry * (1 - pos * stop) : null,
+      liq: entry * (1 - pos * liqAt),
       tp: tp ? entry * (1 + pos * tp) : null } : null;
     if (holding) close(c[c.length - 1], c.length - 1, "end");
-    return { trades, wins, stops, tps, ret: (eq - 1) * 100, mdd, holding, open, exits };
+    return { trades, wins, stops, tps, liqs, ret: (eq - 1) * 100, mdd, holding, open, exits };
   }
 
   const api = { DEFAULTS, stoch, cci, rsi, crossed, inZone, recent, signals, after, switchSim };

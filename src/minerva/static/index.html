@@ -128,11 +128,6 @@
   </nav>
 
   <div class="panel" id="tab-today">
-    <div class="filters" data-pick="today" role="group" aria-label="주식/비트코인 선택">
-      <button type="button" data-show="today-kr" class="on" aria-pressed="true">📈 주식</button>
-      <button type="button" data-show="today-bn" aria-pressed="false">₿ 비트코인</button>
-    </div>
-    <div id="today-kr">
     <section class="card" id="trade-memo" hidden>
       <h2>📌 미네르바 요약</h2>
       <ul id="trade-memo-list" style="margin:0 0 0 16px;padding:0"></ul>
@@ -141,31 +136,28 @@
         <ul id="trade-plan-list" style="margin:0 0 0 16px;padding:0"></ul>
       </div>
     </section>
-    <section class="card" id="daily">
-      <h2>🎯 오늘 할 일</h2>
-      <div id="daily-meta" class="placeholder">불러오는 중…</div>
-      <div id="today-actions"></div>
-    </section>
-    <section class="card" id="trade">
-      <h2>🤖 자동매매 <span class="mini" id="trade-mode"></span></h2>
-      <div id="trade-positions" class="placeholder">불러오는 중…</div>
-      <div id="trade-orders"></div>
-    </section>
-    <section class="card">
-      <h2>🔵 보유 중 (규칙상)</h2>
-      <div id="today-holds" class="placeholder">-</div>
-    </section>
-    <section class="card">
-      <h2>👀 임박 (검증된 규칙, 조건 1개 남음)</h2>
-      <div id="today-near" class="placeholder">-</div>
-    </section>
-    </div>
-    <div id="today-bn" hidden>
     <section class="card">
       <h2>₿ 비트코인 자동매매 <span class="mini">SCR ① 15분 · 롱↔숏 · 3배</span></h2>
       <div id="bte-today" class="placeholder">불러오는 중…</div>
     </section>
-    </div>
+    <section class="card" id="daily">
+      <h2>📈 주식 · 오늘 할 일</h2>
+      <div id="daily-meta" class="placeholder">불러오는 중…</div>
+      <div id="today-actions"></div>
+    </section>
+    <section class="card" id="trade">
+      <h2>🤖 주식 자동매매 <span class="mini" id="trade-mode"></span></h2>
+      <div id="trade-positions" class="placeholder">불러오는 중…</div>
+      <div id="trade-orders"></div>
+    </section>
+    <section class="card">
+      <h2>🔵 주식 보유 중 (규칙상)</h2>
+      <div id="today-holds" class="placeholder">-</div>
+    </section>
+    <section class="card">
+      <h2>👀 주식 임박 (검증된 규칙, 조건 1개 남음)</h2>
+      <div id="today-near" class="placeholder">-</div>
+    </section>
     <section class="card">
       <h2>서버 상태</h2>
       <div class="status"><span id="dot" class="dot"></span><span id="status">확인 중…</span></div>
@@ -381,7 +373,7 @@
     })();
   </script>
   <script>
-    // 오늘 할 일·종목 분석의 주식/비트코인 선택. 고른 쪽은 이 기기에 기억한다.
+    // 종목 분석의 주식/비트코인 선택. 고른 쪽은 이 기기에 기억한다.
     (() => {
       const pick = (name, show) => {
         const group = document.querySelector(`[data-pick="${name}"]`);

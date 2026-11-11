@@ -7,7 +7,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.local/bin:$PATH"
-name="$1"
+name="${1:-}"
 case "$name" in
   review) agent=trade-auditor ;;
   briefing) agent=strategist ;;

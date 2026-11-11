@@ -366,6 +366,7 @@ def park_returns() -> dict[date, float]:
     """파킹 ETF의 날짜별 수익률. 상장(2020-07) 전은 비어 있다.
     야후는 2024-06 이전 봉이 거의 없어(2026-10-31 확인) 네이버 일봉을 쓴다."""
     if not PARK_CACHE.exists() or time.time() - PARK_CACHE.stat().st_mtime > 86400:
+        PARK_CACHE.parent.mkdir(parents=True, exist_ok=True)  # 새 서버엔 캐시 폴더가 없다
         with urlopen(Request(PARK_URL, headers={"User-Agent": "Mozilla/5.0"}), timeout=20) as r:
             PARK_CACHE.write_bytes(r.read())
     closes = parse_naver_closes(PARK_CACHE.read_text(encoding="euc-kr", errors="replace"))

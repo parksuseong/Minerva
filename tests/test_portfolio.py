@@ -92,6 +92,29 @@ def test_parse_naver_closes():
     assert pf.parse_naver_closes(xml) == [(date(2020, 7, 7), 49948.0)]
 
 
+def test_park_returns_creates_cache_folder(tmp_path, monkeypatch):
+    day = date(2020, 7, 7)
+    rows = [
+        f'<item data="{(day + timedelta(days=i)):%Y%m%d}|1|1|1|{10000 + i}|1" />'
+        for i in range(1001)
+    ]
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return "\n".join(rows).encode("euc-kr")
+
+    monkeypatch.setattr(pf, "PARK_CACHE", tmp_path / "new" / "park.xml")
+    monkeypatch.setattr(pf, "urlopen", lambda *a, **k: Resp())
+    out = pf.park_returns()
+    assert out[day + timedelta(days=1)] == pytest.approx(10001 / 10000 - 1)
+
+
 def test_blend_rebalances_each_year():
     d = [date(2024, 12, 30), date(2024, 12, 31), date(2025, 1, 2), date(2025, 1, 3)]
     up = [(d[0], 1.0), (d[1], 2.0), (d[2], 2.0), (d[3], 4.0)]

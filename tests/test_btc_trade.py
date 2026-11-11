@@ -2167,7 +2167,10 @@ def test_ai_none_enters_nothing(env, multi, monkeypatch):
 def universe_file(rates: dict, at: datetime = NOW, extra: dict | None = None) -> None:
     """종목 범위 파일(거래량 순 = rates 순서)."""
     stats = {
-        s: {"rank": i + 1, "winrate": r, "trades": 50, "days": 300.0, "contract": "PERPETUAL"}
+        s: {
+            "rank": i + 1, "winrate": r, "trades": 50, "ret": 10.0, "days": 300.0,
+            "contract": "PERPETUAL",
+        }
         for i, (s, r) in enumerate(rates.items())
     }
     for s, more in (extra or {}).items():
@@ -2870,3 +2873,30 @@ def test_prepare_attempts_are_capped(env, multi, monkeypatch):
         "SOXLUSDT",
     }
     assert all(state()["last_bars"][s] == BAR for s in bt.SYMBOLS)
+
+
+def test_tradable_set_keeps_user_four_and_backtest_winners():
+    stats = {
+        "BNBUSDT": {"ret": 99.4, "trades": 123, "days": 365},
+        "SOLUSDT": {"ret": -93.7, "trades": 123, "days": 365},
+        "NEWUSDT": {"ret": 50.0, "trades": 5, "days": 30},
+        "SOXLUSDT": {"ret": -99.3, "trades": 131, "days": 177},
+    }
+    got = bt.tradable_set(list(stats), stats)
+    assert "BNBUSDT" in got
+    assert "SOLUSDT" not in got
+    assert "NEWUSDT" not in got  # 표본 작음
+    assert set(bt.DEFAULT_SYMBOLS) <= got  # 사용자가 고른 네 종목은 그대로
+
+
+def test_flat_losing_symbol_signal_not_entered(env, multi, monkeypatch):
+    ex = MultiExchange()  # 드라이런
+    rates = {"BTCUSDT": 54, "ETHUSDT": 44, "SOXLUSDT": 17, "NVDAUSDT": 49, "AAAUSDT": 60}
+    grow(monkeypatch, ex, rates, extra={"AAAUSDT": {"ret": -90.0}})
+    sig_all(monkeypatch, multi, {"AAAUSDT": "long"}, rates)
+    asked = ai_answers(monkeypatch, "모르겠어요")
+    mrun(env, ex, multi)
+    assert not asked["choose"]
+    assert state().get("position") is None
+    ev = [json.loads(x) for x in (bt.DIR / "events.jsonl").read_text().splitlines()]
+    assert any(e.get("event") == "signal_passed" and e.get("symbol") == "AAAUSDT" for e in ev)

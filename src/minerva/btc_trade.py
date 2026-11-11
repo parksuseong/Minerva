@@ -3,7 +3,8 @@
 종목(사용자 2026-11-11): BTCUSDT·ETHUSDT·SOXLUSDT·NVDAUSDT 네 종목에 같은 신호·규칙,
 포지션은 한 번에 하나(계좌 전체). 들고 있는 종목의 반대 신호만 나면 지금처럼 갈아탄다.
 빈손에 신호가 둘 이상이거나, 들고 있는데 다른 종목 신호가 나면 Claude가 고른다
-(`btc_ai.choose`). 답이 없으면 빈손은 BTC > ETH > NVDA > SOXL 순, 보유 중이면 유지
+(`btc_ai.choose`). 답이 없으면 빈손은 백테스트 승률 순(BTC > NVDA > ETH > SOXL,
+`SYMBOL_WINRATE`), 보유 중이면 유지
 (자기 반대 신호가 있으면 갈아타기).
 SOXL·NVDA는 TradFi 무기한이라 약관에 동의하지 않은 계좌는 -4411로 거부된다: 알리고 24시간 쉰다.
 
@@ -72,8 +73,11 @@ SPOT_BASE = "https://api.binance.com"
 # 옛 상태 파일(포지션에 symbol이 없음)의 종목이자 심볼을 모르는 클라이언트의 기본값
 SYMBOL = "BTCUSDT"
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
-# AI 답이 없을 때 빈손 동시 신호의 순서(사용자 지정 2026-11-11)
-PRIORITY = ("BTCUSDT", "ETHUSDT", "NVDAUSDT", "SOXLUSDT")
+# 종목별 백테스트 승률(%): SCR ① 15분·3배·손절 3%, 최근 1년(상장이 늦으면 상장 이후),
+# 2026-11-11 측정. AI 답이 없을 때 빈손 동시 신호는 승률 높은 순(사용자 2026-11-11
+# "4종목 중 승률 높은 걸 우선순위로"). 선택 AI 자료에도 넣는다
+SYMBOL_WINRATE = {"BTCUSDT": 54, "NVDAUSDT": 49, "ETHUSDT": 44, "SOXLUSDT": 17}
+PRIORITY = tuple(sorted(SYMBOLS, key=lambda s: -SYMBOL_WINRATE.get(s, 0)))
 # 주문 ID 종목 표시. BTC는 비워 예전 ID(실전 상태 파일의 손절 ID)와 같게 둔다
 CID_TAG = {"BTCUSDT": "", "ETHUSDT": "E", "SOXLUSDT": "S", "NVDAUSDT": "N"}
 # TradFi-Perps 약관 미동의(SOXL·NVDA). 서명 API는 부르지 않는다: 알리고 이 시간만큼 쉰다
@@ -1220,31 +1224,81 @@ def _adopt(state: dict, pending: dict, order: dict) -> dict:
     return pos
 
 
-def ensure_leverage(ctx: Ctx, state: dict | None = None) -> bool:
-    """그 종목 레버리지를 3배로(종목마다 따로다: ETH·SOXL·NVDA는 계좌에서 20배였다)."""
+MARGIN_NO_CHANGE = -4046  # "No need to change margin type": 이미 교차
+
+
+def leverage_problem(ctx: Ctx, state: dict | None = None) -> str:
+    """그 종목을 교차·3배로 맞춘다(종목마다 따로다: ETH·SOXL·NVDA는 계좌에서 20배였다).
+    문제가 없으면 빈 문자열, 진입하면 안 되면 이유. 조회·변경 실패는 예외로 올리지 않는다.
+    약관 미동의(-4411)면 그 종목을 쉬게 하고(알림은 mark_unavailable이 한 번) 이유를 돌려준다."""
     sym = ctx.symbol
-    cfg = _get(ctx.client, "/fapi/v1/symbolConfig", symbol=sym)
+    try:
+        cfg = _get(ctx.client, "/fapi/v1/symbolConfig", symbol=sym)
+    except (Rejected, NetworkError) as e:
+        return f"레버리지 설정 조회 실패({e})"
     row = next((x for x in cfg if x.get("symbol") == sym), None)
-    cur = int(row["leverage"]) if row else 0
+    if row is None:
+        return "레버리지 설정이 안 보임"
+    cur = int(row["leverage"])
+    margin = str(row.get("marginType") or "CROSSED").upper()
+
+    def tradfi(e: Exception) -> str:
+        if isinstance(e, Rejected) and e.code == TRADFI_CODE and state is not None:
+            mark_unavailable(ctx, state, e)
+            return "TradFi 약관 미동의"
+        return ""
+
+    if margin not in ("CROSSED", "CROSS"):
+        # 교차가 아니면(격리) 포지션·미체결이 하나도 없을 때만 바꾼다. 있으면 건드리지 않는다
+        if not ctx.live:
+            ctx.event(event="margin_dry", symbol=sym, current=margin)
+        else:
+            try:
+                busy = position_amt(ctx.client) != 0 or bool(
+                    _get(ctx.client, "/fapi/v1/openOrders", symbol=sym) or open_algos(ctx.client)
+                )
+            except (Rejected, NetworkError) as e:
+                return f"마진 방식 확인 실패({e})"
+            if busy:
+                return f"마진 방식이 {margin}인데 포지션·미체결이 있어 교차로 못 바꿈"
+            try:
+                ctx.client.request(
+                    "POST", "/fapi/v1/marginType", {"symbol": sym, "marginType": "CROSSED"}
+                )
+            except (Rejected, NetworkError) as e:
+                if not (isinstance(e, Rejected) and e.code == MARGIN_NO_CHANGE):
+                    return tradfi(e) or f"마진 방식 {margin}→교차 변경 실패({e})"
+            _append(
+                "orders.jsonl",
+                {"at": _now_iso(ctx.now), "margin_type": {"symbol": sym, "from": margin}},
+            )
+            ctx.say(f"⚙️ {_name(sym)} 마진 방식 {margin} → 교차로 바꿨어요")
     if cur == LEVERAGE:
-        return True
+        return ""
     if not ctx.live:
         ctx.event(event="leverage_dry", symbol=sym, current=cur, want=LEVERAGE)
-        return True
+        return ""
     try:
         r = ctx.client.request("POST", "/fapi/v1/leverage", {"symbol": sym, "leverage": LEVERAGE})
     except (Rejected, NetworkError) as e:
-        if isinstance(e, Rejected) and e.code == TRADFI_CODE and state is not None:
-            mark_unavailable(ctx, state, e)
-            return False
-        ctx.say(f"❌ {_name(sym)} 레버리지 {cur}→{LEVERAGE}배 변경 실패: {e} → 진입하지 않아요")
-        return False
+        return tradfi(e) or f"레버리지 {cur}→{LEVERAGE}배 변경 실패({e})"
     _append(
         "orders.jsonl",
         {"at": _now_iso(ctx.now), "leverage": {"symbol": sym, "from": cur, "to": r}},
     )
+    got = int((r or {}).get("leverage", 0) or 0)
+    if got != LEVERAGE:
+        return f"레버리지 변경 응답이 {got}배(원한 값 {LEVERAGE}배)"
     ctx.say(f"⚙️ {_name(sym)} 레버리지 {cur}배 → {LEVERAGE}배로 바꿨어요")
-    return int(r.get("leverage", 0)) == LEVERAGE
+    return ""
+
+
+def ensure_leverage(ctx: Ctx, state: dict | None = None) -> bool:
+    """leverage_problem을 알림과 함께. 진입해도 되면 True."""
+    why = leverage_problem(ctx, state)
+    if why and why != "TradFi 약관 미동의":
+        ctx.say(f"❌ {_name(ctx.symbol)} {why} → 진입하지 않아요")
+    return not why
 
 
 def unavailable(state: dict, symbol: str, now_ms: int) -> bool:
@@ -2108,7 +2162,29 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
                 ref=sig["close"],
                 pct=gate["pct"],
             )
+        elif ctx.live:
+            out["skip"] = live_entry_problem(c, state)
+            out["quiet"] = out["skip"] == "TradFi 약관 미동의"  # mark_unavailable이 이미 알림
     return out
+
+
+def live_entry_problem(c: Ctx, state: dict) -> str:
+    """실전 진입 전 거래소 점검(들고 있는 것을 닫기 전에 한다: 갈아탈 종목에 못 들어가면
+    닫지 않게). 계좌 거래 가능, 그 종목의 엔진 밖 미체결·포지션, 교차·3배. 문제면 이유."""
+    sym = c.symbol
+    try:
+        acct = c.shared.get("acct") or _get(c.client, "/fapi/v2/account")
+        c.shared["acct"] = acct
+        if not acct.get("canTrade", False):
+            return "계좌가 거래 불가(canTrade=false)"
+        if sym != held_symbol(state) or not state.get("position"):
+            if foreign_orders(c.client):
+                return f"엔진이 내지 않은 {sym} 미체결 주문이 있음(단방향이라 섞일 수 있음)"
+            if position_amt(c.client) != 0:
+                return f"{sym}에 이미 포지션이 보임"
+    except (Rejected, NetworkError) as e:
+        return f"거래소 점검 실패({e})"
+    return leverage_problem(c, state)
 
 
 def _candidate_packet(cand: dict) -> dict:
@@ -2120,6 +2196,7 @@ def _candidate_packet(cand: dict) -> dict:
         "signal_close": sig.get("close"),
         "price_now": cand.get("price"),
         "chase_limit_pct": (cand.get("gate") or {}).get("pct"),
+        "backtest_winrate_pct": SYMBOL_WINRATE.get(cand["sym"]),
         "scr_at_signal": sig.get("at_signal"),
     }
     if cand.get("price") and sig.get("close"):
@@ -2142,6 +2219,7 @@ def _held_packet(ctx: Ctx, pos: dict, opp: bool) -> dict:
     pct = round((price / pos["entry"] - 1) * 100 * sign, 3) if price else None
     return {
         "symbol": sym,
+        "backtest_winrate_pct": SYMBOL_WINRATE.get(sym),
         "side": pos["side"],
         "entry": pos["entry"],
         "price_now": price,
@@ -2156,7 +2234,7 @@ def _held_packet(ctx: Ctx, pos: dict, opp: bool) -> dict:
 
 def ai_choose(ctx: Ctx, options: dict[str, str], fallback: str, data: dict) -> tuple[str, str]:
     """신호가 겹치면 Claude가 고른다(한 실행에 한 번). (고른 선택지, 이유).
-    답이 없거나 틀리면 fallback(빈손: BTC > ETH > NVDA > SOXL, 보유: 유지·자기 반대면 갈아타기)."""
+    답이 없거나 틀리면 fallback(빈손: 승률 순 PRIORITY, 보유: 유지·자기 반대면 갈아타기)."""
     caller = AI_CALLER or (lambda p: btc_ai.call_claude(p, timeout=btc_ai.CHOOSE_TIMEOUT, cwd=DIR))
     out = btc_ai.choose({**data, "options": options}, list(options), caller)
     choice = out["choice"] or fallback
@@ -2240,7 +2318,8 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
     # 선택지와 AI 기본값
     options: dict[str, str] = {}
     if pos:
-        options["keep"] = ""
+        if not opp:  # 자기 반대 신호면 유지는 없다(사용자 규칙: 반대 신호면 갈아타기)
+            options["keep"] = ""
         if opp:
             options[("close:" if a_cand["skip"] else "flip:") + a_sym] = ""
         for s in viable:
@@ -2278,7 +2357,8 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
         main = main or cand["sig"]
         if cand["skip"]:
             notes.append(f"{who} 신호, {cand['skip']}")
-            ctx.say(f"⏸ {who} 신호가 났지만 {cand['skip']}")
+            if not cand.get("quiet"):
+                ctx.say(f"⏸ {who} 신호가 났지만 {cand['skip']}")
             told.add(sym)
         else:
             notes.append(f"{who} 신호, 고르지 않음({options[choice]})")
@@ -2307,21 +2387,23 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
     closed_ok = True
     if pos and kind in ("switch", "flip", "close"):
         closed_ok = close_position(ctx.at(a_sym), state, sig["bar"])
-    skip = target["skip"]
+    skip = target["skip"] or ("진입 준비 실패(AI 손절·익절 없음)" if plan is None else "")
     if not closed_ok:
         decision = f"{who} 신호, 청산 실패"
-    elif skip or plan is None:
+    elif skip:
         decision = f"{who} 신호, {skip}"
-        if sym not in told:
+        if sym not in told and not target.get("quiet"):
             ctx.say(f"⏸ {who} 신호가 났지만 {skip}")
     else:
         open_position(target["ctx"], state, sig, target["gate"], target["flt"], plan)
         p = state.get("position")
-        decision = (
-            f"{who} 진입"
-            if p and pos_symbol(p) == sym and p["side"] == side
-            else f"{who} 신호, 진입 안 함"
-        )
+        entered = bool(p and pos_symbol(p) == sym and p["side"] == side)
+        decision = f"{who} 진입" if entered else f"{who} 신호, 진입 안 함"
+        if kind == "switch" and not p and "pending" not in state:
+            ctx.say(
+                f"⚠️ {_who(a_sym, pos['side'])}은 닫았지만 {who} 진입은 못 했어요 → 지금 빈손이에요"
+                "(이유는 위 알림)"
+            )
     if "pending" not in state:
         mark_bar(state, sym, sig["bar"])
     notes.insert(0, decision)
@@ -2421,6 +2503,7 @@ def run(
     _save(state_file, state)
 
     acct = _get(client, "/fapi/v2/account")
+    ctx.shared["acct"] = acct
     if live:
         equity = float(acct["totalMarginBalance"])
     else:

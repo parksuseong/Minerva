@@ -1931,6 +1931,8 @@ class MultiExchange(FakeExchange):
         self._cur = "BTCUSDT"
         super().__init__(**kw)
         self.levs = {"BTCUSDT": 3, "ETHUSDT": 20, "SOXLUSDT": 20, "NVDAUSDT": 20}
+        self.margins = {s: "CROSSED" for s in bt.SYMBOLS}
+        self.lev_answer: int | None = None  # 레버리지 변경 응답을 다르게(거래소가 다른 값을 줄 때)
         self.tradfi_reject: set[str] = set()
 
     @property
@@ -1952,10 +1954,15 @@ class MultiExchange(FakeExchange):
                 if sym is None or s == sym
             ]
         if path == "/fapi/v1/symbolConfig":
-            return [{"symbol": sym, "leverage": self.levs[sym], "marginType": "CROSSED"}]
+            return [{"symbol": sym, "leverage": self.levs[sym], "marginType": self.margins[sym]}]
         if path == "/fapi/v1/leverage":
+            if self.lev_answer is not None:
+                return {"leverage": self.lev_answer}
             self.levs[sym] = int(p["leverage"])
             return {"leverage": self.levs[sym]}
+        if path == "/fapi/v1/marginType":
+            self.margins[sym] = p["marginType"]
+            return {"code": 200, "msg": "success"}
         if path == "/fapi/v1/order" and method == "POST" and sym in self.tradfi_reject:
             raise bt.Rejected(-4411, "Please sign TradFi-Perps agreement contract fapi.")
         if path in ("/fapi/v1/openAlgoOrders", "/fapi/v1/openOrders"):
@@ -2102,8 +2109,9 @@ def test_flat_two_signals_ai_pick_is_honored(env, multi, monkeypatch):
     "dirs, want",
     [
         ({"BTCUSDT": "long", "ETHUSDT": "long", "SOXLUSDT": "long"}, "BTCUSDT"),
-        ({"ETHUSDT": "short", "NVDAUSDT": "long"}, "ETHUSDT"),
+        ({"ETHUSDT": "short", "NVDAUSDT": "long"}, "NVDAUSDT"),  # 승률 49% > 44%
         ({"SOXLUSDT": "long", "NVDAUSDT": "short"}, "NVDAUSDT"),
+        ({"SOXLUSDT": "long", "ETHUSDT": "short"}, "ETHUSDT"),
     ],
 )
 def test_ai_failure_falls_back_to_priority(env, multi, monkeypatch, dirs, want):
@@ -2118,13 +2126,37 @@ def test_ai_failure_falls_back_to_priority(env, multi, monkeypatch, dirs, want):
     assert ev["choice"] == f"enter:{want}" and ev["fallback"]
 
 
+def test_priority_follows_backtest_winrate():
+    assert bt.PRIORITY == ("BTCUSDT", "NVDAUSDT", "ETHUSDT", "SOXLUSDT")
+    assert set(bt.SYMBOL_WINRATE) == set(bt.SYMBOLS)
+
+
+def test_choose_packet_has_winrates_and_prompt_prefers_them(env, multi, monkeypatch):
+    ex = MultiExchange()
+    held_btc_long(ex)
+    st = state()
+    st["position"]["mode"] = "dry"
+    bt._save(bt.DIR / "state.json", st)
+    signals(monkeypatch, multi, {"NVDAUSDT": "long", "SOXLUSDT": "short"})
+    asked = ai_answers(monkeypatch, '{"choice": "keep", "reason": "x"}')
+    mrun(env, ex, multi)
+    prompt = asked["choose"][0]
+    assert "승률이 높은" in prompt
+    data = json.loads(prompt[len(bt.btc_ai.CHOOSE_PROMPT) :])
+    rates = {c["symbol"]: c["backtest_winrate_pct"] for c in data["candidates"]}
+    assert rates == {"NVDAUSDT": 49, "SOXLUSDT": 17}
+    assert data["held"]["backtest_winrate_pct"] == 54
+
+
 def test_ai_none_enters_nothing(env, multi, monkeypatch):
     live(env)
     ex = MultiExchange()
     signals(monkeypatch, multi, {"BTCUSDT": "long", "ETHUSDT": "long"})
     ai_answers(monkeypatch, '{"choice": "none", "reason": "둘 다 애매"}')
     mrun(env, ex, multi)
-    assert not ex.writes and state().get("position") is None
+    # 고르기 전에 후보 종목을 3배로 맞춰 둔다(ETH 20배 → 3배). 주문은 없다
+    assert [(p, x["symbol"]) for m, p, x in ex.writes] == [("/fapi/v1/leverage", "ETHUSDT")]
+    assert state().get("position") is None
     assert state()["last_bars"] == {"BTCUSDT": BAR, "ETHUSDT": BAR}
 
 
@@ -2143,7 +2175,7 @@ def test_holding_a_other_signal_ai_keep(env, multi, monkeypatch):
     signals(monkeypatch, multi, {"ETHUSDT": "long"})
     asked = ai_answers(monkeypatch, '{"choice": "keep", "reason": "BTC 수익 중"}')
     s = mrun(env, ex, multi)
-    assert not ex.writes and not asked["exits"]
+    assert [p for m, p, x in ex.writes] == ["/fapi/v1/leverage"] and not asked["exits"]
     assert '"held"' in asked["choose"][0] and '"bars_held_15m": 4' in asked["choose"][0]
     assert state()["position"]["symbol"] == "BTCUSDT"
     assert state()["last_bars"]["ETHUSDT"] == BAR
@@ -2158,12 +2190,11 @@ def test_holding_a_other_signal_ai_switch(env, multi, monkeypatch):
     ai_answers(monkeypatch, '{"choice": "switch:NVDAUSDT", "reason": "NVDA가 더 좋아요"}')
     s = mrun(env, ex, multi)
     seq = [(m, p, x.get("symbol"), x.get("reduceOnly")) for m, p, x in ex.writes]
-    assert seq[:2] == [
+    assert seq[:3] == [
+        ("POST", "/fapi/v1/leverage", "NVDAUSDT", None),  # 닫기 전에 갈 종목을 3배로
         ("DELETE", "/fapi/v1/algoOrder", None, None),  # BTC 손절 취소
         ("POST", "/fapi/v1/order", "BTCUSDT", "true"),  # BTC 청산
     ]
-    assert ("POST", "/fapi/v1/leverage", "NVDAUSDT", None) in seq
-    assert seq.index(("POST", "/fapi/v1/leverage", "NVDAUSDT", None)) > 1
     assert ex.algos[old["stop_id"]]["algoStatus"] == "CANCELED"
     assert ex.amts["BTCUSDT"] == 0 and ex.amts["NVDAUSDT"] < 0
     entry = next(x for m, p, x in ex.writes if x.get("symbol") == "NVDAUSDT" and "quantity" in x)
@@ -2187,9 +2218,12 @@ def test_holding_a_opposite_plus_b_fallback_flips_a(env, multi, monkeypatch):
     asked = ai_answers(monkeypatch, "")  # 빈 답 → 기본 규칙
     mrun(env, ex, multi)
     prompt = asked["choose"][0]
-    assert '"keep"' in prompt and '"flip:BTCUSDT"' in prompt and '"switch:ETHUSDT"' in prompt
+    # 자기 반대 신호가 있으면 유지는 선택지에 없다(사용자 규칙)
+    assert '"keep"' not in prompt
+    assert '"flip:BTCUSDT"' in prompt and '"switch:ETHUSDT"' in prompt
     assert '"opposite_signal_now": true' in prompt
-    assert {x.get("symbol") for m, p, x in ex.writes if "symbol" in x} == {"BTCUSDT"}
+    orders = [x for m, p, x in ex.writes if p in ("/fapi/v1/order", "/fapi/v1/algoOrder")]
+    assert {x.get("symbol") for x in orders if "symbol" in x} == {"BTCUSDT"}
     pos = state()["position"]
     assert pos["symbol"] == "BTCUSDT" and pos["side"] == "short"
     assert state()["last_bars"]["ETHUSDT"] == BAR
@@ -2351,3 +2385,112 @@ def test_filters_per_symbol_cached_and_normalized(monkeypatch):
     assert bt.filters(c)["tick"] == "0.1"  # 심볼 없는 클라이언트는 BTC
     assert len(calls) == 1  # exchangeInfo 한 번으로 네 종목
     assert str(bt.stop_price("long", 63.12, soxl["tick"])) == "61.22"
+
+
+# ------------------------------------------ 레드팀 2026-11-11: 닫기 전에 갈 종목 점검
+
+
+def test_switch_target_with_foreign_order_is_not_offered(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    ex.foreign_open = [{"clientOrderId": "web_eth", "symbol": "ETHUSDT"}]
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    asked = ai_answers(monkeypatch, '{"choice": "switch:ETHUSDT", "reason": "x"}')
+    mrun(env, ex, multi)
+    assert not asked["choose"] and not ex.writes  # BTC는 닫지 않는다
+    assert state()["position"]["symbol"] == "BTCUSDT"
+    assert any("ETH 롱 신호가 났지만" in m and "미체결" in m for m in env["sent"])
+
+
+def test_switch_target_with_position_is_not_offered(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    monkeypatch.setattr(bt, "check_strays", lambda ctx, st, held: True)  # 이 점검만 따로 본다
+    ex.amts["NVDAUSDT"] = 1.0
+    signals(monkeypatch, multi, {"NVDAUSDT": "long"})
+    asked = ai_answers(monkeypatch, '{"choice": "switch:NVDAUSDT", "reason": "x"}')
+    mrun(env, ex, multi)
+    assert not asked["choose"] and not ex.writes
+    assert any("이미 포지션" in m for m in env["sent"])
+
+
+def test_symbol_config_network_error_skips_symbol_not_run(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    ex.net_fail["GET /fapi/v1/symbolConfig"] = bt.RETRIES + 1
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    asked = ai_answers(monkeypatch, '{"choice": "switch:ETHUSDT", "reason": "x"}')
+    s = mrun(env, ex, multi)  # 예외가 run() 밖으로 나가지 않는다
+    assert not asked["choose"] and not ex.writes
+    assert "레버리지 설정 조회 실패" in s["decision"]
+    assert state()["position"]["symbol"] == "BTCUSDT"
+
+
+def test_leverage_answer_must_confirm_3x(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    ex.lev_answer = 20
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    mrun(env, ex, multi)
+    assert not any("3배로 바꿨어요" in m for m in env["sent"])
+    assert not [x for m, p, x in ex.writes if p == "/fapi/v1/order"]
+    assert any("응답이 20배" in m for m in env["sent"])
+    assert state().get("position") is None
+
+
+def test_isolated_margin_switched_to_cross_when_empty(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    ex.margins["ETHUSDT"] = "ISOLATED"
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    mrun(env, ex, multi)
+    seq = [(p, x.get("symbol")) for m, p, x in ex.writes]
+    assert seq[:2] == [("/fapi/v1/marginType", "ETHUSDT"), ("/fapi/v1/leverage", "ETHUSDT")]
+    assert ex.margins["ETHUSDT"] == "CROSSED" and state()["position"]["symbol"] == "ETHUSDT"
+
+
+def test_isolated_margin_with_open_orders_refuses_entry(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    ex.margins["ETHUSDT"] = "ISOLATED"
+    sid = "mnv-E1-s"  # 엔진 접두어라 '엔진 밖 미체결'로는 걸리지 않는다
+    ex.algos[sid] = {"clientAlgoId": sid, "algoStatus": "NEW", "symbol": "ETHUSDT"}
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    mrun(env, ex, multi)
+    assert not ex.writes and ex.margins["ETHUSDT"] == "ISOLATED"
+    assert any("교차로 못 바꿈" in m for m in env["sent"])
+
+
+def test_switch_entry_failure_after_close_is_reported(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    ai_answers(monkeypatch, '{"choice": "switch:ETHUSDT", "reason": "x"}')
+    monkeypatch.setattr(bt, "open_position", lambda *a: None)  # 진입 단계에서 못 들어감
+    mrun(env, ex, multi)
+    assert ex.amts["BTCUSDT"] == 0 and state().get("position") is None
+    assert any("BTC 롱은 닫았지만 ETH 롱 진입은 못 했어요" in m for m in env["sent"])
+
+
+def test_time_budget_fallback_to_flip_has_reason(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    signals(monkeypatch, multi, {"BTCUSDT": "short", "ETHUSDT": "long"})
+
+    def slow_ai(prompt):
+        if prompt.startswith(bt.btc_ai.CHOOSE_PROMPT[:30]):
+            bt._sleep(bt.MAX_RUN_SECS + 1)  # 고르는 사이 실행 시간 한도를 넘김
+            return '{"choice": "switch:ETHUSDT", "reason": "x"}'
+        return '{"stop_pct": 3.0, "tp_pct": null, "reason": "x"}'
+
+    monkeypatch.setattr(bt, "AI_CALLER", slow_ai)
+    s = mrun(env, ex, multi)
+    assert ex.amts["BTCUSDT"] == 0 and ex.amts["ETHUSDT"] == 0  # 반대 신호라 BTC는 닫힘
+    skips = [m for m in env["sent"] if "신호가 났지만" in m]
+    assert skips and all(m.split("신호가 났지만", 1)[1].strip() for m in skips)
+    assert "초를 넘겨" in s["decision"]

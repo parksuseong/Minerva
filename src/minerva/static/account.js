@@ -225,7 +225,7 @@
       .catch(() => { $("acct-status").textContent = "계좌 정보를 불러오지 못했어요"; });
   }
 
-  // 주식/비트코인 중 하나만 보인다. 고른 쪽은 이 기기에 기억한다.
+  // 주식/바이낸스 중 하나만 보인다. 고른 쪽은 이 기기에 기억한다.
   const PICK = "minerva-account-pick";
   function pick(which) {
     $("acct-kr").hidden = which !== "kr";

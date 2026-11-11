@@ -33,7 +33,12 @@ def files(root: Path = ROOT) -> list[Path]:
     for rel in INCLUDE:
         p = root / rel
         candidates = sorted(p.rglob("*")) if p.is_dir() else [p]
-        out += [f for f in candidates if f.is_file() and not _is_secret(f)]
+        # 쓰는 중인 임시 파일(원자적 쓰기)은 곧 사라지고 내용도 반쪽이라 뺀다
+        out += [
+            f
+            for f in candidates
+            if f.is_file() and not _is_secret(f) and not f.name.endswith(".tmp")
+        ]
     return out
 
 
@@ -41,19 +46,35 @@ def build(root: Path = ROOT) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for f in files(root):
-            tar.add(f, arcname=str(f.relative_to(root)))
+            try:
+                tar.add(f, arcname=str(f.relative_to(root)))
+            except FileNotFoundError:
+                continue  # 목록을 만든 뒤 다른 작업이 지운 파일 (예: NO_ENTRY 해제)
     return buf.getvalue()
+
+
+def _write_bytes_private(path: Path, data: bytes) -> None:
+    """권한 600으로 원자적으로 쓴다. 쓰다 끊겨도 반쪽 백업이 남지 않는다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:
     now = datetime.now(kis.KST)
-    data = build()
+    data = build(ROOT)
     if len(data) > MAX_BYTES:
         notify.send(f"⚠️ 백업이 {len(data) / 1e6:.0f}MB라 텔레그램 한도를 넘어요. 정리가 필요해요")
         return 1
     out = ROOT / "backup" / f"minerva-state-{now:%Y%m%d}.tar.gz"
-    kis._write_private(out, "")  # 권한 600으로 먼저 만든다
-    out.write_bytes(data)
+    _write_bytes_private(out, data)
     ok = notify.send_document(
         out, f"🗄 미네르바 운용 백업 {now:%Y-%m-%d %H:%M} ({len(data):,}바이트)"
     )

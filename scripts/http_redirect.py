@@ -10,10 +10,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST = os.environ.get("MINERVA_HTTPS_HOST", "minerva-ai.duckdns.org")
 
 
+def location(path: str) -> str:
+    """요청 경로를 같은 호스트의 https 주소로. `/`로 시작하지 않는 경로(`@evil.com`,
+    `http://...`)를 그대로 붙이면 호스트가 바뀌어 남의 사이트로 보내게 되므로 `/`로 보낸다."""
+    return f"https://{HOST}{path if path.startswith('/') else '/'}"
+
+
 class Redirect(BaseHTTPRequestHandler):
     def _go(self):
         self.send_response(301)
-        self.send_header("Location", f"https://{HOST}{self.path}")
+        self.send_header("Location", location(self.path))
         self.send_header("Content-Length", "0")
         self.end_headers()
 

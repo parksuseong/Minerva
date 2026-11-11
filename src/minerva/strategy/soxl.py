@@ -12,7 +12,7 @@ import json
 import urllib.request
 from datetime import datetime, time, timedelta, timezone
 
-from minerva.strategy import btc, btc_outlook
+from minerva.strategy import btc, btc_outlook, soxl_classic
 from minerva.strategy.indicators import Bar, resample
 from minerva.strategy.report import fetch_yahoo
 
@@ -68,9 +68,16 @@ def build(now: datetime | None = None) -> dict:
     price = fetch_price()
     out = btc_outlook.build(raw, price)
     out["note"] = NOTE
+    try:
+        soxx = closed_days(fetch_yahoo("SOXX"), now)
+        same = [b.close for b in days if b.day == soxx[-1].day]
+        classic = soxl_classic.build(soxx, same[0] if same else None)
+    except (OSError, ValueError, KeyError) as exc:
+        classic = {"error": f"SOXX 원문 방식 계산 실패 ({type(exc).__name__})"}
     return {
         "status": "ok",
         "generated_at": now.isoformat(timespec="seconds"),
         "symbol": SYMBOL,
         "outlook": out,
+        "classic": classic,
     }

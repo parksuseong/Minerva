@@ -15,9 +15,11 @@ def test_write_cache_uses_private_tmp_per_thread(tmp_path, monkeypatch):
     path = report._cache_file("^KS11", "max")
     seen: list[str] = []
     real = report.Path.write_text
+    together = threading.Barrier(4, timeout=5)  # 넷이 동시에 살아 있어야 스레드 id가 겹치지 않는다
 
     def spy(self, text, *a, **k):
         seen.append(self.name)
+        together.wait()
         return real(self, text, *a, **k)
 
     monkeypatch.setattr(report.Path, "write_text", spy)

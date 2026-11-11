@@ -1662,6 +1662,14 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
         return
     if not ensure_leverage(ctx):
         return
+    # 같은 신호를 다시 시도하면(앞 시도의 pending이 체결 없이 버려짐) 진입 ID를 새로 쓴다.
+    # 같은 ID면 _send가 옛 주문(취소·만료·체결)을 찾아 돌려주고 새 주문을 내지 않는다.
+    # 손절·익절 ID는 그대로: 체결 없이 버려진 시도는 손절을 걸지 않았다
+    tries = state.get("entry_tries") or {}
+    n = tries.get("n", 0) + 1 if tries.get("bar") == sig["bar"] else 1
+    state["entry_tries"] = {"bar": sig["bar"], "n": n}
+    if n > 1:
+        oid = _cid(sig["bar"], f"o{n}-")
     state["pending"] = {
         "open": oid,
         "stop": sid,

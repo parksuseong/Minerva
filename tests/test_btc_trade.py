@@ -1800,3 +1800,30 @@ def test_protect_close_lost_response_then_reduce_only_reject_is_closed(env, monk
     assert ex.amt == 0 and st["position"] is None
     assert jsonl("closed.jsonl")[-1]["why"] == "protect"
     assert not [m for m in env["sent"] if "닫지 못했어요" in m]
+
+
+def test_retried_signal_uses_fresh_entry_ids(env, monkeypatch):
+    """pending이 버려진 뒤 같은 신호를 다시 시도하면 옛 진입 주문을 찾아 쓰지 않고 새 ID로 낸다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["none"]
+
+    def boom(*a, **k):
+        raise KeyboardInterrupt
+
+    real_cancel = bt.LiveVenue.cancel
+    monkeypatch.setattr(bt.LiveVenue, "cancel", boom)
+    with_signal(monkeypatch, "long")
+    with pytest.raises(KeyboardInterrupt):
+        run(env, ex)
+    first = set(ex.limits)
+    assert state()["pending"]
+    monkeypatch.setattr(bt.LiveVenue, "cancel", real_cancel)
+    ex.limit_script = ["fill"]
+    run(env, ex)  # 대사가 옛 지정가를 취소하고 pending을 버린 뒤 같은 신호로 다시 들어간다
+    second = set(ex.limits) - first
+    assert second and all(c.startswith(f"mnv-{BAR // 60000}-o2-") for c in second)
+    pos = state()["position"]
+    assert pos["side"] == "long" and pos["qty"] == pytest.approx(0.029)
+    assert all(ex.limits[c]["status"] == "CANCELED" for c in first)

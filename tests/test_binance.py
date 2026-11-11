@@ -182,7 +182,8 @@ def test_binance_api_returns_and_token(tmp_path, monkeypatch):
     assert client.get("/api/account/binance", headers={"X-Minerva-Token": "t0k"}).status_code == 200
 
 
-def test_snapshot_hides_trades_before_seed(monkeypatch):
+def test_snapshot_hides_trades_before_seed(monkeypatch, tmp_path):
+    monkeypatch.setattr(binance, "ENGINE_DIR", tmp_path / "none")
     seed = binance._since_ms({"since": "2026-11-07", "since_at": "2026-11-07 23:13"})
     trade = {
         "symbol": "BTCUSDT",
@@ -216,7 +217,7 @@ def test_snapshot_hides_trades_before_seed(monkeypatch):
     assert [t["time"] for t in data["trades"]] == ["2026-11-07 23:14:00"]
 
 
-def test_snapshot_merges_trades_of_engine_symbols(monkeypatch):
+def test_snapshot_merges_trades_of_engine_symbols(monkeypatch, tmp_path):
     """엔진 네 종목 체결을 합쳐 시각 순으로. 한 종목 조회가 실패해도 나머지는 보여준다."""
     base = {"side": "BUY", "qty": "1", "price": "10", "realizedPnl": "0", "commission": "0"}
     t0 = binance._since_ms({"since": "2026-11-08"})
@@ -245,6 +246,7 @@ def test_snapshot_merges_trades_of_engine_symbols(monkeypatch):
         }[path]
 
     monkeypatch.setattr(binance, "_get", fake_get)
+    monkeypatch.setattr(binance, "ENGINE_DIR", tmp_path / "none")
     data = binance.snapshot(CFG, NOW, {"since": "2026-11-08"})
     assert sorted(asked) == sorted(binance.TRADE_SYMBOLS)
     assert [t["symbol"] for t in data["trades"]] == ["ETHUSDT", "NVDAUSDT", "BTCUSDT"]
@@ -366,3 +368,18 @@ def test_pending_live_hides_manual_trading(tmp_path, monkeypatch):
     assert got["live"] is False and got["positions"] == [] and "returns" not in got
     assert got["wallet"] == data["wallet"]
     assert client.get("/api/account/binance/series").json()["points"] == []
+
+
+def test_trade_symbols_adds_engine_and_open_positions_only(tmp_path):
+    d = tmp_path / "btc_trade"
+    d.mkdir()
+    (d / "state.json").write_text(
+        json.dumps({"position": {"symbol": "DOGEUSDT"}, "last_symbol": "SOLUSDT"})
+    )
+    (d / "closed.jsonl").write_text(
+        json.dumps({"symbol": "XRPUSDT"}) + "\n{broken\n" + json.dumps({"symbol": "BTCUSDT"})
+    )
+    got = binance.trade_symbols([{"symbol": "HYPEUSDT"}], d)
+    assert got[:4] == list(binance.TRADE_SYMBOLS)
+    assert set(got[4:]) == {"DOGEUSDT", "SOLUSDT", "XRPUSDT", "HYPEUSDT"}
+    assert binance.trade_symbols(None, tmp_path / "missing") == list(binance.TRADE_SYMBOLS)

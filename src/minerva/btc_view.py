@@ -49,6 +49,25 @@ def _last(events: list[dict], pred) -> dict | None:
     return next((e for e in reversed(events) if pred(e)), None)
 
 
+def universe_symbols(now: datetime | None = None) -> list[str]:
+    """엔진이 지금 쓰는 종목 범위(universe.json이 없거나 오래되면 네 종목)."""
+    now = now or datetime.now(KST)
+    return list(bt.universe(int(now.timestamp() * 1000))["symbols"])
+
+
+def near_view() -> dict:
+    """`near.json`(엔진이 매 실행 씀). 없거나 깨졌으면 pending."""
+    try:
+        data = json.loads((bt.DIR / "near.json").read_text())
+    except FileNotFoundError:
+        return {"status": "pending", "message": "엔진이 아직 신호 거리를 쓰지 않았어요"}
+    except (OSError, ValueError):
+        return {"status": "pending", "message": "신호 거리 파일을 읽지 못했어요"}
+    if not isinstance(data, dict):
+        return {"status": "pending", "message": "신호 거리 파일 모양이 달라요"}
+    return {"status": "ok", **data}
+
+
 def engine_view(now: datetime | None = None) -> dict:
     now = now or datetime.now(KST)
     if not bt.DIR.exists():
@@ -83,7 +102,7 @@ def engine_view(now: datetime | None = None) -> dict:
             "ai_tp_range": list(bt.btc_ai.TP_RANGE),
             "margin_frac": bt.margin_frac(),
             "working_type": bt.WORKING_TYPE,
-            "symbols": list(bt.SYMBOLS),
+            "symbols": universe_symbols(now),
         },
         # TradFi 약관 미동의로 쉬는 종목 {종목: {"at", "until_ms", "code", ...}}
         "unavailable": state.get("unavailable") or {},

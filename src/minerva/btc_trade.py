@@ -1,12 +1,15 @@
 """USDⓈ-M 선물 자동매매 엔진 (바이낸스, 사용자 결정 2026-11-08 22:16 KST "설정 ①").
 
-종목(사용자 2026-11-11): BTCUSDT·ETHUSDT·SOXLUSDT·NVDAUSDT 네 종목에 같은 신호·규칙,
-포지션은 한 번에 하나(계좌 전체). 들고 있는 종목의 반대 신호만 나면 지금처럼 갈아탄다.
-빈손에 신호가 둘 이상이거나, 들고 있는데 다른 종목 신호가 나면 Claude가 고른다
-(`btc_ai.choose`). 답이 없으면 빈손은 백테스트 승률 순(BTC > NVDA > ETH > SOXL,
-`SYMBOL_WINRATE`), 보유 중이면 유지
-(자기 반대 신호가 있으면 갈아타기).
-SOXL·NVDA는 TradFi 무기한이라 약관에 동의하지 않은 계좌는 -4411로 거부된다: 알리고 24시간 쉰다.
+종목(사용자 2026-11-12): 거래량 상위 50(`btc_universe`, `universe.json`, 주 1회 갱신, 14일
+넘게 오래되거나 없으면 예전 네 종목 BTC·ETH·SOXL·NVDA)에 같은 신호·규칙,
+포지션은 한 번에 하나(계좌 전체).
+우선순위는 종목별 백테스트 승률(표본 작은 종목은 맨 뒤). 들고 있는 종목은 범위에서 빠져도 끝까지
+관리한다(새로 들어가지는 않는다). 들고 있는 종목의 반대 신호만 나면 지금처럼 갈아탄다.
+빈손에 신호가 둘 이상이면 우선순위 위 5개 중 Claude가 고른다(`btc_ai.choose`, 답이 없으면 1순위).
+들고 있는데 다른 종목 신호가 나면 그 종목 승률이 보유 종목보다 5%p 이상 높고 들어갈 수 있을 때만
+(위 3개) 바꾸기 선택지가 되고, 없으면 AI를 부르지 않고 유지(자기 반대 신호면 갈아타기).
+TradFi 무기한(주식·ETF·원자재 등)은 약관에 동의하지 않은 계좌는 -4411로 거부된다: 알리고 24시간
+TradFi 전체를 쉰다. 그 시장이 쉬는 시간(`tradingSchedule` NO_TRADING)에는 새로 들어가지 않는다.
 
 신호: SCR 실험실(`strategy/scr_lab.py`)과 같은 계산, 15분봉, 마감된 봉만.
 Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70), W=3, 3개 중 3개, 넘어옴(cross) 모드.
@@ -52,17 +55,20 @@ import logging
 import os
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 from typing import Any, Callable
 
-from minerva import binance, btc_ai, notify
+from minerva import binance, btc_ai, btc_universe, notify
 from minerva.kis import KST, _write_private
 from minerva.strategy import btc, scr_lab
 
@@ -72,17 +78,34 @@ BASE = binance.BASE
 SPOT_BASE = "https://api.binance.com"
 # 옛 상태 파일(포지션에 symbol이 없음)의 종목이자 심볼을 모르는 클라이언트의 기본값
 SYMBOL = "BTCUSDT"
-SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
-# 종목별 백테스트 승률(%): SCR ① 15분·3배·손절 3%, 최근 1년(상장이 늦으면 상장 이후),
-# 2026-11-11 측정. AI 답이 없을 때 빈손 동시 신호는 승률 높은 순(사용자 2026-11-11
-# "4종목 중 승률 높은 걸 우선순위로"). 선택 AI 자료에도 넣는다
-SYMBOL_WINRATE = {"BTCUSDT": 54, "NVDAUSDT": 49, "ETHUSDT": 44, "SOXLUSDT": 17}
-PRIORITY = tuple(sorted(SYMBOLS, key=lambda s: -SYMBOL_WINRATE.get(s, 0)))
-# 주문 ID 종목 표시. BTC는 비워 예전 ID(실전 상태 파일의 손절 ID)와 같게 둔다
+# 종목 범위 파일이 없거나 오래됐을 때 쓰는 네 종목(사용자 2026-11-11)
+DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
+# 그 네 종목의 백테스트 승률(%): SCR ① 15분·3배·손절 3%, 최근 1년(상장이 늦으면 상장 이후),
+# 2026-11-11 측정(사용자 "승률 높은 걸 우선순위로")
+DEFAULT_WINRATE = {"BTCUSDT": 54, "NVDAUSDT": 49, "ETHUSDT": 44, "SOXLUSDT": 17}
+# 이번 실행의 종목·승률·우선순위. run()·preflight()가 `use_universe`로 universe.json에서 채운다
+SYMBOLS: tuple[str, ...] = DEFAULT_SYMBOLS
+SYMBOL_WINRATE: dict[str, float] = dict(DEFAULT_WINRATE)
+PRIORITY: tuple[str, ...] = tuple(sorted(SYMBOLS, key=lambda s: -SYMBOL_WINRATE.get(s, 0)))
+UNIVERSE: dict = {"source": "default", "stats": {}, "tradable": frozenset(DEFAULT_SYMBOLS)}
+# 주문 ID 종목 표시. 네 종목은 실전 상태 파일의 ID와 같게 그대로(BTC는 비움), 나머지는 `cid_tag`
 CID_TAG = {"BTCUSDT": "", "ETHUSDT": "E", "SOXLUSDT": "S", "NVDAUSDT": "N"}
-# TradFi-Perps 약관 미동의(SOXL·NVDA). 서명 API는 부르지 않는다: 알리고 이 시간만큼 쉰다
+# 보유 중 다른 종목으로 바꾸려면 그 종목 승률이 이만큼(%p) 높아야 한다(AI 호출을 드물게)
+SWITCH_EDGE_PP = 5.0
+CHOOSE_FLAT_MAX = 5  # 빈손 동시 신호: AI에 우선순위 위 이만큼만
+CHOOSE_SWITCH_MAX = 3  # 보유 중 바꾸기 선택지 최대
+# 한 실행에서 진입 점검(시세·거래소 조회)을 하는 다른 종목 수 한도(신호가 몰려도 실행이 늘지 않게)
+PREPARE_MAX = 10
+# 15분봉 동시 받기(종목 50개). 499봉은 무게 2(1000봉은 5): 엔진 실행 한 번에 약 100
+FETCH_WORKERS = 10
+FETCH_BUDGET_S = 45
+ENGINE_BARS = 499
+# TradFi-Perps 약관 미동의. 서명 API는 부르지 않는다: 알리고 이 시간만큼 쉰다
 TRADFI_CODE = -4411
 UNAVAILABLE_MS = 24 * 3_600_000
+TRADFI = "TRADIFI_PERPETUAL"
+# exchangeInfo underlyingType → tradingSchedule 시장 키. 모르는 종류는 막지 않는다
+SESSION_KEYS = ("EQUITY", "KR_EQUITY", "HK_EQUITY", "CN_EQUITY", "COMMODITY", "FX")
 INTERVAL = "15m"
 BAR_MS = 15 * 60_000
 LEVERAGE = 3
@@ -176,8 +199,95 @@ def _who(sym: str, side: str) -> str:
 
 
 def _px(x: float) -> str:
-    """가격 표시. BTC·ETH는 소수 1자리(예전 그대로), SOXL·NVDA처럼 싼 종목은 2자리."""
-    return f"{x:,.1f}" if abs(x) >= 1000 else f"{x:,.2f}"
+    """가격 표시. BTC·ETH는 소수 1자리(예전 그대로), SOXL·NVDA처럼 싼 종목은 2자리,
+    1보다 싼 종목(PEPE 등)은 유효 숫자 6자리."""
+    if abs(x) >= 1000:
+        return f"{x:,.1f}"
+    return f"{x:,.2f}" if abs(x) >= 1 else f"{x:.6g}"
+
+
+def universe(now_ms: int | None = None) -> dict:
+    """이번에 쓸 종목 범위(부작용 없음). universe.json이 쓸 만하면 그 상위 50, 아니면 네 종목.
+    {"source", "updated_at", "symbols", "winrate", "priority", "stats"}"""
+    now_ms = now_ms if now_ms is not None else _ms_now()
+    data = btc_universe.load(DIR / "universe.json", now_ms)
+    if data is None:
+        return {
+            "source": "default",
+            "updated_at": None,
+            "symbols": DEFAULT_SYMBOLS,
+            "winrate": dict(DEFAULT_WINRATE),
+            "priority": tuple(sorted(DEFAULT_SYMBOLS, key=lambda s: -DEFAULT_WINRATE[s])),
+            "stats": {},
+            "tradable": frozenset(DEFAULT_SYMBOLS),
+        }
+    syms = tuple(dict.fromkeys(data["symbols"]))
+    stats = {s: data["stats"].get(s) or {} for s in syms}
+    return {
+        "source": "universe",
+        "updated_at": data.get("updated_at"),
+        "symbols": syms,
+        "winrate": {s: float(stats[s].get("winrate") or 0) for s in syms},
+        "priority": tuple(btc_universe.priority(list(syms), stats)),
+        "stats": stats,
+        "tradable": tradable_set(syms, stats),
+    }
+
+
+def tradable_set(syms, stats: dict) -> frozenset:
+    """새로 들어갈 수 있는 종목: 사용자가 고른 네 종목 + 백테스트 수익 > 0이고 표본이 충분한 종목.
+    나머지는 신호·화면만(1년 백테스트 −90% 안팎이 대부분, 사용자 "최대한 손해 보면 안 된다")."""
+    ok = {
+        s
+        for s in syms
+        if float((stats.get(s) or {}).get("ret") or 0) > 0
+        and not btc_universe.low_sample(stats.get(s))
+    }
+    return frozenset(ok | set(DEFAULT_SYMBOLS))
+
+
+def tradable(sym: str) -> bool:
+    return sym in UNIVERSE.get("tradable", frozenset(DEFAULT_SYMBOLS))
+
+
+def use_universe(now_ms: int | None = None) -> dict:
+    """이번 실행의 종목·승률·우선순위를 모듈 값으로 둔다(한 번 실행하고 끝나는 프로세스)."""
+    global SYMBOLS, SYMBOL_WINRATE, PRIORITY, UNIVERSE
+    u = universe(now_ms)
+    SYMBOLS, SYMBOL_WINRATE, PRIORITY, UNIVERSE = u["symbols"], u["winrate"], u["priority"], u
+    _TAGS.clear()
+    _TAGS.update(cid_tags(SYMBOLS))
+    return u
+
+
+# 이번 실행의 종목 → 주문 ID 태그(겹침을 막은 값). 없으면 cid_tag
+_TAGS: dict[str, str] = {}
+
+
+def cid_tag(symbol: str) -> str:
+    """주문 ID 종목 표시. 네 종목은 예전 그대로, 나머지는 기초자산 글자 앞 4자 + 종목 이름에서 정한
+    확인 글자 1자(최대 5자). 종목 이름만으로 정해져 실행마다 같다. 글자가 같은 두 종목
+    (예: 1000PEPE·PEPE)도 확인 글자가 다를 가능성이 높고, `cid_tags`가 겹침을 다시 막는다."""
+    if symbol in CID_TAG:
+        return CID_TAG[symbol]
+    base = symbol[:-4] if symbol.endswith("USDT") else symbol
+    letters = "".join(ch for ch in base.upper() if "A" <= ch <= "Z")[:4] or "X"
+    check = chr(ord("A") + zlib.crc32(symbol.encode()) % 26)
+    return letters + check
+
+
+def cid_tags(symbols) -> dict[str, str]:
+    """여러 종목의 태그. 겹치면(드묾) 뒤 종목은 이름 해시 5글자로 바꾼다. 네 종목 태그는 그대로."""
+    out: dict[str, str] = {}
+    used = set(CID_TAG.values())
+    for s in sorted(set(symbols), key=lambda x: (x not in CID_TAG, x)):
+        t = cid_tag(s)
+        if s not in CID_TAG and t in used:
+            h = zlib.crc32(("mnv:" + s).encode())
+            t = "".join(chr(ord("A") + (h // 26**k) % 26) for k in range(5))
+        used.add(t)
+        out[s] = t
+    return out
 
 
 def pos_symbol(pos: dict | None) -> str:
@@ -396,7 +506,7 @@ def _send(
     raise NetworkError(f"{cid} 응답 없음 ({RETRIES + 1}회): {last}")
 
 
-# 종목별 거래 규칙 캐시 {종목: (받은 시각, 규칙)}. exchangeInfo 한 번에 네 종목을 다 담는다
+# 종목별 거래 규칙 캐시 {종목: (받은 시각, 규칙)}. exchangeInfo 한 번에 모든 종목을 담는다
 _FILTERS: dict[str, tuple[float, dict]] = {}
 FILTER_TTL_S = 600
 
@@ -411,8 +521,10 @@ def filters(client) -> dict:
     info = _get(client, "/fapi/v1/exchangeInfo", signed=False)
     t = time.time()
     for s in info["symbols"]:
-        if s.get("symbol") in SYMBOLS or s.get("symbol") == want:
+        try:
             _FILTERS[s["symbol"]] = (t, _parse_filters(s))
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            continue  # 모양이 다른 종목 하나 때문에 전체를 버리지 않는다
     if want not in _FILTERS:
         return {
             "tick": "0.01",
@@ -437,6 +549,8 @@ def _parse_filters(sym: dict) -> dict:
         "max_qty": float(lot["maxQty"]),
         "min_notional": float(f.get("MIN_NOTIONAL", {}).get("notional", 0)),
         "status": sym.get("status"),
+        "contract": sym.get("contractType"),
+        "underlying": sym.get("underlyingType"),
     }
 
 
@@ -478,11 +592,12 @@ def position_amt(client) -> float:
 
 
 def all_position_amts(client) -> dict[str, float]:
-    """네 종목 포지션 수량(한 번의 조회)."""
+    """계좌 전체 포지션 수량(한 번의 조회, 종목 범위 밖도 포함). 범위 종목은 0이어도 넣는다."""
     out = {s: 0.0 for s in SYMBOLS}
     for r in _get(client, "/fapi/v2/positionRisk"):
-        if r.get("symbol") in out:
-            out[r["symbol"]] += float(r["positionAmt"])
+        sym = r.get("symbol")
+        if sym:
+            out[sym] = out.get(sym, 0.0) + float(r.get("positionAmt") or 0)
     return out
 
 
@@ -659,10 +774,31 @@ def _close_result(client, pos: dict, close_side: str) -> tuple[float | None, flo
 # ---------------------------------------------------------------- 시세·신호
 
 
+# 공개 시세에서 429·418을 한 번 받으면 이번 실행의 남은 공개 요청은 보내지 않는다
+# (레드팀 2026-11-12: 50종목 동시 받기가 429 뒤에도 계속 보내면 418 차단으로 번지고,
+# 같은 IP의 주문도 막힌다)
+_RATE_HIT = threading.Event()
+
+
 def _public(url: str, timeout: float = 15):
+    if _RATE_HIT.is_set():
+        raise ConnectionError("요청 한도(429/418) 뒤라 이번 실행의 공개 시세 요청을 멈춤")
     req = urllib.request.Request(url, headers={"User-Agent": "minerva"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code in (418, 429):
+            _RATE_HIT.set()
+            log.error("공개 시세 요청 한도 %s: 이번 실행의 공개 요청을 멈춤", e.code)
+        raise
+
+
+def _close_qty(amt: float) -> Decimal:
+    """거래소가 준 포지션 수량을 그대로(뒤 0 없이) 쓴다. 이미 그 종목 수량 단위라 내림이 필요 없고,
+    0.001로 맞추면 단위 1·0.01 종목에 '12345.000'처럼 정밀도 넘는 값이 나간다(레드팀 2026-11-12)."""
+    d = Decimal(repr(abs(float(amt)))).normalize()
+    return Decimal(format(d, "f"))
 
 
 class Market:
@@ -682,8 +818,11 @@ class Market:
 
     def klines(self, interval: str) -> list[list]:
         if interval not in self._cache:
+            # 신호용 15분봉은 499개(무게 2): 50종목을 매번 받는다. RSI 21 와일더 평균은 400봉이면
+            # 1000봉과 값이 사실상 같고(차이 1e-6 미만), 복구 창 96봉도 넉넉하다
+            n = ENGINE_BARS if interval == INTERVAL else btc.LIMIT
             self._cache[interval] = _public(
-                btc.URL.format(sym=self.symbol, iv=interval, n=btc.LIMIT)
+                btc.URL.format(sym=self.symbol, iv=interval, n=n), timeout=10
             )
         return self._cache[interval]
 
@@ -917,9 +1056,11 @@ class Ctx:
 
 
 def _cid(bar: int, tag: str, symbol: str = SYMBOL) -> str:
-    """주문 ID. BTC는 예전 그대로 mnv-<분>-<tag>, 다른 종목은 mnv-<E|S|N><분>-<tag>
-    (갈아타기 때 같은 봉에서 두 종목 주문이 나와도 겹치지 않게)."""
-    return f"{PREFIX}{CID_TAG.get(symbol, '')}{bar // 60000}-{tag}"
+    """주문 ID. BTC는 예전 그대로 mnv-<분>-<tag>, ETH·SOXL·NVDA는 mnv-<E|S|N><분>-<tag>,
+    나머지는 mnv-<글자 5자 이하><분>-<tag>(갈아타기 때 같은 봉에서 두 종목 주문이 나와도 겹치지
+    않게, 36자 안)."""
+    t = _TAGS.get(symbol)
+    return f"{PREFIX}{cid_tag(symbol) if t is None else t}{bar // 60000}-{tag}"
 
 
 def _pos_cid(pos: dict, tag: str, n: int) -> str:
@@ -1056,8 +1197,7 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
     try:
         amt = position_amt(ctx.client)
         if amt:
-            # 거래소 수량은 이미 그 종목 단위(BTC·ETH 0.001, SOXL·NVDA 0.01)라 0.001 내림은 그대로다
-            market(ctx.client, close_side, _round(abs(amt), "0.001"), cid, reduce=True)
+            market(ctx.client, close_side, _close_qty(amt), cid, reduce=True)
         if position_amt(ctx.client) != 0:
             raise RuntimeError("청산 뒤에도 포지션이 남음")
     except (Rejected, NetworkError, RuntimeError) as e:
@@ -1313,6 +1453,7 @@ def mark_unavailable(ctx: Ctx, state: dict, err: Rejected) -> None:
     sym = ctx.symbol
     book = state.setdefault("unavailable", {})
     old = book.get(sym) or {}
+    told = old.get("notified") or any((r or {}).get("notified") for r in book.values())
     until = ctx.now_ms + UNAVAILABLE_MS
     book[sym] = {
         "at": _now_iso(ctx.now),
@@ -1321,13 +1462,15 @@ def mark_unavailable(ctx: Ctx, state: dict, err: Rejected) -> None:
         "msg": err.msg[:120],
         "notified": True,
     }
+    # 약관은 계좌 단위라 다른 TradFi 종목도 같이 거부된다: 종목마다 알리지 않게 전체를 쉰다
+    state["tradfi_until_ms"] = until
     _save(DIR / "state.json", state)
     ctx.event(event="symbol_unavailable", symbol=sym, code=err.code, msg=err.msg[:200])
-    if not old.get("notified"):
+    if not told:
         ctx.say(
             f"🚫 {_name(sym)} 주문이 거부됐어요: TradFi-Perps 약관에 동의하지 않은 계좌예요"
-            f"({err.code}). {_name(sym)}는 24시간 쉬고 다시 시도해요. "
-            "다른 종목은 그대로 매매해요. 쓰려면 바이낸스 앱에서 약관에 동의해 주세요."
+            f"({err.code}). TradFi 종목(주식·ETF·원자재)은 24시간 쉬고 다시 시도해요. "
+            "코인 종목은 그대로 매매해요. 쓰려면 바이낸스 앱에서 약관에 동의해 주세요."
         )
 
 
@@ -1364,7 +1507,7 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
         cancel_engine_stops(c)
         amt = position_amt(c)
         if amt:
-            market(c, close_side, _round(abs(amt), "0.001"), cid, reduce=True)
+            market(c, close_side, _close_qty(amt), cid, reduce=True)
         if position_amt(c) != 0:
             raise RuntimeError("청산 주문 뒤에도 포지션이 남음")
     except (Rejected, NetworkError, RuntimeError) as e:
@@ -1404,6 +1547,29 @@ def _chase_text(side: str, price: float, sig: dict, gate: dict) -> str:
     )
 
 
+_KIND = {
+    "COIN": "crypto",
+    "EQUITY": "TradFi US stock/ETF",
+    "KR_EQUITY": "TradFi Korea stock",
+    "HK_EQUITY": "TradFi Hong Kong stock",
+    "CN_EQUITY": "TradFi China stock",
+    "COMMODITY": "TradFi commodity",
+    "FX": "TradFi FX",
+    "INDEX": "TradFi index",
+    "PREMARKET": "pre-market (pre-IPO)",
+}
+
+
+def market_kind(flt: dict) -> str | None:
+    """AI 자료용 종목 종류(코인/TradFi 주식·ETF/원자재 …). 모르면 None."""
+    u = flt.get("underlying")
+    if u in _KIND:
+        return _KIND[u]
+    if flt.get("contract") == TRADFI:
+        return "TradFi"
+    return "crypto" if flt.get("contract") == "PERPETUAL" else None
+
+
 def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
     """Claude에게 손절·익절 폭을 묻는다. 무엇이 잘못돼도 기본값(3%, 익절 없음)."""
     try:
@@ -1413,6 +1579,10 @@ def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
     mode_ = "live" if ctx.live else "dry"
     # ref_stats.json은 BTCUSDT 과거 1년 통계라 다른 종목에는 넘기지 않는다
     ref = _load(DIR / "ref_stats.json", None) if ctx.symbol == SYMBOL else None
+    try:
+        kind = market_kind(filters(ctx.client))
+    except (NetworkError, Rejected, OSError, ValueError, KeyError):
+        kind = None
     try:
         data = btc_ai.packet(
             side,
@@ -1426,6 +1596,7 @@ def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
             ref,
             symbol=ctx.symbol,
             winrate=SYMBOL_WINRATE.get(ctx.symbol),
+            market=kind,
         )
     except (OSError, ValueError, KeyError, IndexError) as e:
         data = {
@@ -2033,6 +2204,8 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     pos["fill"] = fill["path"] if fill else "recovered"
     state.pop("pending", None)
     (state.get("unavailable") or {}).pop(sym, None)  # 진입됐으니 약관 문제는 풀렸다
+    if flt.get("contract") == TRADFI:
+        state.pop("tradfi_until_ms", None)
     # 포지션과 함께 신호도 처리한 것으로 저장한다: 이 뒤에 죽으면 다음 실행이 같은 신호로 다시
     # 들어가지 않는다(run() 끝에서도 같은 값을 쓴다)
     mark_bar(state, sym, sig["bar"])
@@ -2107,19 +2280,32 @@ def mark_bar(state: dict, symbol: str, bar: int) -> None:
         state["last_bar"] = bar
 
 
-def fetch_rows(ctx: Ctx) -> tuple[dict[str, list[list]], dict[str, str]]:
-    """네 종목 15분봉을 한꺼번에(동시에) 받는다. 실패한 종목은 이번 실행에서 신호만 빠진다."""
-    markets = {s: market_for(ctx.market, s) for s in SYMBOLS}
-    todo = [s for s in SYMBOLS if markets[s] is not None]
+def fetch_rows(
+    ctx: Ctx, extra: tuple[str, ...] = (), budget_s: float | None = None
+) -> tuple[dict[str, list[list]], dict[str, str]]:
+    """범위 종목(+ 들고 있는 종목) 15분봉을 동시에(FETCH_WORKERS개씩) 받는다. 실패하거나
+    시간 안(budget_s)에 못 받은 종목은 이번 실행에서 신호만 빠진다(보유 관리는 계속)."""
+    want = list(dict.fromkeys(list(SYMBOLS) + [s for s in extra if s]))
+    markets = {s: market_for(ctx.market, s) for s in want}
+    todo = [s for s in want if markets[s] is not None]
     rows: dict[str, list[list]] = {}
     errs: dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=max(len(todo), 1)) as pool:
+    pool = ThreadPoolExecutor(max_workers=max(min(len(todo), FETCH_WORKERS), 1))
+    try:
         futs = {s: pool.submit(markets[s].klines, INTERVAL) for s in todo}
+        wait_futures(list(futs.values()), timeout=FETCH_BUDGET_S if budget_s is None else budget_s)
         for s, f in futs.items():
+            if not f.done():
+                f.cancel()
+                errs[s] = "시간 안에 못 받음"
+                continue
             try:
                 rows[s] = f.result()
             except Exception as e:  # noqa: BLE001 — 한 종목 시세 실패가 보유 관리를 막으면 안 된다
                 errs[s] = f"{type(e).__name__}: {e}"[:200]
+    finally:
+        # 늦은 요청을 기다리지 않는다(요청마다 시간 한도가 있어 곧 끝난다)
+        pool.shutdown(wait=False, cancel_futures=True)
     return rows, errs
 
 
@@ -2139,6 +2325,10 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
         )
     elif unavailable(state, sym, ctx.now_ms):
         out["skip"] = "TradFi 약관 미동의로 쉬는 중"
+    elif sym not in SYMBOLS:
+        out["skip"] = "종목 범위(거래량 상위)에서 빠져 새로 들어가지 않음(보유분 정리만)"
+    elif not tradable(sym):
+        out["skip"] = "백테스트 손실 종목이라 새로 들어가지 않음(보유분 정리만)"
     elif _clock() - t_start > MAX_RUN_SECS:
         out["skip"] = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
     elif c.market is None:
@@ -2146,14 +2336,22 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
     else:
         try:
             flt = filters(c.client)
-            gate = chase_gate(c.market, c.rows15, ctx.now_ms)
-            price0 = c.market.price()
+            # 거래 상태·장 시간은 시세(4시간·일봉)를 받기 전에 본다(무게 아끼기)
+            closed = "" if flt["status"] != "TRADING" else market_closed(ctx, state, flt)
+            if flt["status"] != "TRADING" or closed:
+                gate, price0 = {}, None
+            else:
+                gate = chase_gate(c.market, c.rows15, ctx.now_ms)
+                price0 = c.market.price()
         except (NetworkError, Rejected, OSError, ValueError, KeyError) as e:
             out["skip"] = f"시세·거래 규칙 조회 실패({type(e).__name__})"
             return out
         out.update(flt=flt, gate=gate, price=price0)
         if flt["status"] != "TRADING":
             out["skip"] = f"{sym} 상태 {flt['status']}"
+        elif closed:
+            out["skip"], out["quiet"] = closed, True  # 기록만(장 쉬는 시간은 자주 겹친다)
+            ctx.event(event="session_skip", symbol=sym, side=side, why=closed)
         elif not chase_ok(side, price0, sig["close"], gate["pct"]):
             out["skip"] = f"진입 안 함: {_chase_text(side, price0, sig, gate)}"
             ctx.event(
@@ -2168,6 +2366,37 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
             out["skip"] = live_entry_problem(c, state)
             out["quiet"] = out["skip"] == "TradFi 약관 미동의"  # mark_unavailable이 이미 알림
     return out
+
+
+def market_closed(ctx: Ctx, state: dict, flt: dict) -> str:
+    """TradFi 종목이면 진입을 막을 이유: 약관 미동의로 TradFi 전체가 쉬는 중이거나, 그 시장이
+    지금 NO_TRADING 시간. 종목 종류·시간표를 모르면 막지 않는다(빈 문자열)."""
+    if flt.get("contract") != TRADFI:
+        return ""
+    if int(state.get("tradfi_until_ms") or 0) > ctx.now_ms:
+        return "TradFi 약관 미동의로 쉬는 중"
+    key = flt.get("underlying")
+    if key not in SESSION_KEYS:
+        return ""
+    sched = ctx.shared.get("schedule")
+    if sched is None:
+        try:
+            sched = (
+                _public(f"{BASE}/fapi/v1/tradingSchedule", timeout=10).get("marketSchedules") or {}
+            )
+        except (OSError, ValueError, AttributeError) as e:
+            ctx.event(event="schedule_error", error=f"{type(e).__name__}: {e}"[:200])
+            sched = {}
+        ctx.shared["schedule"] = sched
+    for ses in (sched.get(key) or {}).get("sessions") or []:
+        try:
+            if int(ses["startTime"]) <= ctx.now_ms < int(ses["endTime"]):
+                if ses.get("type") == "NO_TRADING":
+                    return f"{key} 시장이 쉬는 시간(NO_TRADING)이라 새로 들어가지 않음"
+                return ""
+        except (KeyError, TypeError, ValueError):
+            continue
+    return ""
 
 
 def live_entry_problem(c: Ctx, state: dict) -> str:
@@ -2199,6 +2428,7 @@ def _candidate_packet(cand: dict) -> dict:
         "price_now": cand.get("price"),
         "chase_limit_pct": (cand.get("gate") or {}).get("pct"),
         "backtest_winrate_pct": SYMBOL_WINRATE.get(cand["sym"]),
+        "market_kind": market_kind(cand.get("flt") or {}),
         "scr_at_signal": sig.get("at_signal"),
     }
     if cand.get("price") and sig.get("close"):
@@ -2284,7 +2514,8 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
     notes: list[str] = []
     main: dict | None = None
     dirs: dict[str, dict] = {}
-    for sym in PRIORITY:
+    # 우선순위 순(범위 밖 보유 종목은 맨 뒤)
+    for sym in list(PRIORITY) + [s for s in sigs if s not in PRIORITY]:
         g = sigs.get(sym)
         if not g:
             continue
@@ -2310,12 +2541,45 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
     if not opp and not others:
         return {"decision": " · ".join(notes) or "대기", "main": main}
 
-    # 들어갈 수 있는지 먼저 본다(정지·추격 한도·약관 등). 반대 신호 청산은 막히지 않는다
+    # 들어갈 수 있는지 먼저 본다(정지·추격 한도·약관 등). 반대 신호 청산은 막히지 않는다.
+    # 다른 종목은 우선순위 순으로 필요한 만큼만 본다(빈손 5개, 보유 중 3개). 보유 중이면 승률이
+    # 보유 종목보다 SWITCH_EDGE_PP 이상 높은 종목만 바꾸기 후보(AI 호출을 드물게, 사용자 2026-11-12)
     cands: dict[str, dict] = {}
-    for sym, g in ([(a_sym, opp)] if opp else []) + list(others.items()):
-        cands[sym] = prepare(ctx, state, sym, g, halts, t_start)
-    viable = [s for s in others if not cands[s]["skip"]]
+    if opp:
+        cands[a_sym] = prepare(ctx, state, a_sym, opp, halts, t_start)
+    a_rate = float(SYMBOL_WINRATE.get(a_sym) or 0) if pos else 0.0
+    cap = CHOOSE_SWITCH_MAX if pos else CHOOSE_FLAT_MAX
+    viable: list[str] = []
+    passed: dict[str, str] = {}  # 보지 않은 신호 {종목: 이유}
+    tried = 0
+    for sym, g in others.items():
+        rate = float(SYMBOL_WINRATE.get(sym) or 0)
+        if not tradable(sym):
+            passed[sym] = "백테스트 손실 종목(신호 표시만, 진입 안 함)"
+        elif pos and rate < a_rate + SWITCH_EDGE_PP:
+            passed[sym] = (
+                f"승률 {rate:g}%가 보유 {_name(a_sym)} {a_rate:g}% + {SWITCH_EDGE_PP:g}%p보다 낮음"
+            )
+        elif len(viable) >= cap or tried >= PREPARE_MAX:
+            passed[sym] = f"우선순위 밖(후보 {cap}개까지)"
+        else:
+            tried += 1
+            cands[sym] = prepare(ctx, state, sym, g, halts, t_start)
+            if not cands[sym]["skip"]:
+                viable.append(sym)
+    for sym, why in passed.items():
+        g = others[sym]
+        mark_bar(state, sym, g["bar"])
+        main = main or g
+        ctx.event(event="signal_passed", symbol=sym, side=g["dir"], why=why)
+    if passed:
+        names = ", ".join(_name(s) for s in passed)
+        notes.append(f"다른 신호 {len(passed)}개는 후보 아님({names})")
+    # 알림은 1순위 신호와 보유 종목만(종목 50개라 막힌 신호를 다 알리면 시끄럽다). 나머지는 기록만
+    loud = {a_sym} | set(list(others)[:1])
     a_cand = cands.get(a_sym) if opp else None
+    if not cands:
+        return {"decision": " · ".join(notes) or "대기", "main": main}
 
     # 선택지와 AI 기본값
     options: dict[str, str] = {}
@@ -2331,7 +2595,7 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
         for s in viable:
             options[f"enter:{s}"] = ""
         options["none"] = ""
-        fallback = f"enter:{viable[0]}" if viable else "none"  # viable은 PRIORITY 순서
+        fallback = f"enter:{viable[0]}" if viable else "none"  # viable은 우선순위 순서
     for k in options:
         options[k] = _opt_text(k, cands, pos)
 
@@ -2359,8 +2623,10 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
         main = main or cand["sig"]
         if cand["skip"]:
             notes.append(f"{who} 신호, {cand['skip']}")
-            if not cand.get("quiet"):
+            if not cand.get("quiet") and sym in loud:
                 ctx.say(f"⏸ {who} 신호가 났지만 {cand['skip']}")
+            else:
+                ctx.event(event="signal_skip", symbol=sym, side=cand["side"], why=cand["skip"])
             told.add(sym)
         else:
             notes.append(f"{who} 신호, 고르지 않음({options[choice]})")
@@ -2413,7 +2679,8 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
 
 
 def check_strays(ctx: Ctx, state: dict, held: str) -> bool:
-    """보유 종목이 아닌 세 종목에 포지션이 보이면(엔진은 하나만 든다) 알리고 신규 진입을 멈춘다.
+    """보유 종목이 아닌 종목(범위 밖 포함, 계좌 전체)에 포지션이 보이면(엔진은 하나만 든다) 알리고
+    신규 진입을 멈춘다.
     짐작해서 닫지 않는다. 문제없으면 True."""
     amts = all_position_amts(ctx.client)
     stray = {s: a for s, a in amts.items() if s != held and a}
@@ -2452,6 +2719,7 @@ def run(
     state_file = DIR / "state.json"
     first = not state_file.exists()
     state = _load(state_file, {})
+    uni = use_universe(now_ms)
     gap_ms = now_ms - state["last_run_ms"] if state.get("last_run_ms") else None
     recovering = boot or (gap_ms is not None and gap_ms > RECOVER_GAP_MS)
     lookback = MAX_SIGNAL_BARS
@@ -2494,7 +2762,11 @@ def run(
             if not check_strays(ctx, state, held):
                 can_trade = False
         _save(state_file, state)
-    rows_by, feed_errs = fetch_rows(ctx)
+    # 들고 있는(끝나지 않은 주문 포함) 종목은 범위에서 빠졌어도 받는다
+    extra = tuple(pos_symbol(state[k]) for k in ("position", "pending") if state.get(k))
+    t_fetch = _clock()
+    rows_by, feed_errs = fetch_rows(ctx, extra + (held,))
+    fetch_secs = round(_clock() - t_fetch, 2)
     ctx.shared["rows"] = rows_by
     ctx.rows15 = rows_by.get(ctx.symbol, [])
     if feed_errs:
@@ -2522,9 +2794,7 @@ def run(
     halts = check_halts("live" if live else "dry", state, equity, now, ctx.say)
 
     sigs: dict[str, dict] = {}
-    for sym in SYMBOLS:
-        if sym not in rows_by:
-            continue
+    for sym in rows_by:
         g = latest_signal(rows_by[sym], now_ms, last_bar_for(state, sym), lookback=lookback)
         g["symbol"] = sym
         sigs[sym] = g
@@ -2559,6 +2829,10 @@ def run(
         state["ai_fallbacks"] = ctx.ai_streak
     state["last_run_ms"] = now_ms
     _save(state_file, state)
+    try:
+        write_near(rows_by, now_ms, uni, held)
+    except Exception as e:  # noqa: BLE001 — 화면용 파일 실패가 실행을 깨면 안 된다
+        ctx.event(event="near_error", error=f"{type(e).__name__}: {e}"[:200])
     p = state.get("position")
     btc_sig = sigs.get(SYMBOL) or {}
     summary = {
@@ -2575,6 +2849,8 @@ def run(
         "halts": halts,
         "equity": round(equity, 2),
         "indicators": btc_sig.get("indicators"),
+        "universe": {"source": uni["source"], "n": len(uni["symbols"]), "fetched": len(rows_by)},
+        "fetch_secs": fetch_secs,
     }
     if p and "symbol" not in p:
         summary["position"]["symbol"] = SYMBOL
@@ -2604,12 +2880,54 @@ def run(
         held_txt = f"{_who(pos_symbol(p), p['side'])} {p['qty']}" if p else "없음"
         send(
             f"🤖 BTC 자동매매 엔진 시작 — {mode_ko}\n"
-            f"{' · '.join(_name(s) for s in SYMBOLS)} · SCR 15분 · Stoch 9/CCI 20/RSI 21 · 3배 · "
+            f"{_universe_txt(uni)} · SCR 15분 · Stoch 9/CCI 20/RSI 21 · 3배 · "
             "한 번에 한 종목 · 손절·익절은 진입 때 AI(기본 손절 3%) · 롱↔숏 갈아타기\n"
             f"마지막 봉 {summary['bar']}: {decision} · 포지션 {held_txt}"
             + (f"\n진입 정지: {', '.join(halts)}" if halts else "")
         )
     return summary
+
+
+def _universe_txt(uni: dict) -> str:
+    if uni["source"] == "universe":
+        return f"거래량 상위 {len(uni['symbols'])}종목({uni['updated_at']} 기준, 승률 순 우선)"
+    return " · ".join(_name(s) for s in uni["symbols"])
+
+
+def write_near(rows_by: dict[str, list[list]], now_ms: int, uni: dict, held: str | None) -> dict:
+    """화면 '신호 가까운 순'용 `near.json`: 종목·방향마다 넘어온 지표 수, 지금 신호인지, 남은 지표가
+    넘어오려면 다음 봉이 어디에 마감해야 하는지(어림값). 엔진이 받은 봉으로 계산한다."""
+    out = []
+    for sym, rows in rows_by.items():
+        closed = [r for r in rows if int(r[6]) < now_ms]
+        if len(closed) < 100:
+            continue
+        h = [float(r[2]) for r in closed]
+        lo = [float(r[3]) for r in closed]
+        c = [float(r[4]) for r in closed]
+        st = uni["stats"].get(sym) or {}
+        base = {
+            "symbol": sym,
+            "bar": int(closed[-1][0]),
+            "price": c[-1],
+            "winrate": uni["winrate"].get(sym),
+            "rank": st.get("rank"),
+            "priority": PRIORITY.index(sym) + 1 if sym in PRIORITY else None,
+            "low_sample": btc_universe.low_sample(st) if st else False,
+            "contract": st.get("contract"),
+            "held": sym == held,
+        }
+        for side, r in scr_lab.near(h, lo, c, SCR_PARAMS).items():
+            out.append({**base, "side": side, **r})
+    data = {
+        "updated_at": _now_iso(datetime.fromtimestamp(now_ms / 1000, KST)),
+        "source": uni["source"],
+        "universe_at": uni.get("updated_at"),
+        "w": SCR_PARAMS["w"],
+        "rows": out,
+    }
+    _save(DIR / "near.json", data)
+    return data
 
 
 def recover_text(
@@ -2676,6 +2994,10 @@ def preflight(client=None) -> list[tuple[bool, str]]:
     """GET만 보내는 점검: 키, 거래 규칙, 레버리지, 포지션 모드, 잔고, 미체결."""
     client = client if client is not None else Client()
     out: list[tuple[bool, str]] = []
+    uni = use_universe()
+    st0 = _load(DIR / "state.json", {})
+    # 자세히 보는 종목: 예전 네 종목 + 들고 있는 종목(50종목을 다 적으면 알림이 너무 길다)
+    detail = list(dict.fromkeys(DEFAULT_SYMBOLS + (held_symbol(st0),)))
     m = mode()
     out.append((True, f"모드: {'실전(live)' if m == 'live' else '드라이런(dry)'}"))
     out.append((not halted(), "HALT " + ("있음" if halted() else "없음")))
@@ -2693,7 +3015,15 @@ def preflight(client=None) -> list[tuple[bool, str]]:
         )
     except (Rejected, NetworkError) as e:
         out.append((False, f"키 권한 조회 실패: {e}"))
-    for sym in SYMBOLS:
+    bad = [s for s in SYMBOLS if filters(SymClient(client, s))["status"] != "TRADING"]
+    out.append(
+        (
+            not bad,
+            f"종목 범위: {_universe_txt(uni)} · {len(SYMBOLS)}종목"
+            + (f" · 거래 불가 {', '.join(bad)}" if bad else ""),
+        )
+    )
+    for sym in detail:
         flt = filters(SymClient(client, sym))
         out.append(
             (
@@ -2712,7 +3042,7 @@ def preflight(client=None) -> list[tuple[bool, str]]:
     )
     multi = _get(client, "/fapi/v1/multiAssetsMargin").get("multiAssetsMargin")
     out.append((True, f"멀티에셋 모드: {'켜짐' if multi else '꺼짐'}"))
-    for sym in SYMBOLS:
+    for sym in detail:
         sc = next(
             (x for x in _get(client, "/fapi/v1/symbolConfig", symbol=sym) if x["symbol"] == sym),
             None,
@@ -2735,7 +3065,8 @@ def preflight(client=None) -> list[tuple[bool, str]]:
     st = _load(DIR / "state.json", {})
     held = pos_symbol(st.get("position")) if st.get("position") else None
     for sym, amt in all_position_amts(client).items():
-        out.append((amt == 0 or sym == held, f"{sym} 포지션 {amt:+}"))
+        if amt or sym in detail:
+            out.append((amt == 0 or sym == held, f"{sym} 포지션 {amt:+}"))
     unav = {s: r for s, r in (st.get("unavailable") or {}).items() if unavailable(st, s, _ms_now())}
     for sym, r in unav.items():
         why = f"({r.get('code')}, {r.get('at')}부터 24시간)"
@@ -2752,7 +3083,7 @@ def preflight(client=None) -> list[tuple[bool, str]]:
         out.append((gone, f"없는 주문 조회 {path}: {note}"))
     raw = _get(client, "/fapi/v1/openAlgoOrders", symbol=SYMBOL)
     out.append((isinstance(raw, list), f"조건부 미체결 목록 응답 모양: {type(raw).__name__}"))
-    for sym in SYMBOLS:
+    for sym in detail:
         sc_ = SymClient(client, sym)
         orders = _get(sc_, "/fapi/v1/openOrders", symbol=sym)
         algos = open_algos(sc_)
@@ -2779,6 +3110,7 @@ def preflight(client=None) -> list[tuple[bool, str]]:
 def start_live(client=None, send: Callable[[str], Any] = notify.send) -> dict:
     """실전 시작(사용자만 실행): 지금 순평가액을 시드로 적고 mode=live."""
     client = client if client is not None else Client()
+    use_universe()
     if _get(client, "/fapi/v1/positionSide/dual")["dualSidePosition"]:
         raise SystemExit("헤지 모드입니다. 단방향으로 바꾼 뒤 다시 실행하세요.")
     for sym, amt in all_position_amts(client).items():

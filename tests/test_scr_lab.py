@@ -388,3 +388,10 @@ def test_klines_other_symbol_is_whitelisted_and_cached_apart(fake_binance):
     # 비트코인 덩어리 키는 예전 모양 그대로
     client.get("/api/btc/klines?interval=15m&days=3")
     assert any(len(k) == 2 for k in routes._kline_cache)
+
+
+def test_klines_whitelist_stays_four_symbols(fake_binance, monkeypatch):
+    # 범위 50종목을 열면 공개 주소로 큰 요청을 보낼 수 있어 네 종목만 연다(레드팀 2026-11-12)
+    client = TestClient(app)
+    assert client.get("/api/btc/klines?symbol=DOGEUSDT").status_code == 400
+    assert client.get("/api/btc/klines?symbol=ETHUSDT").status_code == 200

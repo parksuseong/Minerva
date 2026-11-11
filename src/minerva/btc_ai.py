@@ -48,8 +48,11 @@ PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 청산 �
   익절 없이(null) 들고 가는 것은 추세가 뚜렷하고 아직 덜 움직였을 때만.
 - backtest_winrate_pct는 이 종목에서 이 신호의 과거 1년 승률이다. 낮으면(50% 아래) 익절을 더
   가깝게, 손절도 구조가 허락하는 만큼 좁게 잡는다.
+- market_kind는 종목 종류다(crypto, TradFi 미국 주식·ETF, 한국 주식, 원자재 등). TradFi는
+  기초 시장이 열린 시간에 크게 움직이고, 쉬는 시간 뒤 첫 봉에 크게 튈 수 있다.
+  종목마다 변동성이 크게 다르니 recent_15m_range_pct·atr14_pct를 꼭 보고 그 종목의 잡음 폭에 맞춘다.
 - SOXLUSDT는 반도체 3배 ETF라 15분봉 하나가 2~7%씩 움직인다. 손절을 1~2%로 두면 잡음에 바로
-  걸린다: 15분 폭을 꼭 보고 정한다. NVDAUSDT·SOXLUSDT는 미국 주식 시세라 장 시간대에 크게 움직인다.
+  걸린다: 15분 폭을 꼭 보고 정한다. 다른 레버리지 ETF(TQQQ 등)도 같다.
 
 규칙:
 - stop_pct: 진입가에서 손절까지 거리(%), 1.0 이상 5.0 이하. 기본은 3.0.
@@ -142,6 +145,7 @@ def packet(
     ref_stats: dict | None,
     symbol: str = "BTCUSDT",
     winrate: float | None = None,
+    market: str | None = None,
 ) -> dict:
     """AI에게 넘길 자료(작게). klines(interval)는 마감 여부와 상관없이 받은 봉."""
     frames = {k: [r for r in klines(k) if int(r[6]) < now_ms] for k in ("15m", "1h", "4h", "1d")}
@@ -156,6 +160,7 @@ def packet(
         }
     return {
         "symbol": symbol,
+        "market_kind": market,
         "side": side,
         "signal_bar_kst": sig.get("bar_txt"),
         "signal_close": sig.get("close"),
@@ -293,8 +298,9 @@ def decide(data: dict, caller: Callable[[str], str] = call_claude) -> dict:
 # ---------------------------------------------------------------- 종목 선택(신호 겹침)
 
 CHOOSE_PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 종목 선택 담당이다.
-엔진은 BTCUSDT·ETHUSDT·SOXLUSDT·NVDAUSDT에 같은 신호(SCR 15분봉, 마감 봉)를 쓰고, 포지션은 한 번에
-하나만 든다(계좌 전체, 레버리지 3배). 이번 봉에 신호가 겹쳤다. options 중 하나만 고른다.
+엔진은 거래량 상위 종목(최대 50개, 코인과 TradFi 주식·ETF·원자재)에 같은 신호(SCR 15분봉, 마감 봉)를
+쓰고, 포지션은 한 번에 하나만 든다(계좌 전체, 레버리지 3배). 이번 봉에 신호가 겹쳤다. candidates는
+우선순위(백테스트 승률 순) 위 몇 개만 들어 있다. options 중 하나만 고른다.
 - keep: 들고 있는 포지션 유지. flip:종목: 그 종목을 반대로 갈아타기. close:종목: 그 종목 청산만.
 - switch:종목: 들고 있는 포지션을 닫고 그 종목 신호 방향으로 진입. enter:종목: 그 종목 진입.
 - none: 아무것도 안 함.

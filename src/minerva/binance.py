@@ -39,8 +39,40 @@ BASE = "https://fapi.binance.com"
 ENV_FILE = Path(os.environ.get("MINERVA_BINANCE_ENV", "~/.minerva/binance.env")).expanduser()
 STATE_DIR = Path(os.environ.get("MINERVA_ACCOUNT_DIR", "~/.minerva/account")).expanduser()
 SYMBOL = "BTCUSDT"
-# 엔진이 매매하는 종목(btc_trade.SYMBOLS와 같게). 체결 내역은 이 네 종목을 합쳐 보여준다
+# 체결 내역을 늘 묻는 종목(엔진의 예전 네 종목). 엔진 범위가 50종목으로 늘어도(2026-11-12) 1분마다
+# 50종목 userTrades를 묻지 않고, 엔진이 실제로 든 종목과 지금 포지션이 있는 종목만 더한다
 TRADE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
+ENGINE_DIR = Path(os.environ.get("MINERVA_BTC_TRADE_DIR", "~/.minerva/btc_trade")).expanduser()
+
+
+def trade_symbols(risk: list[dict] | None = None, engine_dir: Path | None = None) -> list[str]:
+    """체결 내역을 물을 종목: 네 종목 + 엔진 상태(포지션·주문 중·마지막 종목) + 엔진 청산 기록에
+    나온 종목 + 지금 포지션이 있는 종목. 엔진 파일을 못 읽으면 네 종목과 포지션만."""
+    d = engine_dir or ENGINE_DIR
+    out = list(TRADE_SYMBOLS)
+    try:
+        st = json.loads((d / "state.json").read_text())
+        for k in ("position", "pending"):
+            if isinstance(st.get(k), dict):
+                out.append(st[k].get("symbol") or SYMBOL)
+        if st.get("last_symbol"):
+            out.append(st["last_symbol"])
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        for line in (d / "closed.jsonl").read_text().splitlines()[-500:]:
+            try:
+                sym = json.loads(line).get("symbol")
+            except (ValueError, AttributeError):
+                continue
+            if sym:
+                out.append(sym)
+    except OSError:
+        pass
+    out += [r.get("symbol") for r in risk or [] if r.get("symbol")]
+    return [s for s in dict.fromkeys(out) if isinstance(s, str) and s.endswith("USDT")]
+
+
 TRADES = 30
 SERIES_STEP = 300  # 자산 차트 점 간격(초). 1분마다 돌지만 5분에 한 점만 남긴다.
 KST_SHIFT = 9 * 3600  # 차트 라이브러리는 UTC로 그려서 KST 시각으로 옮겨 저장한다
@@ -198,7 +230,7 @@ def snapshot(cfg: dict, now: datetime, capital: dict | None = None) -> dict:
         return data
     since = _since_ms(capital)
     trades = list(_get(cfg, "/fapi/v1/userTrades", symbol=SYMBOL, limit=100))
-    for sym in TRADE_SYMBOLS:
+    for sym in trade_symbols(risk):
         if sym == SYMBOL:
             continue
         try:

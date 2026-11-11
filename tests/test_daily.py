@@ -656,3 +656,19 @@ def test_watchlist_survives_positions_file_of_wrong_type(monkeypatch):
     monkeypatch.setattr(daily, "read_owned", lambda: None)
     monkeypatch.setattr("minerva.notify.send", lambda text: True)
     assert "005930.KS" in [a.symbol for a in daily.watchlist()]
+
+
+def test_main_saves_analysis_even_if_summary_fails(tmp_path, monkeypatch):
+    import json
+
+    data = _plan_data()
+    data["generated_at"] = "2026-11-02T16:30+09:00"
+    monkeypatch.setattr(daily, "build", lambda: data)
+    monkeypatch.setattr(daily, "write_summary", lambda d: 1 / 0)
+    monkeypatch.setattr(daily, "read_owned", lambda: {})
+    out = tmp_path / "daily" / "latest.json"
+    daily.main(["--out", str(out)])
+    saved = json.loads(out.read_text())
+    assert saved["summary"] == ["요약을 만들지 못했어요 (ZeroDivisionError)."]
+    assert (out.parent / "history" / "2026-11-02-1630.json").exists()
+    assert sorted(p.name for p in out.parent.iterdir()) == ["history", "latest.json"]

@@ -1772,3 +1772,31 @@ def test_adopted_entry_keeps_entry_fee_in_pnl_window(env, monkeypatch):
     last = jsonl("closed.jsonl")[-1]
     assert last["why"] == "stop"
     assert last["pnl"] == pytest.approx(-10 - 0.05 - 0.004, abs=1e-6)  # 진입 수수료 포함
+
+
+def test_protect_close_lost_response_then_reduce_only_reject_is_closed(env, monkeypatch):
+    """비상 청산 응답을 잃고 다시 보낸 reduceOnly가 '포지션 없음'으로 거부돼도 닫힌 것은 닫힌 것."""
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    st = state()
+    ctx = bt.Ctx(ex, FakeMarket(ex.price), env["send"], NOW, True)
+    ex.lose_response = {"POST /fapi/v1/order"}
+    real_query, real_handle = bt._query, ex._handle
+
+    def lagging(client, path, key, cid):
+        if cid.endswith("-x1"):
+            return None  # 체결된 주문이 아직 조회에 안 보인다
+        return real_query(client, path, key, cid)
+
+    def handle(method, path, p):
+        if method == "POST" and p.get("reduceOnly") == "true" and ex.amt == 0:
+            raise bt.Rejected(-2022, "ReduceOnly Order is rejected.")
+        return real_handle(method, path, p)
+
+    monkeypatch.setattr(bt, "_query", lagging)
+    monkeypatch.setattr(ex, "_handle", handle)
+    bt.protect_close(ctx, st, "protect")
+    assert ex.amt == 0 and st["position"] is None
+    assert jsonl("closed.jsonl")[-1]["why"] == "protect"
+    assert not [m for m in env["sent"] if "닫지 못했어요" in m]

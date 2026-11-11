@@ -889,9 +889,19 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
         if position_amt(ctx.client) != 0:
             raise RuntimeError("청산 뒤에도 포지션이 남음")
     except (Rejected, NetworkError, RuntimeError) as e:
-        ctx.say(f"🆘 손절 없는 포지션을 닫지 못했어요: {e}\n지금 바이낸스 앱에서 직접 확인하세요!")
-        ctx.event(event="unprotected", error=str(e))
-        return
+        # 응답을 잃고 다시 보낸 reduceOnly는 이미 닫힌 뒤라 '포지션 없음'(-2022)으로 거부될 수 있다.
+        # 포지션을 남기면 다음 실행이 '수동 청산'으로 보고 거짓 정지를 건다
+        try:
+            gone = position_amt(ctx.client) == 0
+        except (Rejected, NetworkError):
+            gone = False
+        if not gone:
+            ctx.say(
+                f"🆘 손절 없는 포지션을 닫지 못했어요: {e}\n지금 바이낸스 앱에서 직접 확인하세요!"
+            )
+            ctx.event(event="unprotected", error=str(e))
+            return
+        ctx.event(event="protect_close_error_but_flat", error=str(e))
     # 닫힌 것은 확인됐다: 뒤 조회가 실패해도 포지션을 남기지 않는다
     # (남기면 다음 실행이 '수동 청산'으로 보고 거짓 정지를 건다)
     state["position"] = None

@@ -98,7 +98,7 @@ def btc_engine() -> dict:
 KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
 # SCR 실험실에서 고를 수 있는 봉(분 단위)
 # 봉을 내줄 수 있는 선물 종목(공개 시세). SOXL은 종목 분석 > SOXL 탭(보기만, 2026-11-11)
-KLINE_SYMBOLS = ("BTCUSDT", "SOXLUSDT")
+KLINE_SYMBOLS = ("BTCUSDT", "SOXLUSDT", "NVDAUSDT")
 LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 LAB_MAX_DAYS = 365
 # 5분봉 1년은 10만 봉이 넘어 휴대폰 화면이 버거워 90일까지만 (사용자 요청 2026-11-08 1년 보기)
@@ -222,20 +222,23 @@ _soxl_lock = threading.Lock()
 
 
 @router.get("/api/soxl")
-def soxl_analysis() -> dict:
-    """종목 분석 > SOXL: 큰 그림(4시간·일·주·월). 보기만, 주문 없음."""
+def soxl_analysis(symbol: str = "SOXLUSDT") -> dict:
+    """종목 분석 > SOXL·NVDA: 큰 그림(4시간·일·주·월) + 일봉 지표 분석. 보기만, 주문 없음."""
+    if symbol not in soxl.US:
+        raise HTTPException(status_code=400, detail="이 종목은 볼 수 없어요")
     with _soxl_lock:
-        hit = _soxl_cache.get("data")
+        hit = _soxl_cache.get(symbol)
         if hit and _mono() - hit[0] < SOXL_TTL:
             return hit[1]
         try:
-            data = soxl.build()
+            data = soxl.build(symbol=symbol)
         except (OSError, ValueError, KeyError) as exc:
             if hit:
                 return hit[1]
             why = type(exc).__name__
-            return {"status": "error", "message": f"SOXL 시세를 받지 못했어요 ({why})"}
-        _soxl_cache["data"] = (_mono(), data)
+            name = soxl.US[symbol]["stock"]
+            return {"status": "error", "message": f"{name} 시세를 받지 못했어요 ({why})"}
+        _soxl_cache[symbol] = (_mono(), data)
         return data
 
 

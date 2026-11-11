@@ -169,6 +169,7 @@
       <button type="button" data-show="an-kr" class="on" aria-pressed="true">📈 주식</button>
       <button type="button" data-show="an-bn" aria-pressed="false">₿ 비트코인</button>
       <button type="button" data-show="an-sx" aria-pressed="false">🔧 SOXL</button>
+      <button type="button" data-show="an-nv" aria-pressed="false">🟢 NVDA</button>
     </div>
     <div id="an-kr">
     <section class="card">
@@ -216,25 +217,8 @@
       <div id="bte-trades" class="placeholder">-</div>
     </section>
     </div>
-    <div id="an-sx" hidden>
-    <section class="card">
-      <h2>🧭 큰 그림 <span class="mini">SOXL · 4시간(선물)·일·주·월(미국 ETF 주가) · 마감 봉 기준 · 5분마다 갱신</span></h2>
-      <div id="sx-outlook" class="placeholder">불러오는 중…</div>
-    </section>
-    <section class="card">
-      <h2>📊 SOXX 일봉 지표 분석 <span class="mini">SOXX 일봉(1배) · Stoch 5 · CCI 20 · RSI 14 · 볼밴(20,2) · 이평선 · 매물대 · 검증 안 된 판독</span></h2>
-      <div id="sx-classic" class="placeholder">불러오는 중…</div>
-    </section>
-    <section class="card">
-      <h2>차트 <span class="mini">SOXLUSDT 선물 15분봉 7일 · SCR ① (비트코인과 같은 조건) · 보기만, 자동매매 없음</span></h2>
-      <div class="mini">● 초록 = 롱 신호, ▼ 빨강 = 숏 신호. 아래: Stoch 9 · CCI 20 · RSI 21. 미국 장이 닫힌 밤·주말엔 선물 거래가 얇아요.</div>
-      <div id="sx-chart" style="height:640px;margin-top:6px"></div>
-    </section>
-    <section class="card">
-      <h2>지금 지표 <span class="mini">SCR ① · 마감된 봉</span></h2>
-      <div id="sx-ind" class="placeholder">-</div>
-    </section>
-    </div>
+    <div id="an-sx" hidden></div>
+    <div id="an-nv" hidden></div>
   </div>
 
   <div class="panel" id="tab-account" hidden>
@@ -309,6 +293,7 @@
         <span class="mini">종목</span>
         <button type="button" data-sym="BTCUSDT">₿ 비트코인</button>
         <button type="button" data-sym="SOXLUSDT">🔧 SOXL</button>
+        <button type="button" data-sym="NVDAUSDT">🟢 NVDA</button>
       </div>
       <div class="filters" id="lab-tf" role="group" aria-label="봉">
         <span class="mini">봉</span>
@@ -444,10 +429,10 @@
   <script src="/static/daily.js?v=20261111b"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
   <script src="/static/scrlab_core.js?v=20261110b"></script>
-  <script src="/static/scrlab.js?v=20261111b"></script>
+  <script src="/static/scrlab.js?v=20261111c"></script>
   <script src="/static/scrview.js?v=20261111a"></script>
   <script src="/static/btcengine.js?v=20261111c"></script>
-  <script src="/static/soxl.js?v=20261111c"></script>
+  <script src="/static/soxl.js?v=20261111d"></script>
   <script src="/static/account.js?v=20261111a"></script>
   <script src="/static/trade.js?v=20261111a"></script>
   <script src="/static/office.js?v=20261111a"></script>

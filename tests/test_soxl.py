@@ -33,7 +33,7 @@ def test_soxl_route_caches_and_survives_errors(monkeypatch):
     routes._soxl_cache.clear()
     calls = []
 
-    def ok():
+    def ok(**kw):
         calls.append(1)
         return {"status": "ok", "outlook": {"price": 65.0}}
 
@@ -45,7 +45,7 @@ def test_soxl_route_caches_and_survives_errors(monkeypatch):
     client.get("/api/soxl")
     assert len(calls) == 1  # 5분 캐시
 
-    def boom():
+    def boom(**kw):
         raise OSError("down")
 
     monkeypatch.setattr(routes.soxl, "build", boom)
@@ -53,4 +53,16 @@ def test_soxl_route_caches_and_survives_errors(monkeypatch):
     assert client.get("/api/soxl").json()["outlook"]["price"] == 65.0  # 지난 값 유지
     routes._soxl_cache.clear()
     assert client.get("/api/soxl").json()["status"] == "error"
+    routes._soxl_cache.clear()
+
+
+def test_soxl_route_rejects_unknown_symbol_and_caches_per_symbol(monkeypatch):
+    routes._soxl_cache.clear()
+    seen = []
+    monkeypatch.setattr(routes.soxl, "build", lambda symbol: seen.append(symbol) or {"s": symbol})
+    client = TestClient(app)
+    assert client.get("/api/soxl?symbol=TSLAUSDT").status_code == 400
+    assert client.get("/api/soxl?symbol=NVDAUSDT").json() == {"s": "NVDAUSDT"}
+    assert client.get("/api/soxl").json() == {"s": "SOXLUSDT"}
+    assert seen == ["NVDAUSDT", "SOXLUSDT"]
     routes._soxl_cache.clear()

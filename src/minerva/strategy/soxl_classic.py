@@ -85,10 +85,18 @@ def _frame_scr(bars: Sequence[Bar]) -> dict | None:
     }
 
 
-def build(soxx: Sequence[Bar], soxl_close: float | None) -> dict:
-    """soxx: 마감된 SOXX 일봉. soxl_close: 같은 날 SOXL ETF 종가(환산 기준)."""
+def build(
+    soxx: Sequence[Bar],
+    soxl_close: float | None,
+    lev: int = 3,
+    base_name: str = "SOXX",
+    stock_name: str = "SOXL",
+) -> dict:
+    """soxx: 기준 종목(SOXX 등) 마감 일봉. soxl_close: 같은 날 대상 종목 종가(환산 기준).
+    lev: 대상이 기준의 몇 배로 움직이는지(SOXL 3, NVDA는 자기 자신이라 1).
+    돌려주는 가격 키: base = 기준 종목, tgt = 대상 종목 환산."""
     if len(soxx) < 260:
-        raise ValueError(f"SOXX 일봉이 {len(soxx)}개뿐이다")
+        raise ValueError(f"{base_name} 일봉이 {len(soxx)}개뿐이다")
     closes = [b.close for b in soxx]
     last = soxx[-1]
     ref = last.close
@@ -102,11 +110,11 @@ def build(soxx: Sequence[Bar], soxl_close: float | None) -> dict:
     def to_soxl(x: float | None) -> float | None:
         if x is None or not soxl_close:
             return None
-        return _r(soxl_close * (1 + 3 * (x / ref - 1)))
+        return _r(soxl_close * (1 + lev * (x / ref - 1)))
 
     def level(name: str, x: float | None) -> dict:
-        return {"name": name, "soxx": _r(x), "pct": _r((x / ref - 1) * 100) if x else None,
-                "soxl": to_soxl(x)}
+        return {"name": name, "base": _r(x), "pct": _r((x / ref - 1) * 100) if x else None,
+                "tgt": to_soxl(x)}
 
     lines = [level(f"{n}일선" + (" (볼밴 가운데)" if n == 20 else ""), ma[n]) for n in MAS]
     lines += [level("볼밴 상단", up[-1]), level("볼밴 하단", lo[-1])]
@@ -128,10 +136,12 @@ def build(soxx: Sequence[Bar], soxl_close: float | None) -> dict:
     short_ok = near20 and stoch_turn
 
     return {
-        "symbol": "SOXX",
+        "base": base_name,
+        "stock": stock_name,
+        "lev": lev,
         "day": last.day.isoformat(),
         "close": _r(ref),
-        "soxl_close": _r(soxl_close),
+        "tgt_close": _r(soxl_close),
         "ind": {
             "stoch": _r(k_now, 1), "stoch_d": _r(d[-1], 1),
             "cci": _r(s.cci, 1), "rsi": _r(s.rsi, 1),
@@ -159,6 +169,11 @@ def build(soxx: Sequence[Bar], soxl_close: float | None) -> dict:
         },
         "weekly": _frame_scr(resample(soxx, "W")),
         "monthly": _frame_scr(resample(soxx, "M")),
-        "note": "검증 안 된 판독 규칙이에요. SOXX 일봉(1배) 기준이고 SOXL 값은 하루 3배 어림이에요"
-        "(며칠 넘게 가면 3배 상품의 녹아내림 때문에 어긋나요).",
+        "note": "검증 안 된 판독 규칙이에요."
+        + (
+            f" {base_name} 일봉(1배) 기준이고 {stock_name} 값은 하루 {lev}배 어림이에요"
+            f"(며칠 넘게 가면 {lev}배 상품의 녹아내림 때문에 어긋나요)."
+            if lev != 1
+            else ""
+        ),
     }

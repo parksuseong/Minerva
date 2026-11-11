@@ -1827,3 +1827,53 @@ def test_retried_signal_uses_fresh_entry_ids(env, monkeypatch):
     pos = state()["position"]
     assert pos["side"] == "long" and pos["qty"] == pytest.approx(0.029)
     assert all(ex.limits[c]["status"] == "CANCELED" for c in first)
+
+
+def test_retried_signal_uses_fresh_stop_and_tp_ids(env, monkeypatch):
+    """앞 시도의 손절이 이미 체결된 뒤 같은 신호로 다시 들어가면, 옛 손절 ID를 찾아 '손절 실패'로
+    새 포지션을 바로 닫았다(레드팀 2026-11-11)."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    AI_ANSWER["text"] = '{"stop_pct": 3.0, "tp_pct": 2.0, "reason": "익절 있음"}'
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    first = state()["position"]
+    assert first["stop_id"] == f"mnv-{BAR // 60000}-s"
+    st = state()
+    st["last_bar"] = BAR - bt.BAR_MS  # last_bar를 적기 전에 실행이 죽은 것과 같다
+    bt._save(bt.DIR / "state.json", st)
+    ex.trigger_stop(first["stop_id"], 97_000.0)
+    ex.t += 6000
+    run(env, ex)  # 손절을 대사하고 같은 신호로 다시 들어간다(2번째 시도)
+    pos = state()["position"]
+    m = BAR // 60000
+    assert pos and pos["side"] == "long" and ex.amt > 0
+    assert pos["stop_id"] == f"mnv-{m}-s2-" and pos["tp_id"] == f"mnv-{m}-t2-"
+    assert ex.algos[pos["stop_id"]]["algoStatus"] == "NEW"
+    assert ex.algos[pos["tp_id"]]["algoStatus"] == "NEW"
+    assert "protect" not in [c["why"] for c in jsonl("closed.jsonl")]
+    # 다시 걸 때도 앞 시도의 s1·t1과 겹치지 않는다
+    ex.algos[pos["stop_id"]]["algoStatus"] = "CANCELED"
+    ex.algos[pos["tp_id"]]["algoStatus"] = "CANCELED"
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["stop_id"] == f"mnv-{m}-s2-1" and pos["tp_id"] == f"mnv-{m}-t2-1"
+
+
+def test_last_bar_saved_with_new_position(env, monkeypatch):
+    """포지션을 저장할 때 신호도 처리한 것으로 적는다(그 뒤에 죽어도 같은 신호로 다시 안 들어감)."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+
+    def crash(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bt, "place_stop", crash)
+    with_signal(monkeypatch, "long")
+    with pytest.raises(KeyboardInterrupt):
+        run(env, ex)
+    st = state()
+    assert st["position"]["side"] == "long" and st["last_bar"] == BAR

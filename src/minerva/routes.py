@@ -33,6 +33,7 @@ from pathlib import Path
 from fastapi import APIRouter, Header, HTTPException, Response
 
 from minerva import btc_view, perf
+from minerva.strategy import soxl
 
 router = APIRouter()
 
@@ -96,6 +97,8 @@ def btc_engine() -> dict:
 
 KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
 # SCR 실험실에서 고를 수 있는 봉(분 단위)
+# 봉을 내줄 수 있는 선물 종목(공개 시세). SOXL은 종목 분석 > SOXL 탭(보기만, 2026-11-11)
+KLINE_SYMBOLS = ("BTCUSDT", "SOXLUSDT")
 LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 LAB_MAX_DAYS = 365
 # 5분봉 1년은 10만 봉이 넘어 휴대폰 화면이 버거워 90일까지만 (사용자 요청 2026-11-08 1년 보기)
@@ -112,9 +115,9 @@ _kline_cache: OrderedDict = OrderedDict()
 _kline_lock = threading.Lock()
 
 
-def _get_klines(interval: str, start_ms: int, limit: int) -> list[list]:
+def _get_klines(interval: str, start_ms: int, limit: int, symbol: str = "BTCUSDT") -> list[list]:
     query = urllib.parse.urlencode(
-        {"symbol": "BTCUSDT", "interval": interval, "startTime": start_ms, "limit": limit}
+        {"symbol": symbol, "interval": interval, "startTime": start_ms, "limit": limit}
     )
     req = urllib.request.Request(f"{KLINE_URL}?{query}", headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=10) as r:
@@ -125,10 +128,10 @@ def _mono() -> float:
     return time.monotonic()
 
 
-def _chunk(interval: str, k: int, now_ms: int) -> list[tuple]:
+def _chunk(interval: str, k: int, now_ms: int, symbol: str = "BTCUSDT") -> list[tuple]:
     """k번째 덩어리(LAB_CHUNK봉)의 봉 (시작 ms, 시, 고, 저, 종). 거래량은 화면에서 안 쓴다."""
     span = LAB_CHUNK * LAB_INTERVALS[interval] * 60_000
-    key = (interval, k)
+    key = (interval, k) if symbol == "BTCUSDT" else (symbol, interval, k)
     with _kline_lock:
         hit = _kline_cache.get(key)
         if hit:
@@ -136,7 +139,11 @@ def _chunk(interval: str, k: int, now_ms: int) -> list[tuple]:
             if _mono() - at < (LAB_OLD_TTL if done else LAB_TTL):
                 _kline_cache.move_to_end(key)
                 return rows
-    page = _get_klines(interval, k * span, LAB_CHUNK)
+    page = (
+        _get_klines(interval, k * span, LAB_CHUNK)
+        if symbol == "BTCUSDT"
+        else _get_klines(interval, k * span, LAB_CHUNK, symbol)
+    )
     if not isinstance(page, list):
         raise ValueError(f"바이낸스 봉 응답이 목록이 아니다: {str(page)[:100]}")
     # 시세 공백이 있으면 1500봉이 덩어리 끝을 넘는다: 이웃 덩어리와 겹치지 않게 자른다
@@ -155,7 +162,7 @@ def _chunk(interval: str, k: int, now_ms: int) -> list[tuple]:
     return rows
 
 
-def lab_klines(interval: str, days: int, now_ms: int) -> dict:
+def lab_klines(interval: str, days: int, now_ms: int, symbol: str = "BTCUSDT") -> dict:
     """보여줄 기간 + 앞쪽 여유 봉. 진행 중인 마지막 봉은 뺀다."""
     step = LAB_INTERVALS[interval] * 60_000
     span = LAB_CHUNK * step
@@ -164,10 +171,12 @@ def lab_klines(interval: str, days: int, now_ms: int) -> dict:
     bars: list[tuple] = []
     for k in range(start // span, (now_ms - 1) // span + 1):
         bars.extend(
-            b for b in _chunk(interval, k, now_ms) if b[0] >= start and b[0] + step <= now_ms
+            b
+            for b in _chunk(interval, k, now_ms, symbol)
+            if b[0] >= start and b[0] + step <= now_ms
         )
     return {
-        "symbol": "BTCUSDT",
+        "symbol": symbol,
         "interval": interval,
         "days": days,
         "show_from": show_from,
@@ -181,14 +190,18 @@ def _now_ms() -> int:
 
 
 @router.get("/api/btc/klines")
-def btc_klines(interval: str = "15m", days: int = 7, accept_encoding: str = Header("")) -> Response:
-    """SCR 실험실용 BTCUSDT 선물 봉(공개 시세, GET만). 덩어리째 캐시한다."""
+def btc_klines(
+    interval: str = "15m", days: int = 7, symbol: str = "BTCUSDT", accept_encoding: str = Header("")
+) -> Response:
+    """SCR 실험실·SOXL 탭용 선물 봉(공개 시세, GET만). 덩어리째 캐시한다."""
+    if symbol not in KLINE_SYMBOLS:
+        raise HTTPException(status_code=400, detail="이 종목 봉은 내줄 수 없어요")
     if interval not in LAB_INTERVALS:
         raise HTTPException(status_code=400, detail="봉은 5m·15m·30m·1h·4h·1d 중 하나예요")
     want = max(1, int(days))
     days = min(want, LAB_MAX_DAYS, LAB_DAY_CAP.get(interval, LAB_MAX_DAYS))
     try:
-        data = lab_klines(interval, days, _now_ms())
+        data = lab_klines(interval, days, _now_ms(), symbol)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=502, detail="바이낸스 시세를 받지 못했어요") from exc
     data["capped"] = days < want
@@ -201,6 +214,29 @@ def btc_klines(interval: str = "15m", days: int = 7, accept_encoding: str = Head
             headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
         )
     return Response(body, media_type="application/json")
+
+
+SOXL_TTL = 300.0  # 큰 그림은 5분마다 새로 계산(야후·바이낸스 공개 시세)
+_soxl_cache: dict = {}
+_soxl_lock = threading.Lock()
+
+
+@router.get("/api/soxl")
+def soxl_analysis() -> dict:
+    """종목 분석 > SOXL: 큰 그림(4시간·일·주·월). 보기만, 주문 없음."""
+    with _soxl_lock:
+        hit = _soxl_cache.get("data")
+        if hit and _mono() - hit[0] < SOXL_TTL:
+            return hit[1]
+        try:
+            data = soxl.build()
+        except (OSError, ValueError, KeyError) as exc:
+            if hit:
+                return hit[1]
+            why = type(exc).__name__
+            return {"status": "error", "message": f"SOXL 시세를 받지 못했어요 ({why})"}
+        _soxl_cache["data"] = (_mono(), data)
+        return data
 
 
 @router.get("/api/signals")

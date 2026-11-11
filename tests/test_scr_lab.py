@@ -264,8 +264,8 @@ def fake_binance(monkeypatch):
     calls = Calls()
     routes._kline_cache.clear()
 
-    def fake(interval, start_ms, limit):
-        calls.append((interval, start_ms, limit))
+    def fake(interval, start_ms, limit, symbol="BTCUSDT"):
+        calls.append((interval, start_ms, limit) if symbol == "BTCUSDT" else (symbol, interval))
         step = routes.LAB_INTERVALS[interval] * 60_000
         now = fake.now
         first = start_ms - start_ms % step
@@ -376,3 +376,15 @@ def test_page_has_lab_tab_and_scripts():
     assert "수수료·손절 없음" in page
     assert 'data-days="365"' in page and 'data-days="180"' in page
     assert client.get("/static/scrlab.js").status_code == 200
+
+
+def test_klines_other_symbol_is_whitelisted_and_cached_apart(fake_binance):
+    client = TestClient(app)
+    assert client.get("/api/btc/klines?symbol=ETHUSDT").status_code == 400
+    d = client.get("/api/btc/klines?symbol=SOXLUSDT&interval=15m&days=3").json()
+    assert d["symbol"] == "SOXLUSDT" and d["bars"]
+    assert any(c[0] == "SOXLUSDT" for c in fake_binance)
+    assert any(k[0] == "SOXLUSDT" for k in routes._kline_cache)
+    # 비트코인 덩어리 키는 예전 모양 그대로
+    client.get("/api/btc/klines?interval=15m&days=3")
+    assert any(len(k) == 2 for k in routes._kline_cache)

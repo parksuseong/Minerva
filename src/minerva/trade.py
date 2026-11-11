@@ -246,7 +246,7 @@ def plan(
         o["held_before"] = held[code]["qty"]  # 체결 확인용: 이 수량에서 판 만큼 줄면 체결
         o["entry_avg"] = held[code].get("avg")
         o["opened"] = bot[code].get("opened")
-        if why in ("TRIM",):
+        if why == "TRIM":
             o["signal_date"] = f"{today}-trim"  # 같은 날 청산 신호와 key가 겹치지 않게
         orders.append(o)
 
@@ -372,7 +372,7 @@ def plan(
 def _held_days(pos: dict, today: str) -> int:
     try:
         return (datetime.fromisoformat(today) - datetime.fromisoformat(pos.get("opened", ""))).days
-    except ValueError:
+    except (TypeError, ValueError):  # 개시일이 없거나(None) 깨졌으면 교체 대상에서 뺀다
         return 0
 
 
@@ -482,7 +482,9 @@ def send_order(cfg: dict, o: dict, live: bool) -> dict:
     }
     tr_id = "TTTC0012U" if o["side"] == "buy" else "TTTC0011U"
     last = ""
-    for attempt in range(RETRIES + 1):
+    # 마지막 시도의 응답을 잃어도 실제로 들어갔을 수 있다. 끝에 한 번 더 내역을 확인한다
+    # (안 하면 접수된 매수를 "failed"로 적어 봇 목록·손절 감시에서 빠진다)
+    for attempt in range(RETRIES + 2):
         if attempt:
             time.sleep(RETRY_GAP)
             try:
@@ -491,6 +493,8 @@ def send_order(cfg: dict, o: dict, live: bool) -> dict:
             except (kis.KisError, OSError) as e:
                 last = f"내역 확인 실패: {e}"
                 continue
+        if attempt > RETRIES:
+            break
         try:
             data = _post(cfg, token, "/uapi/domestic-stock/v1/trading/order-cash", tr_id, body)
         except (kis.KisError, OSError, urllib.error.URLError) as e:
@@ -595,6 +599,9 @@ def run_open(now: datetime | None = None) -> list[dict]:
             key = order_key(o)
             if key in done:
                 continue
+            if halted():  # 재시도로 길어진 실행 중에 매매중지가 켜지면 남은 주문은 내지 않는다
+                skipped.append(f"{o['name']}: 매매 중지(HALT)로 주문 안 냄")
+                continue
             if o["side"] == "buy" and live:
                 # 증권사 기준 매수 가능 수량을 넘지 않게 줄인다
                 price = o.get("limit") or (o.get("ref_price") or 0) * GAP_BUFFER
@@ -618,6 +625,13 @@ def run_open(now: datetime | None = None) -> list[dict]:
             r = park_idle_cash(cfg, now, done)
             if r:
                 results.append(r)
+    except Exception:
+        # 이미 낸 주문이 오류 알림에 묻히지 않게 따로 알린다 (main은 오류 문구만 보낸다)
+        if results:
+            notify.send(
+                "⚠️ 주문 도중 오류로 멈췄어요. 이미 낸 주문:\n" + "\n".join(map(_line, results))
+            )
+        raise
     finally:
         _save(TRADE_DIR / "positions.json", owned)
     if not pre_open and not results:
@@ -714,7 +728,16 @@ def _read_journal() -> list[dict]:
     path = TRADE_DIR / "journal.jsonl"
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    out = []
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            # 쓰다 끊긴 한 줄 때문에 손절 감시·주문·점검이 전부 멈추면 안 된다
+            log.warning("journal line %d unreadable; skipped", n)
+    return out
 
 
 def stop_price(kind: str, code: str, avg: float) -> float:
@@ -1008,7 +1031,8 @@ def preflight_checks(now: datetime, daily: dict | None, cfg_loader=None) -> list
         kis.access_token(cfg, now)
         checks.append((True, "한투 토큰 정상"))
         open_day = is_open_day(cfg, now)
-        checks.append((open_day is not False, "오늘 개장일" if open_day else "오늘 휴장일"))
+        day_label = {True: "오늘 개장일", False: "오늘 휴장일"}.get(open_day, "개장일 확인 불가")
+        checks.append((open_day is not False, day_label))
         account = kis.snapshot(cfg, now)
         checks.append((True, f"계좌 조회 정상 · 평가액 {account.get('equity', 0):,.0f}원"))
         orders, skipped = _plan_ahead(daily or {}, account)

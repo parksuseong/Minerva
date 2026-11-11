@@ -204,10 +204,50 @@ def test_snapshot_hides_trades_before_seed(monkeypatch):
             "takerCommissionRate": "0.0005",
         },
     }
-    monkeypatch.setattr(binance, "_get", lambda cfg, path, **p: pages[path])
+
+    def fake_get(cfg, path, **p):
+        if path == "/fapi/v1/userTrades":
+            return [r for r in rows if r["symbol"] == p["symbol"]]
+        return pages[path]
+
+    monkeypatch.setattr(binance, "_get", fake_get)
     capital = {"since": "2026-11-07", "since_at": "2026-11-07 23:13"}
     data = binance.snapshot(CFG, NOW, capital)
     assert [t["time"] for t in data["trades"]] == ["2026-11-07 23:14:00"]
+
+
+def test_snapshot_merges_trades_of_engine_symbols(monkeypatch):
+    """엔진 네 종목 체결을 합쳐 시각 순으로. 한 종목 조회가 실패해도 나머지는 보여준다."""
+    base = {"side": "BUY", "qty": "1", "price": "10", "realizedPnl": "0", "commission": "0"}
+    t0 = binance._since_ms({"since": "2026-11-08"})
+    by_sym = {
+        "BTCUSDT": [{**base, "symbol": "BTCUSDT", "time": t0 + 1000}],
+        "ETHUSDT": [{**base, "symbol": "ETHUSDT", "time": t0 + 3000}],
+        "NVDAUSDT": [{**base, "symbol": "NVDAUSDT", "time": t0 + 2000}],
+    }
+    asked = []
+
+    def fake_get(cfg, path, **p):
+        if path == "/fapi/v1/userTrades":
+            asked.append(p["symbol"])
+            if p["symbol"] == "SOXLUSDT":
+                raise binance.BinanceError("HTTP 400: -4411")
+            return by_sym[p["symbol"]]
+        return {
+            "/fapi/v2/account": ACCOUNT,
+            "/fapi/v2/positionRisk": RISK,
+            "/fapi/v1/openOrders": [],
+            "/fapi/v1/income": [],
+            "/fapi/v1/commissionRate": {
+                "makerCommissionRate": "0.0002",
+                "takerCommissionRate": "0.0005",
+            },
+        }[path]
+
+    monkeypatch.setattr(binance, "_get", fake_get)
+    data = binance.snapshot(CFG, NOW, {"since": "2026-11-08"})
+    assert sorted(asked) == sorted(binance.TRADE_SYMBOLS)
+    assert [t["symbol"] for t in data["trades"]] == ["ETHUSDT", "NVDAUSDT", "BTCUSDT"]
 
 
 def test_net_equity_subtracts_estimated_close_fee():

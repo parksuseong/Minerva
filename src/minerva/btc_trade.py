@@ -1,4 +1,12 @@
-"""BTCUSDT 선물 자동매매 엔진 (바이낸스 USDⓈ-M, 사용자 결정 2026-11-08 22:16 KST "설정 ①").
+"""USDⓈ-M 선물 자동매매 엔진 (바이낸스, 사용자 결정 2026-11-08 22:16 KST "설정 ①").
+
+종목(사용자 2026-11-11): BTCUSDT·ETHUSDT·SOXLUSDT·NVDAUSDT 네 종목에 같은 신호·규칙,
+포지션은 한 번에 하나(계좌 전체). 들고 있는 종목의 반대 신호만 나면 지금처럼 갈아탄다.
+빈손에 신호가 둘 이상이거나, 들고 있는데 다른 종목 신호가 나면 Claude가 고른다
+(`btc_ai.choose`). 답이 없으면 빈손은 백테스트 승률 순(BTC > NVDA > ETH > SOXL,
+`SYMBOL_WINRATE`), 보유 중이면 유지
+(자기 반대 신호가 있으면 갈아타기).
+SOXL·NVDA는 TradFi 무기한이라 약관에 동의하지 않은 계좌는 -4411로 거부된다: 알리고 24시간 쉰다.
 
 신호: SCR 실험실(`strategy/scr_lab.py`)과 같은 계산, 15분봉, 마감된 봉만.
 Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70), W=3, 3개 중 3개, 넘어옴(cross) 모드.
@@ -6,7 +14,7 @@ Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70), W=3, 3개 중 3개, 넘어옴(cros
 같은 봉에 롱·숏 신호가 둘 다 나오면 아무것도 하지 않는다(화면 `switchSim`과 같음).
 손절: 진입 체결가에서 3% 떨어진 거래소 STOP_MARKET(closePosition, 마크 가격 기준).
 손절 뒤에는 다음 신호까지 쉰다. 레버리지 3배, 교차 마진(바꾸지 않는다).
-크기: 가용 잔고 × margin_frac × (1 − FEE_BUFFER) × 3 / 가격, 0.001 BTC 내림.
+크기: 가용 잔고 × margin_frac × (1 − FEE_BUFFER) × 3 / 가격, 종목 수량 단위로 내림.
 추격 한도: 실행 시 가격이 신호 봉 종가에서 진입 방향으로 1%(15분·4시간·일봉 방향이 모두 같으면 3%)
 이상 벌어졌으면 들어가지 않는다 (`strategy/btc.entry_gate`).
 
@@ -36,6 +44,7 @@ Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70), W=3, 3개 중 3개, 넘어옴(cros
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import hmac
 import json
@@ -47,6 +56,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
@@ -60,7 +70,19 @@ log = logging.getLogger(__name__)
 
 BASE = binance.BASE
 SPOT_BASE = "https://api.binance.com"
+# 옛 상태 파일(포지션에 symbol이 없음)의 종목이자 심볼을 모르는 클라이언트의 기본값
 SYMBOL = "BTCUSDT"
+SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
+# 종목별 백테스트 승률(%): SCR ① 15분·3배·손절 3%, 최근 1년(상장이 늦으면 상장 이후),
+# 2026-11-11 측정. AI 답이 없을 때 빈손 동시 신호는 승률 높은 순(사용자 2026-11-11
+# "4종목 중 승률 높은 걸 우선순위로"). 선택 AI 자료에도 넣는다
+SYMBOL_WINRATE = {"BTCUSDT": 54, "NVDAUSDT": 49, "ETHUSDT": 44, "SOXLUSDT": 17}
+PRIORITY = tuple(sorted(SYMBOLS, key=lambda s: -SYMBOL_WINRATE.get(s, 0)))
+# 주문 ID 종목 표시. BTC는 비워 예전 ID(실전 상태 파일의 손절 ID)와 같게 둔다
+CID_TAG = {"BTCUSDT": "", "ETHUSDT": "E", "SOXLUSDT": "S", "NVDAUSDT": "N"}
+# TradFi-Perps 약관 미동의(SOXL·NVDA). 서명 API는 부르지 않는다: 알리고 이 시간만큼 쉰다
+TRADFI_CODE = -4411
+UNAVAILABLE_MS = 24 * 3_600_000
 INTERVAL = "15m"
 BAR_MS = 15 * 60_000
 LEVERAGE = 3
@@ -144,6 +166,25 @@ _sleep = time.sleep
 _clock = time.monotonic
 
 
+def _name(sym: str) -> str:
+    """화면·알림용 짧은 이름(ETHUSDT → ETH)."""
+    return sym[:-4] if sym.endswith("USDT") else sym
+
+
+def _who(sym: str, side: str) -> str:
+    return f"{_name(sym)} {SIDE_KO[side]}"
+
+
+def _px(x: float) -> str:
+    """가격 표시. BTC·ETH는 소수 1자리(예전 그대로), SOXL·NVDA처럼 싼 종목은 2자리."""
+    return f"{x:,.1f}" if abs(x) >= 1000 else f"{x:,.2f}"
+
+
+def pos_symbol(pos: dict | None) -> str:
+    """포지션·pending의 종목. 옛 상태에는 symbol이 없다 → BTCUSDT."""
+    return (pos or {}).get("symbol") or SYMBOL
+
+
 TERMINAL = ("CANCELED", "FILLED", "EXPIRED", "REJECTED")
 
 # ---------------------------------------------------------------- 파일·상태
@@ -206,6 +247,10 @@ def margin_frac() -> float:
     """가용 잔고 중 증거금으로 쓸 비율. `config.json`의 margin_frac, 기본 1.0, 0~1로 자른다."""
     v = float(_load(DIR / "config.json", {}).get("margin_frac", 1.0))
     return min(max(v, 0.0), 1.0)
+
+
+def _ms_now() -> int:
+    return int(time.time() * 1000)
 
 
 def _now_iso(now: datetime) -> str:
@@ -273,6 +318,25 @@ class Client:
             raise NetworkError(type(e).__name__ + ": " + str(getattr(e, "reason", e))) from None
 
 
+class SymClient:
+    """한 종목에 묶인 클라이언트. 요청은 원래 클라이언트로 보내고 종목만 들고 다닌다
+    (모듈 전역 종목을 바꾸지 않아 종목끼리 섞이지 않는다)."""
+
+    def __init__(self, base, symbol: str):
+        self.base = getattr(base, "base", base)
+        self.symbol = symbol
+
+    def request(self, *a, **kw):
+        return self.base.request(*a, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
+
+
+def _sym(client) -> str:
+    return getattr(client, "symbol", None) or SYMBOL
+
+
 def _get(client, path: str, signed: bool = True, **params):
     """GET은 결과가 바뀌지 않으니 통신 오류면 그냥 다시 묻는다."""
     last: Exception | None = None
@@ -290,7 +354,7 @@ def _query(client, path: str, id_key: str, cid: str) -> dict | None:
     try:
         params = {id_key: cid}
         if path == "/fapi/v1/order":
-            params["symbol"] = SYMBOL
+            params["symbol"] = _sym(client)
         return client.request("GET", path, params)
     except Rejected as e:
         if e.code in NOT_FOUND:
@@ -332,14 +396,43 @@ def _send(
     raise NetworkError(f"{cid} 응답 없음 ({RETRIES + 1}회): {last}")
 
 
+# 종목별 거래 규칙 캐시 {종목: (받은 시각, 규칙)}. exchangeInfo 한 번에 네 종목을 다 담는다
+_FILTERS: dict[str, tuple[float, dict]] = {}
+FILTER_TTL_S = 600
+
+
 def filters(client) -> dict:
+    """클라이언트 종목의 호가·수량 단위·최소 주문 금액. 종목마다 다르다(ETH 0.001·0.01·20,
+    SOXL·NVDA 0.01·0.01·5)."""
+    want = _sym(client)
+    hit = _FILTERS.get(want)
+    if hit and time.time() - hit[0] < FILTER_TTL_S:
+        return dict(hit[1])
     info = _get(client, "/fapi/v1/exchangeInfo", signed=False)
-    sym = next(s for s in info["symbols"] if s["symbol"] == SYMBOL)
+    t = time.time()
+    for s in info["symbols"]:
+        if s.get("symbol") in SYMBOLS or s.get("symbol") == want:
+            _FILTERS[s["symbol"]] = (t, _parse_filters(s))
+    if want not in _FILTERS:
+        return {
+            "tick": "0.01",
+            "step": "0.001",
+            "min_qty": 0.0,
+            "max_qty": 0.0,
+            "min_notional": 0.0,
+            "status": "없음",
+        }
+    return dict(_FILTERS[want][1])
+
+
+def _parse_filters(sym: dict) -> dict:
     f = {x["filterType"]: x for x in sym["filters"]}
     lot = f.get("MARKET_LOT_SIZE") or f["LOT_SIZE"]
+    # SOXL·NVDA는 호가 단위가 "0.01000"으로 온다. 그대로 쓰면 가격이 "61.22000"처럼 나가
+    # 종목 정밀도를 넘을 수 있어 뒤 0을 뗀다("0.10" → "0.1", 지수 표기 없이)
     return {
-        "tick": f["PRICE_FILTER"]["tickSize"],
-        "step": lot["stepSize"],
+        "tick": format(Decimal(f["PRICE_FILTER"]["tickSize"]).normalize(), "f"),
+        "step": format(Decimal(lot["stepSize"]).normalize(), "f"),
         "min_qty": float(lot["minQty"]),
         "max_qty": float(lot["maxQty"]),
         "min_notional": float(f.get("MIN_NOTIONAL", {}).get("notional", 0)),
@@ -379,22 +472,32 @@ def tp_price(side: str, entry: float, tick: str, pct: float) -> Decimal:
 
 
 def position_amt(client) -> float:
-    rows = _get(client, "/fapi/v2/positionRisk", symbol=SYMBOL)
-    return sum(float(r["positionAmt"]) for r in rows if r["symbol"] == SYMBOL)
+    sym = _sym(client)
+    rows = _get(client, "/fapi/v2/positionRisk", symbol=sym)
+    return sum(float(r["positionAmt"]) for r in rows if r["symbol"] == sym)
+
+
+def all_position_amts(client) -> dict[str, float]:
+    """네 종목 포지션 수량(한 번의 조회)."""
+    out = {s: 0.0 for s in SYMBOLS}
+    for r in _get(client, "/fapi/v2/positionRisk"):
+        if r.get("symbol") in out:
+            out[r["symbol"]] += float(r["positionAmt"])
+    return out
 
 
 def open_algos(client) -> list[dict]:
-    rows = _get(client, "/fapi/v1/openAlgoOrders", symbol=SYMBOL)
+    rows = _get(client, "/fapi/v1/openAlgoOrders", symbol=_sym(client))
     if isinstance(rows, dict):  # 응답 모양이 바뀌어도 목록만 꺼낸다
         rows = rows.get("orders") or rows.get("rows") or []
     return [r for r in rows if isinstance(r, dict)]
 
 
 def foreign_orders(client) -> list[str]:
-    """엔진이 내지 않은 BTCUSDT 미체결(일반·조건부). 단방향 모드라 체결되면 엔진 포지션에 섞인다."""
+    """엔진이 내지 않은 그 종목 미체결(일반·조건부). 단방향 모드라 체결되면 엔진 포지션에 섞인다."""
     out = [
         o.get("clientOrderId", "")
-        for o in _get(client, "/fapi/v1/openOrders", symbol=SYMBOL)
+        for o in _get(client, "/fapi/v1/openOrders", symbol=_sym(client))
         if not str(o.get("clientOrderId", "")).startswith(PREFIX)
     ]
     out += [
@@ -437,7 +540,7 @@ def _delete(client, path: str, params: dict):
 def market(client, side: str, qty: Decimal, cid: str, reduce: bool) -> dict:
     """시장가. side는 BUY/SELL. 체결 결과(평균가·수량)를 돌려준다."""
     params = {
-        "symbol": SYMBOL,
+        "symbol": _sym(client),
         "side": side,
         "type": "MARKET",
         "quantity": str(qty),
@@ -465,7 +568,7 @@ def place_stop(client, side: str, trigger: Decimal, cid: str, kind: str = "STOP_
     kind = STOP_MARKET(손절) 또는 TAKE_PROFIT_MARKET(익절)."""
     params = {
         "algoType": "CONDITIONAL",
-        "symbol": SYMBOL,
+        "symbol": _sym(client),
         "side": "SELL" if side == "long" else "BUY",
         "type": kind,
         "triggerPrice": str(trigger),
@@ -529,7 +632,12 @@ def _close_result(client, pos: dict, close_side: str) -> tuple[float | None, flo
         while t0 < end:
             t1 = min(t0 + 7 * 86_400_000 - 1, end)
             trades += _get(
-                client, "/fapi/v1/userTrades", symbol=SYMBOL, startTime=t0, endTime=t1, limit=1000
+                client,
+                "/fapi/v1/userTrades",
+                symbol=_sym(client),
+                startTime=t0,
+                endTime=t1,
+                limit=1000,
             )
             t0 = t1 + 1
         trades = [t for t in trades if int(t["time"]) > after]
@@ -551,27 +659,45 @@ def _close_result(client, pos: dict, close_side: str) -> tuple[float | None, flo
 # ---------------------------------------------------------------- 시세·신호
 
 
-class Market:
-    """공개 시세(GET, 키 없음). 봉은 한 번 실행 안에서 캐시한다."""
+def _public(url: str, timeout: float = 15):
+    req = urllib.request.Request(url, headers={"User-Agent": "minerva"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
 
-    def __init__(self):
+
+class Market:
+    """한 종목의 공개 시세(GET, 키 없음). 봉은 한 번 실행 안에서 캐시한다.
+    `for_symbol`로 다른 종목 시세를 얻는다(같은 실행 안에서 종목마다 하나)."""
+
+    def __init__(self, symbol: str = SYMBOL, pool: dict | None = None):
+        self.symbol = symbol
         self._cache: dict[str, list[list]] = {}
+        self._pool = pool if pool is not None else {}
+        self._pool.setdefault(symbol, self)
+
+    def for_symbol(self, symbol: str) -> Market:
+        if symbol not in self._pool:
+            Market(symbol, self._pool)
+        return self._pool[symbol]
 
     def klines(self, interval: str) -> list[list]:
         if interval not in self._cache:
-            self._cache[interval] = btc.fetch(interval)
+            self._cache[interval] = _public(
+                btc.URL.format(sym=self.symbol, iv=interval, n=btc.LIMIT)
+            )
         return self._cache[interval]
 
     def price(self) -> float:
         try:
-            return btc.fetch_price()
+            return float(_public(btc.PRICE_URL.format(sym=self.symbol))["price"])
         except (OSError, ValueError, KeyError) as e:
-            raise NetworkError(f"시세 조회 실패: {type(e).__name__}") from None
+            raise NetworkError(f"{self.symbol} 시세 조회 실패: {type(e).__name__}") from None
 
     def book(self) -> tuple[float, float]:
         """최우선 매수·매도 호가(공개, 캐시 안 함)."""
         req = urllib.request.Request(
-            f"{BASE}/fapi/v1/ticker/bookTicker?symbol={SYMBOL}", headers={"User-Agent": "minerva"}
+            f"{BASE}/fapi/v1/ticker/bookTicker?symbol={self.symbol}",
+            headers={"User-Agent": "minerva"},
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
@@ -582,7 +708,7 @@ class Market:
 
     def minutes(self, n: int = 20) -> list[list]:
         """최근 1분봉(공개, 캐시 안 함). 마지막은 진행 중인 봉."""
-        url = f"{BASE}/fapi/v1/klines?symbol={SYMBOL}&interval=1m&limit={n}"
+        url = f"{BASE}/fapi/v1/klines?symbol={self.symbol}&interval=1m&limit={n}"
         req = urllib.request.Request(url, headers={"User-Agent": "minerva"})
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
@@ -592,7 +718,7 @@ class Market:
 
     def funding(self) -> float | None:
         req = urllib.request.Request(
-            f"{BASE}/fapi/v1/premiumIndex?symbol={SYMBOL}", headers={"User-Agent": "minerva"}
+            f"{BASE}/fapi/v1/premiumIndex?symbol={self.symbol}", headers={"User-Agent": "minerva"}
         )
         with urllib.request.urlopen(req, timeout=15) as r:
             return float(json.load(r)["lastFundingRate"])
@@ -736,8 +862,19 @@ def check_halts(mode_: str, state: dict, equity: float | None, now: datetime, se
 # ---------------------------------------------------------------- 실행 단위
 
 
+def market_for(market, symbol: str):
+    """그 종목 시세. `for_symbol`이 없는 시세(옛 시험용 가짜)는 BTC만 낸다(없으면 None)."""
+    f = getattr(market, "for_symbol", None)
+    if f is not None:
+        return f(symbol)
+    return market if symbol == SYMBOL else None
+
+
 class Ctx:
+    """한 번 실행의 문맥. `at(종목)`은 같은 실행에서 그 종목에 묶인 문맥(클라이언트·시세·봉)."""
+
     def __init__(self, client, market: Market, send, now: datetime, live: bool):
+        self.symbol = SYMBOL
         self.client = client
         self.market = market
         self.send = send
@@ -745,10 +882,29 @@ class Ctx:
         self.live = live
         self.tag = "" if live else "[드라이런] "
         self.notes: list[str] = []
-        self.ai_streak: int | None = None
+        # 종목 문맥끼리 나눠 쓰는 값(AI 연속 기본값 수, 종목별 15분봉)
+        self.shared: dict = {"ai_streak": None, "rows": {}}
         self.rows15: list[list] = []
         self.deadline = _clock() + RUN_DEADLINE_S
         self.now_ms = int(now.timestamp() * 1000)
+
+    @property
+    def ai_streak(self) -> int | None:
+        return self.shared["ai_streak"]
+
+    @ai_streak.setter
+    def ai_streak(self, v: int | None) -> None:
+        self.shared["ai_streak"] = v
+
+    def at(self, symbol: str) -> Ctx:
+        if symbol == self.symbol:
+            return self
+        c = copy.copy(self)
+        c.symbol = symbol
+        c.client = SymClient(self.client, symbol)
+        c.market = market_for(self.market, symbol)
+        c.rows15 = self.shared["rows"].get(symbol, [])
+        return c
 
     def say(self, text: str) -> None:
         self.notes.append(text)
@@ -760,15 +916,17 @@ class Ctx:
         )
 
 
-def _cid(bar: int, tag: str) -> str:
-    return f"{PREFIX}{bar // 60000}-{tag}"
+def _cid(bar: int, tag: str, symbol: str = SYMBOL) -> str:
+    """주문 ID. BTC는 예전 그대로 mnv-<분>-<tag>, 다른 종목은 mnv-<E|S|N><분>-<tag>
+    (갈아타기 때 같은 봉에서 두 종목 주문이 나와도 겹치지 않게)."""
+    return f"{PREFIX}{CID_TAG.get(symbol, '')}{bar // 60000}-{tag}"
 
 
 def _pos_cid(pos: dict, tag: str, n: int) -> str:
     """다시 거는 손절(s)·익절(t)·비상 청산(x) ID. 첫 시도는 예전 그대로 <tag><n>,
     같은 신호 재시도(try ≥ 2)는 <tag><try>-<n>(앞 시도의 <tag><n>·기준 <tag><try>-와 다르다)."""
     t = pos.get("try", 1)
-    return _cid(pos["bar"], f"{tag}{n}" if t == 1 else f"{tag}{t}-{n}")
+    return _cid(pos["bar"], f"{tag}{n}" if t == 1 else f"{tag}{t}-{n}", pos_symbol(pos))
 
 
 def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None, why: str) -> None:
@@ -779,6 +937,7 @@ def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None,
         {
             "at": _now_iso(ctx.now),
             "mode": pos.get("mode", "live" if ctx.live else "dry"),
+            "symbol": pos_symbol(pos),
             "side": pos["side"],
             "qty": pos["qty"],
             "entry": pos["entry"],
@@ -796,10 +955,11 @@ def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None,
         "manual": "수동·강제 청산",
         "protect": "손절 실패로 청산",
     }.get(why, why)
-    px = f"{exit_px:,.1f}" if exit_px else "?"
+    sym = pos_symbol(pos)
+    px = _px(exit_px) if exit_px else "?"
     money = f", 손익 {pnl:+.2f} USDT" if pnl is not None else ""
     pc = f" ({pct:+.2f}% × {LEVERAGE}배)" if pct is not None else ""
-    ctx.say(f"{SIDE_KO[pos['side']]} {label}: {pos['qty']} BTC @ {px}{pc}{money}")
+    ctx.say(f"{_who(sym, pos['side'])} {label}: {pos['qty']} {_name(sym)} @ {px}{pc}{money}")
 
 
 def _triggered(st: dict | None) -> bool:
@@ -830,6 +990,7 @@ def reconcile_dry(ctx: Ctx, state: dict, rows15: list[list], now_ms: int) -> Non
             "dry.jsonl",
             {
                 "at": _now_iso(ctx.now),
+                "symbol": pos_symbol(pos),
                 "action": f"{why}_fill",
                 "price": px,
                 "bar": _bar_txt(int(r[0])),
@@ -864,14 +1025,17 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
             ctx.say(f"❌ 손절 재설정 실패({why}) → 시장가로 닫아요")
             protect_close(ctx, state, "protect")
             return state.get("position") is None
-        ctx.say(f"🛡 손절 주문이 없어 다시 걸었어요: {pos['stop']:,.1f} ({WORKING_TYPE})")
+        ctx.say(
+            f"🛡 {_name(ctx.symbol)} 손절 주문이 없어 다시 걸었어요: {_px(pos['stop'])} "
+            f"({WORKING_TYPE})"
+        )
     if with_tp and pos.get("tp") and pos.get("tp_id") not in open_ids:
         n = pos.get("tp_n", 0) + 1
         cid = _pos_cid(pos, "t", n)
         try:
             place_stop(ctx.client, pos["side"], Decimal(str(pos["tp"])), cid, TP_KIND)
             pos.update(tp_id=cid, tp_n=n)
-            ctx.say(f"🎯 익절 주문이 없어 다시 걸었어요: {pos['tp']:,.1f}")
+            ctx.say(f"🎯 {_name(ctx.symbol)} 익절 주문이 없어 다시 걸었어요: {_px(pos['tp'])}")
         except (Rejected, NetworkError) as e:
             ctx.say(f"⚠️ 익절 재설정 실패({e}) → 익절 없이 손절·반대 신호로만 관리해요")
             pos.update(tp=None, tp_id=None)
@@ -892,6 +1056,7 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
     try:
         amt = position_amt(ctx.client)
         if amt:
+            # 거래소 수량은 이미 그 종목 단위(BTC·ETH 0.001, SOXL·NVDA 0.01)라 0.001 내림은 그대로다
             market(ctx.client, close_side, _round(abs(amt), "0.001"), cid, reduce=True)
         if position_amt(ctx.client) != 0:
             raise RuntimeError("청산 뒤에도 포지션이 남음")
@@ -954,8 +1119,8 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             pos = _adopt(state, pending, o)
             ctx.event(event="adopt_pending", cid=pending["open"], amt=row["amt"])
             ctx.say(
-                f"🔁 끝나지 못한 {SIDE_KO[pos['side']]} 진입 {abs(row['amt'])} BTC를 "
-                "이어서 관리해요"
+                f"🔁 끝나지 못한 {_who(ctx.symbol, pos['side'])} 진입 {abs(row['amt'])} "
+                f"{_name(ctx.symbol)}를 이어서 관리해요"
             )
     amt = position_amt(c)
     if not pos:
@@ -964,11 +1129,11 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             key = f"{amt}"
             if state.get("foreign_key") != key:
                 ctx.say(
-                    f"⚠️ 엔진이 열지 않은 BTCUSDT 포지션 {amt:+} BTC가 있어요. 건드리지 않고 "
-                    "신규 진입을 멈춰요."
+                    f"⚠️ 엔진이 열지 않은 {ctx.symbol} 포지션 {amt:+} {_name(ctx.symbol)}가 있어요. "
+                    "건드리지 않고 신규 진입을 멈춰요."
                 )
                 state["foreign_key"] = key
-            set_no_entry(f"엔진 밖 포지션 {amt:+} BTC", ctx.send)
+            set_no_entry(f"엔진 밖 {ctx.symbol} 포지션 {amt:+}", ctx.send)
             return False
         state.pop("foreign_key", None)
         cancel_engine_stops(c)  # 포지션이 없는데 남은 엔진 손절은 나중 수동 포지션을 닫을 수 있다
@@ -1034,6 +1199,7 @@ def _adopt(state: dict, pending: dict, order: dict) -> dict:
     stop_pct = pending.get("stop_pct", STOP_PCT * 100)
     tp_pct = pending.get("tp_pct")
     pos = {
+        "symbol": pos_symbol(pending),
         "side": side,
         "qty": float(order["executedQty"]),
         "entry": entry,
@@ -1054,27 +1220,115 @@ def _adopt(state: dict, pending: dict, order: dict) -> dict:
     if state.get("closed_through_ms"):
         pos["after_ms"] = state.pop("closed_through_ms")
     state["position"] = pos
+    state["last_symbol"] = pos["symbol"]
     return pos
 
 
-def ensure_leverage(ctx: Ctx) -> bool:
-    cfg = _get(ctx.client, "/fapi/v1/symbolConfig", symbol=SYMBOL)
-    cur = int(next(x for x in cfg if x["symbol"] == SYMBOL)["leverage"])
-    if cur == LEVERAGE:
-        return True
-    if not ctx.live:
-        ctx.event(event="leverage_dry", current=cur, want=LEVERAGE)
-        return True
+MARGIN_NO_CHANGE = -4046  # "No need to change margin type": 이미 교차
+
+
+def leverage_problem(ctx: Ctx, state: dict | None = None) -> str:
+    """그 종목을 교차·3배로 맞춘다(종목마다 따로다: ETH·SOXL·NVDA는 계좌에서 20배였다).
+    문제가 없으면 빈 문자열, 진입하면 안 되면 이유. 조회·변경 실패는 예외로 올리지 않는다.
+    약관 미동의(-4411)면 그 종목을 쉬게 하고(알림은 mark_unavailable이 한 번) 이유를 돌려준다."""
+    sym = ctx.symbol
     try:
-        r = ctx.client.request(
-            "POST", "/fapi/v1/leverage", {"symbol": SYMBOL, "leverage": LEVERAGE}
-        )
+        cfg = _get(ctx.client, "/fapi/v1/symbolConfig", symbol=sym)
     except (Rejected, NetworkError) as e:
-        ctx.say(f"❌ 레버리지 {cur}→{LEVERAGE}배 변경 실패: {e} → 진입하지 않아요")
-        return False
-    _append("orders.jsonl", {"at": _now_iso(ctx.now), "leverage": {"from": cur, "to": r}})
-    ctx.say(f"⚙️ 레버리지 {cur}배 → {LEVERAGE}배로 바꿨어요")
-    return int(r.get("leverage", 0)) == LEVERAGE
+        return f"레버리지 설정 조회 실패({e})"
+    row = next((x for x in cfg if x.get("symbol") == sym), None)
+    if row is None:
+        return "레버리지 설정이 안 보임"
+    cur = int(row["leverage"])
+    margin = str(row.get("marginType") or "CROSSED").upper()
+
+    def tradfi(e: Exception) -> str:
+        if isinstance(e, Rejected) and e.code == TRADFI_CODE and state is not None:
+            mark_unavailable(ctx, state, e)
+            return "TradFi 약관 미동의"
+        return ""
+
+    if margin not in ("CROSSED", "CROSS"):
+        # 교차가 아니면(격리) 포지션·미체결이 하나도 없을 때만 바꾼다. 있으면 건드리지 않는다
+        if not ctx.live:
+            ctx.event(event="margin_dry", symbol=sym, current=margin)
+        else:
+            try:
+                busy = position_amt(ctx.client) != 0 or bool(
+                    _get(ctx.client, "/fapi/v1/openOrders", symbol=sym) or open_algos(ctx.client)
+                )
+            except (Rejected, NetworkError) as e:
+                return f"마진 방식 확인 실패({e})"
+            if busy:
+                return f"마진 방식이 {margin}인데 포지션·미체결이 있어 교차로 못 바꿈"
+            try:
+                ctx.client.request(
+                    "POST", "/fapi/v1/marginType", {"symbol": sym, "marginType": "CROSSED"}
+                )
+            except (Rejected, NetworkError) as e:
+                if not (isinstance(e, Rejected) and e.code == MARGIN_NO_CHANGE):
+                    return tradfi(e) or f"마진 방식 {margin}→교차 변경 실패({e})"
+            _append(
+                "orders.jsonl",
+                {"at": _now_iso(ctx.now), "margin_type": {"symbol": sym, "from": margin}},
+            )
+            ctx.say(f"⚙️ {_name(sym)} 마진 방식 {margin} → 교차로 바꿨어요")
+    if cur == LEVERAGE:
+        return ""
+    if not ctx.live:
+        ctx.event(event="leverage_dry", symbol=sym, current=cur, want=LEVERAGE)
+        return ""
+    try:
+        r = ctx.client.request("POST", "/fapi/v1/leverage", {"symbol": sym, "leverage": LEVERAGE})
+    except (Rejected, NetworkError) as e:
+        return tradfi(e) or f"레버리지 {cur}→{LEVERAGE}배 변경 실패({e})"
+    _append(
+        "orders.jsonl",
+        {"at": _now_iso(ctx.now), "leverage": {"symbol": sym, "from": cur, "to": r}},
+    )
+    got = int((r or {}).get("leverage", 0) or 0)
+    if got != LEVERAGE:
+        return f"레버리지 변경 응답이 {got}배(원한 값 {LEVERAGE}배)"
+    ctx.say(f"⚙️ {_name(sym)} 레버리지 {cur}배 → {LEVERAGE}배로 바꿨어요")
+    return ""
+
+
+def ensure_leverage(ctx: Ctx, state: dict | None = None) -> bool:
+    """leverage_problem을 알림과 함께. 진입해도 되면 True."""
+    why = leverage_problem(ctx, state)
+    if why and why != "TradFi 약관 미동의":
+        ctx.say(f"❌ {_name(ctx.symbol)} {why} → 진입하지 않아요")
+    return not why
+
+
+def unavailable(state: dict, symbol: str, now_ms: int) -> bool:
+    """약관 미동의(-4411)로 쉬는 중인 종목인가."""
+    rec = (state.get("unavailable") or {}).get(symbol)
+    return bool(rec) and now_ms < int(rec.get("until_ms") or 0)
+
+
+def mark_unavailable(ctx: Ctx, state: dict, err: Rejected) -> None:
+    """TradFi 약관 미동의로 거부된 종목을 24시간 쉬게 한다. 알림은 종목마다 한 번만
+    (24시간 뒤 다시 시도해 또 거부돼도 다시 알리지 않는다. 진입에 성공하면 기록을 지운다)."""
+    sym = ctx.symbol
+    book = state.setdefault("unavailable", {})
+    old = book.get(sym) or {}
+    until = ctx.now_ms + UNAVAILABLE_MS
+    book[sym] = {
+        "at": _now_iso(ctx.now),
+        "until_ms": until,
+        "code": err.code,
+        "msg": err.msg[:120],
+        "notified": True,
+    }
+    _save(DIR / "state.json", state)
+    ctx.event(event="symbol_unavailable", symbol=sym, code=err.code, msg=err.msg[:200])
+    if not old.get("notified"):
+        ctx.say(
+            f"🚫 {_name(sym)} 주문이 거부됐어요: TradFi-Perps 약관에 동의하지 않은 계좌예요"
+            f"({err.code}). {_name(sym)}는 24시간 쉬고 다시 시도해요. "
+            "다른 종목은 그대로 매매해요. 쓰려면 바이낸스 앱에서 약관에 동의해 주세요."
+        )
 
 
 def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
@@ -1090,11 +1344,12 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
             {
                 "at": _now_iso(ctx.now),
                 "action": "close",
+                "symbol": ctx.symbol,
                 "side": pos["side"],
                 "qty": pos["qty"],
                 "price": px,
                 "type": "MARKET reduceOnly",
-                "cid": _cid(bar, "c"),
+                "cid": _cid(bar, "c", ctx.symbol),
                 "cancel": [x for x in (pos.get("stop_id"), pos.get("tp_id")) if x],
             },
         )
@@ -1102,8 +1357,8 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
         _record_close(ctx, pos, px, pnl, "signal")
         return True
     c = ctx.client
-    cid = _cid(bar, "c")
-    state["pending"] = {"close": cid}
+    cid = _cid(bar, "c", ctx.symbol)
+    state["pending"] = {"close": cid, "symbol": ctx.symbol}
     _save(DIR / "state.json", state)
     try:
         cancel_engine_stops(c)
@@ -1113,7 +1368,10 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
         if position_amt(c) != 0:
             raise RuntimeError("청산 주문 뒤에도 포지션이 남음")
     except (Rejected, NetworkError, RuntimeError) as e:
-        ctx.say(f"❌ {SIDE_KO[pos['side']]} 청산 실패: {e} → 손절을 다시 확인하고 진입하지 않아요")
+        ctx.say(
+            f"❌ {_who(ctx.symbol, pos['side'])} 청산 실패: {e} → 손절을 다시 확인하고 "
+            "진입하지 않아요"
+        )
         try:
             reconcile_live(ctx, state)
         except (Rejected, NetworkError) as e2:
@@ -1141,7 +1399,7 @@ def _chase_text(side: str, price: float, sig: dict, gate: dict) -> str:
     gap = (price / sig["close"] - 1) * 100
     big = ", 큰 움직임" if gate.get("big") else ""
     return (
-        f"현재가 {price:,.1f}가 신호 봉 종가 {sig['close']:,.1f}에서 {gap:+.2f}% "
+        f"현재가 {_px(price)}가 신호 봉 종가 {_px(sig['close'])}에서 {gap:+.2f}% "
         f"(추격 한도 {gate['pct']:.0f}%{big})"
     )
 
@@ -1153,6 +1411,8 @@ def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
     except (OSError, ValueError, KeyError, AttributeError):
         funding = None
     mode_ = "live" if ctx.live else "dry"
+    # ref_stats.json은 BTCUSDT 과거 1년 통계라 다른 종목에는 넘기지 않는다
+    ref = _load(DIR / "ref_stats.json", None) if ctx.symbol == SYMBOL else None
     try:
         data = btc_ai.packet(
             side,
@@ -1163,10 +1423,14 @@ def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
             now_ms,
             _read_jsonl("closed.jsonl"),
             mode_,
-            _load(DIR / "ref_stats.json", None),
+            ref,
+            symbol=ctx.symbol,
+            winrate=SYMBOL_WINRATE.get(ctx.symbol),
         )
     except (OSError, ValueError, KeyError, IndexError) as e:
         data = {
+            "symbol": ctx.symbol,
+            "backtest_winrate_pct": SYMBOL_WINRATE.get(ctx.symbol),
             "side": side,
             "signal_close": sig.get("close"),
             "price_now": price,
@@ -1183,6 +1447,7 @@ def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
         )
     ctx.event(
         event="ai_exits",
+        symbol=ctx.symbol,
         side=side,
         bar=sig.get("bar_txt"),
         packet=data,
@@ -1237,7 +1502,7 @@ def fast_market(
     if cur and atr:
         rng = max([float(r[2]) for r in cur] + [price]) - min([float(r[3]) for r in cur] + [price])
         if rng >= cfg["fast_range_atr"] * atr:
-            return f"이번 15분봉 폭 {rng:,.1f} ≥ ATR {atr:,.1f}"
+            return f"이번 15분봉 폭 {_px(rng)} ≥ ATR {_px(atr)}"
     return ""
 
 
@@ -1253,7 +1518,7 @@ class LiveVenue:
 
     def place(self, cid: str, side: str, qty: Decimal, px: Decimal) -> dict:
         params = {
-            "symbol": SYMBOL,
+            "symbol": _sym(self.c),
             "side": side,
             "type": "LIMIT",
             "timeInForce": "GTX",
@@ -1273,7 +1538,7 @@ class LiveVenue:
     def cancel(self, cid: str) -> dict:
         """취소한 뒤 반드시 다시 조회해 그 사이 체결된 수량까지 센다(취소·체결 경합)."""
         try:
-            _delete(self.c, "/fapi/v1/order", {"symbol": SYMBOL, "origClientOrderId": cid})
+            _delete(self.c, "/fapi/v1/order", {"symbol": _sym(self.c), "origClientOrderId": cid})
         except Rejected as e:
             if e.code not in NOT_FOUND:
                 raise
@@ -1411,7 +1676,7 @@ def ladder(
             if rest <= 0 or small(rest, float(px)):
                 break
             if not chase_ok(side, float(px), sig["close"], gate["pct"]):
-                path, note = "abandon", f"{k}회차 호가 {float(px):,.1f}가 추격 한도 밖"
+                path, note = "abandon", f"{k}회차 호가 {_px(float(px))}가 추격 한도 밖"
                 break
             cid = f"{base}{k}"
             try:
@@ -1452,10 +1717,10 @@ def ladder(
     elif path != "abandon" and rest > 0:
         now_px = price_now()
         if small(rest, now_px):
-            note = note or f"남은 {rest} BTC는 최소 주문보다 작아 그대로 둠"
+            note = note or f"남은 {rest}개는 최소 주문보다 작아 그대로 둠"
             path = "limit" if filled else "none"
         elif not chase_ok(side, now_px, sig["close"], gate["pct"]):
-            path, note = "abandon", f"시간이 다 됐을 때 가격 {now_px:,.1f}가 추격 한도 밖"
+            path, note = "abandon", f"시간이 다 됐을 때 가격 {_px(now_px)}가 추격 한도 밖"
         else:
             r = venue.market(f"{base}m", order_side, rest)
             q = Decimal(str(r.get("executedQty") or 0))
@@ -1486,7 +1751,7 @@ def fill_text(f: dict) -> str:
         return f"지정가 체결({f['rounds']}회차, 메이커)"
     if f["path"] == "market_fallback":
         return (
-            f"지정가 {f['maker_qty']} + 시장가 {f['taker_qty']} BTC(지정가 미체결)"
+            f"지정가 {f['maker_qty']} + 시장가 {f['taker_qty']}개(지정가 미체결)"
             if f["maker_qty"]
             else "시장가(지정가 미체결)"
         )
@@ -1498,12 +1763,13 @@ def fill_text(f: dict) -> str:
 def cancel_engine_entries(client) -> list[str]:
     """남아 있는 엔진 진입 지정가(일반 주문, 접두어 mnv-)를 취소한다."""
     done = []
-    for o in _get(client, "/fapi/v1/openOrders", symbol=SYMBOL):
+    sym = _sym(client)
+    for o in _get(client, "/fapi/v1/openOrders", symbol=sym):
         cid = str(o.get("clientOrderId", ""))
         if not cid.startswith(PREFIX):
             continue
         try:
-            _delete(client, "/fapi/v1/order", {"symbol": SYMBOL, "origClientOrderId": cid})
+            _delete(client, "/fapi/v1/order", {"symbol": sym, "origClientOrderId": cid})
         except Rejected as e:
             if e.code not in NOT_FOUND:
                 raise
@@ -1513,8 +1779,9 @@ def cancel_engine_entries(client) -> list[str]:
 
 
 def position_row(client) -> dict:
-    rows = _get(client, "/fapi/v2/positionRisk", symbol=SYMBOL)
-    row = next((x for x in rows if x["symbol"] == SYMBOL), None) or {"positionAmt": "0"}
+    sym = _sym(client)
+    rows = _get(client, "/fapi/v2/positionRisk", symbol=sym)
+    row = next((x for x in rows if x["symbol"] == sym), None) or {"positionAmt": "0"}
     return {"amt": float(row["positionAmt"]), "entry": float(row.get("entryPrice") or 0)}
 
 
@@ -1565,14 +1832,20 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     6) STOP_MARKET(+TAKE_PROFIT_MARKET) 7) 걸렸는지 확인. 실패하면 닫거나 알린다.
     AI 답을 기다린 뒤라 추격 한도를 새 가격으로 다시 본다(사다리도 회차마다 본다)."""
     side = sig["dir"]
+    sym = ctx.symbol
+    who = _who(sym, side)
     used = plan["used"]
     price = ctx.market.price()
     if not chase_ok(side, price, sig["close"], gate["pct"]):
-        ctx.say(
-            f"⏭ {SIDE_KO[side]} 진입 건너뜀(AI 응답 뒤 다시 봄): "
-            f"{_chase_text(side, price, sig, gate)}"
+        ctx.say(f"⏭ {who} 진입 건너뜀(AI 응답 뒤 다시 봄): {_chase_text(side, price, sig, gate)}")
+        ctx.event(
+            event="chase_skip",
+            symbol=sym,
+            side=side,
+            price=price,
+            ref=sig["close"],
+            pct=gate["pct"],
         )
-        ctx.event(event="chase_skip", side=side, price=price, ref=sig["close"], pct=gate["pct"])
         return
     acct = _get(ctx.client, "/fapi/v2/account")
     if ctx.live and not acct.get("canTrade", False):
@@ -1583,21 +1856,21 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
         try:
             cancel_engine_stops(ctx.client)
         except (Rejected, NetworkError) as e:
-            ctx.say(f"⏭ {SIDE_KO[side]} 진입 건너뜀: 남은 엔진 손절을 취소하지 못함({e})")
+            ctx.say(f"⏭ {who} 진입 건너뜀: 남은 엔진 손절을 취소하지 못함({e})")
             return
     avail = float(acct["availableBalance"])
     qty, why = size_qty(avail, price, margin_frac(), flt)
     if not qty:
-        ctx.say(f"⏭ {SIDE_KO[side]} 진입 불가: {why} (가용 {avail:.2f} USDT)")
+        ctx.say(f"⏭ {who} 진입 불가: {why} (가용 {avail:.2f} USDT)")
         return
-    oid, sid = _cid(sig["bar"], "o"), _cid(sig["bar"], "s")
-    tid = _cid(sig["bar"], "t") if used["tp_pct"] else None
+    oid, sid = _cid(sig["bar"], "o", sym), _cid(sig["bar"], "s", sym)
+    tid = _cid(sig["bar"], "t", sym) if used["tp_pct"] else None
     icon = "🟢" if side == "long" else "🔴"
     ai_line = ("🤖 " if not plan["fallback"] else "⚙️ ") + used["reason"]
 
     def exits_text(stop: float, tp: float | None) -> str:
-        t = f"손절 {stop:,.1f} (−{used['stop_pct']:g}%)"
-        t += f" · 익절 {tp:,.1f} (+{used['tp_pct']:g}%)" if tp else " · 익절 없음(반대 신호까지)"
+        t = f"손절 {_px(stop)} (−{used['stop_pct']:g}%)"
+        t += f" · 익절 {_px(tp)} (+{used['tp_pct']:g}%)" if tp else " · 익절 없음(반대 신호까지)"
         return t
 
     def fill_line(f: dict) -> str:
@@ -1610,6 +1883,7 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
             {
                 "at": _now_iso(ctx.now),
                 "action": "open",
+                "symbol": sym,
                 "side": side,
                 "want": float(qty),
                 "qty": fill["qty"],
@@ -1631,12 +1905,13 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
             },
         )
         if not fill["qty"]:
-            ctx.say(f"⏭ {SIDE_KO[side]} 진입 안 됨: {fill_text(fill)}")
+            ctx.say(f"⏭ {who} 진입 안 됨: {fill_text(fill)}")
             return
         entry = fill["avg"]
         stop = float(stop_price(side, entry, flt["tick"], used["stop_pct"] / 100))
         tp = float(tp_price(side, entry, flt["tick"], used["tp_pct"] / 100)) if tid else None
         state["position"] = {
+            "symbol": sym,
             "side": side,
             "qty": fill["qty"],
             "entry": entry,
@@ -1653,35 +1928,39 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
             "opened_at": _now_iso(ctx.now),
             "mode": "dry",
         }
+        state["last_symbol"] = sym
         ctx.say(
-            f"{icon} {SIDE_KO[side]} 진입 예정: {fill['qty']} BTC @ {entry:,.1f} "
+            f"{icon} {who} 진입 예정: {fill['qty']} {_name(sym)} @ {_px(entry)} "
             f"(증거금 약 {fill['qty'] * entry / LEVERAGE:,.1f} USDT, {LEVERAGE}배)\n"
             f"{fill_line(fill)}\n{exits_text(stop, tp)}\n{ai_line}\n"
-            f"신호 봉 {sig.get('bar_txt')} 종가 {sig['close']:,.1f}"
+            f"신호 봉 {sig.get('bar_txt')} 종가 {_px(sig['close'])}"
         )
         return
     c = ctx.client
     if foreign_orders(c):
         ctx.say(
-            "⏭ 진입 안 함: 엔진이 내지 않은 BTCUSDT 미체결 주문이 있어요(단방향이라 섞일 수 있음)"
+            f"⏭ {who} 진입 안 함: 엔진이 내지 않은 {sym} 미체결 주문이 있어요"
+            "(단방향이라 섞일 수 있음)"
         )
         return
     if position_amt(c) != 0:
-        ctx.say("⏭ 진입 안 함: 진입 직전에 포지션이 보여요")
+        ctx.say(f"⏭ {who} 진입 안 함: 진입 직전에 포지션이 보여요")
         return
-    if not ensure_leverage(ctx):
+    if not ensure_leverage(ctx, state):
         return
     # 같은 신호를 다시 시도하면 진입·손절·익절 ID를 새로 쓴다. 같은 ID면 _send가 앞 시도의 옛
     # 주문(취소·만료·체결)을 찾아 돌려주고 새 주문을 내지 않는다: 옛 손절이 이미 체결됐으면
     # '손절 실패'로 보고 새 포지션을 닫는다. 두 번째부터 o<n>-·s<n>-·t<n>-
     # (첫 시도 ID·_pos_cid의 s1… 과 겹치지 않음)
     tries = state.get("entry_tries") or {}
-    n = tries.get("n", 0) + 1 if tries.get("bar") == sig["bar"] else 1
-    state["entry_tries"] = {"bar": sig["bar"], "n": n}
+    same = tries.get("bar") == sig["bar"] and pos_symbol(tries) == sym
+    n = tries.get("n", 0) + 1 if same else 1
+    state["entry_tries"] = {"bar": sig["bar"], "n": n, "symbol": sym}
     if n > 1:
-        oid, sid = _cid(sig["bar"], f"o{n}-"), _cid(sig["bar"], f"s{n}-")
-        tid = _cid(sig["bar"], f"t{n}-") if tid else None
+        oid, sid = _cid(sig["bar"], f"o{n}-", sym), _cid(sig["bar"], f"s{n}-", sym)
+        tid = _cid(sig["bar"], f"t{n}-", sym) if tid else None
     state["pending"] = {
+        "symbol": sym,
         "open": oid,
         "stop": sid,
         "tp": tid,
@@ -1707,33 +1986,41 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     why = f"{type(err).__name__}: {err}" if err else ""
     if row is None:
         ctx.say(
-            f"🆘 {SIDE_KO[side]} 진입 뒤 포지션을 확인하지 못했어요({why or '조회 실패'}). "
+            f"🆘 {who} 진입 뒤 포지션을 확인하지 못했어요({why or '조회 실패'}). "
             "다음 실행에서 대사하고 손절을 걸어요. 바이낸스 앱도 확인하세요!"
         )
         return  # pending을 남긴다
     sign = 1 if side == "long" else -1
     if row["amt"] and (row["amt"] > 0) != (sign > 0):
-        ctx.say(f"🆘 진입 뒤 포지션 방향이 이상해요({row['amt']:+}). 바이낸스 앱에서 확인하세요!")
+        ctx.say(
+            f"🆘 {_name(sym)} 진입 뒤 포지션 방향이 이상해요({row['amt']:+}). "
+            "바이낸스 앱에서 확인하세요!"
+        )
         set_no_entry("진입 뒤 포지션 방향 불일치", ctx.send)
         return
     if not row["amt"]:
         if fill and fill["qty"] > 0:
             ctx.say("🆘 체결을 셌는데 포지션이 아직 0으로 보여요 → 다음 실행에서 다시 대사해요")
             return  # pending을 남긴다
+        if isinstance(err, Rejected) and err.code == TRADFI_CODE and not fill:
+            # 약관 미동의(-4411): 주문이 들어가지 않았다(포지션 0 확인). 이 종목만 쉬고 넘어간다
+            state.pop("pending", None)
+            mark_unavailable(ctx, state, err)
+            return
         if err:
             # 응답을 잃은 시장가 진입은 체결됐어도 포지션이 늦게 보일 수 있다. pending을 버리면
             # 다음 실행이 그 포지션을 '엔진 밖'으로 보고 손절 없이 정지한다. 남겨 두면 다음 대사가
             # 이어 받는다(그때도 0이면 pending을 버리고 같은 신호를 새 ID로 다시 본다)
-            ctx.say(
-                f"⚠️ {SIDE_KO[side]} 진입 중 오류({why}), 포지션은 아직 0 → "
-                "다음 실행에서 다시 대사해요"
-            )
+            ctx.say(f"⚠️ {who} 진입 중 오류({why}), 포지션은 아직 0 → 다음 실행에서 다시 대사해요")
             return  # pending을 남긴다
         state.pop("pending", None)
-        ctx.say(f"⏭ {SIDE_KO[side]} 진입 안 됨: {fill_text(fill) if fill else why}")
+        ctx.say(f"⏭ {who} 진입 안 됨: {fill_text(fill) if fill else why}")
         return
     if err:
-        ctx.say(f"⚠️ 진입 중 오류({why}) → 체결된 {abs(row['amt'])} BTC를 이어 받아 손절을 걸어요")
+        ctx.say(
+            f"⚠️ 진입 중 오류({why}) → 체결된 {abs(row['amt'])} {_name(sym)}를 이어 받아 "
+            "손절을 걸어요"
+        )
     real = abs(row["amt"])
     entry = fill["avg"] if fill and fill["avg"] and abs(real - fill["qty"]) < 1e-9 else row["entry"]
     if fill and abs(real - fill["qty"]) > 1e-9:
@@ -1745,9 +2032,10 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     pos["opened_at"] = _now_iso(ctx.now)
     pos["fill"] = fill["path"] if fill else "recovered"
     state.pop("pending", None)
+    (state.get("unavailable") or {}).pop(sym, None)  # 진입됐으니 약관 문제는 풀렸다
     # 포지션과 함께 신호도 처리한 것으로 저장한다: 이 뒤에 죽으면 다음 실행이 같은 신호로 다시
     # 들어가지 않는다(run() 끝에서도 같은 값을 쓴다)
-    state["last_bar"] = sig["bar"]
+    mark_bar(state, sym, sig["bar"])
     _save(DIR / "state.json", state)
     done = False
     try:
@@ -1758,7 +2046,7 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
         except (Rejected, NetworkError) as e:
             ok, err = False, str(e)
         if not ok:
-            ctx.say(f"❌ 손절 주문 실패({err}) → 방금 연 {SIDE_KO[side]}을 시장가로 닫아요")
+            ctx.say(f"❌ 손절 주문 실패({err}) → 방금 연 {who}을 시장가로 닫아요")
             protect_close(ctx, state, "protect")
             done = True
             return
@@ -1786,11 +2074,361 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
                 ctx.say(f"🆘 진입 뒤 손절 확인 실패: {e2}. 바이낸스 앱에서 확인하세요!")
     how = fill_line(fill) if fill else "응답을 놓쳐 포지션으로 확인"
     ctx.say(
-        f"{icon} {SIDE_KO[side]} 진입: {pos['qty']} BTC @ {pos['entry']:,.1f} ({LEVERAGE}배)\n"
+        f"{icon} {who} 진입: {pos['qty']} {_name(sym)} @ {_px(pos['entry'])} ({LEVERAGE}배)\n"
         f"{how}\n"
         f"{exits_text(pos['stop'], pos.get('tp'))} 걸어 둠 ({WORKING_TYPE})\n{ai_line}\n"
         f"신호 봉 {sig.get('bar_txt')}{tp_note}"
     )
+
+
+# ---------------------------------------------------------------- 여러 종목: 신호·선택
+
+
+def held_symbol(state: dict) -> str:
+    """대사할 종목: 보유 포지션 → 끝나지 않은 주문 → 마지막으로 든 종목 → BTCUSDT."""
+    for key in ("position", "pending"):
+        if state.get(key):
+            return pos_symbol(state[key])
+    return state.get("last_symbol") or SYMBOL
+
+
+def last_bar_for(state: dict, symbol: str) -> int | None:
+    """종목별 마지막 처리 봉. 처음 보는 종목은 예전 하나뿐이던 last_bar에서 시작한다."""
+    bars = state.setdefault("last_bars", {})
+    if symbol not in bars and state.get("last_bar") is not None:
+        bars[symbol] = state["last_bar"]
+    return bars.get(symbol)
+
+
+def mark_bar(state: dict, symbol: str, bar: int) -> None:
+    """그 종목 신호를 처리한 것으로 적는다. last_bar(화면·옛 상태용)는 가장 늦은 봉."""
+    state.setdefault("last_bars", {})[symbol] = bar
+    if bar > (state.get("last_bar") or 0):
+        state["last_bar"] = bar
+
+
+def fetch_rows(ctx: Ctx) -> tuple[dict[str, list[list]], dict[str, str]]:
+    """네 종목 15분봉을 한꺼번에(동시에) 받는다. 실패한 종목은 이번 실행에서 신호만 빠진다."""
+    markets = {s: market_for(ctx.market, s) for s in SYMBOLS}
+    todo = [s for s in SYMBOLS if markets[s] is not None]
+    rows: dict[str, list[list]] = {}
+    errs: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=max(len(todo), 1)) as pool:
+        futs = {s: pool.submit(markets[s].klines, INTERVAL) for s in todo}
+        for s, f in futs.items():
+            try:
+                rows[s] = f.result()
+            except Exception as e:  # noqa: BLE001 — 한 종목 시세 실패가 보유 관리를 막으면 안 된다
+                errs[s] = f"{type(e).__name__}: {e}"[:200]
+    return rows, errs
+
+
+def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_start: float) -> dict:
+    """진입 후보 점검(예전 한 종목 흐름과 같은 순서): 정지 → 복구 나이 → 시간 → 거래 규칙 → 추격.
+    skip이 비어 있으면 들어갈 수 있다. 시세·규칙 조회 실패는 그 종목만 건너뛴다."""
+    c = ctx.at(sym)
+    side = sig["dir"]
+    out: dict = {"sym": sym, "sig": sig, "side": side, "ctx": c, "skip": ""}
+    if halts:
+        out["skip"] = f"진입 정지({', '.join(halts)})"
+    elif sig.get("age", 0) > RECOVER_ENTRY_BARS:
+        hours = sig["age"] * BAR_MS / 3_600_000
+        out["skip"] = (
+            f"복구: 신호가 {hours:.1f}시간 전이라 새로 들어가지 않음"
+            "(반대 포지션 정리만, 다음 신호 대기)"
+        )
+    elif unavailable(state, sym, ctx.now_ms):
+        out["skip"] = "TradFi 약관 미동의로 쉬는 중"
+    elif _clock() - t_start > MAX_RUN_SECS:
+        out["skip"] = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
+    elif c.market is None:
+        out["skip"] = "시세 없음"
+    else:
+        try:
+            flt = filters(c.client)
+            gate = chase_gate(c.market, c.rows15, ctx.now_ms)
+            price0 = c.market.price()
+        except (NetworkError, Rejected, OSError, ValueError, KeyError) as e:
+            out["skip"] = f"시세·거래 규칙 조회 실패({type(e).__name__})"
+            return out
+        out.update(flt=flt, gate=gate, price=price0)
+        if flt["status"] != "TRADING":
+            out["skip"] = f"{sym} 상태 {flt['status']}"
+        elif not chase_ok(side, price0, sig["close"], gate["pct"]):
+            out["skip"] = f"진입 안 함: {_chase_text(side, price0, sig, gate)}"
+            ctx.event(
+                event="chase_skip",
+                symbol=sym,
+                side=side,
+                price=price0,
+                ref=sig["close"],
+                pct=gate["pct"],
+            )
+        elif ctx.live:
+            out["skip"] = live_entry_problem(c, state)
+            out["quiet"] = out["skip"] == "TradFi 약관 미동의"  # mark_unavailable이 이미 알림
+    return out
+
+
+def live_entry_problem(c: Ctx, state: dict) -> str:
+    """실전 진입 전 거래소 점검(들고 있는 것을 닫기 전에 한다: 갈아탈 종목에 못 들어가면
+    닫지 않게). 계좌 거래 가능, 그 종목의 엔진 밖 미체결·포지션, 교차·3배. 문제면 이유."""
+    sym = c.symbol
+    try:
+        acct = c.shared.get("acct") or _get(c.client, "/fapi/v2/account")
+        c.shared["acct"] = acct
+        if not acct.get("canTrade", False):
+            return "계좌가 거래 불가(canTrade=false)"
+        if sym != held_symbol(state) or not state.get("position"):
+            if foreign_orders(c.client):
+                return f"엔진이 내지 않은 {sym} 미체결 주문이 있음(단방향이라 섞일 수 있음)"
+            if position_amt(c.client) != 0:
+                return f"{sym}에 이미 포지션이 보임"
+    except (Rejected, NetworkError) as e:
+        return f"거래소 점검 실패({e})"
+    return leverage_problem(c, state)
+
+
+def _candidate_packet(cand: dict) -> dict:
+    c, sig = cand["ctx"], cand["sig"]
+    data = {
+        "symbol": cand["sym"],
+        "side": cand["side"],
+        "signal_bar_kst": sig.get("bar_txt"),
+        "signal_close": sig.get("close"),
+        "price_now": cand.get("price"),
+        "chase_limit_pct": (cand.get("gate") or {}).get("pct"),
+        "backtest_winrate_pct": SYMBOL_WINRATE.get(cand["sym"]),
+        "scr_at_signal": sig.get("at_signal"),
+    }
+    if cand.get("price") and sig.get("close"):
+        data["gap_from_signal_pct"] = round((cand["price"] / sig["close"] - 1) * 100, 3)
+    try:
+        data.update(btc_ai.brief_frames(c.market.klines, cand["price"], c.now_ms))
+    except (OSError, ValueError, KeyError, IndexError, TypeError, NetworkError) as e:
+        data["frames_error"] = type(e).__name__
+    return data
+
+
+def _held_packet(ctx: Ctx, pos: dict, opp: bool) -> dict:
+    sym = pos_symbol(pos)
+    c = ctx.at(sym)
+    try:
+        price = c.market.price() if c.market is not None else None
+    except (NetworkError, OSError, ValueError, KeyError):
+        price = None
+    sign = 1 if pos["side"] == "long" else -1
+    pct = round((price / pos["entry"] - 1) * 100 * sign, 3) if price else None
+    return {
+        "symbol": sym,
+        "backtest_winrate_pct": SYMBOL_WINRATE.get(sym),
+        "side": pos["side"],
+        "entry": pos["entry"],
+        "price_now": price,
+        "pnl_pct": pct,
+        "pnl_pct_x_leverage": round(pct * LEVERAGE, 2) if pct is not None else None,
+        "bars_held_15m": max(0, (ctx.now_ms - int(pos.get("entry_ms") or ctx.now_ms)) // BAR_MS),
+        "stop": pos.get("stop"),
+        "tp": pos.get("tp"),
+        "opposite_signal_now": opp,
+    }
+
+
+def ai_choose(ctx: Ctx, options: dict[str, str], fallback: str, data: dict) -> tuple[str, str]:
+    """신호가 겹치면 Claude가 고른다(한 실행에 한 번). (고른 선택지, 이유).
+    답이 없거나 틀리면 fallback(빈손: 승률 순 PRIORITY, 보유: 유지·자기 반대면 갈아타기)."""
+    caller = AI_CALLER or (lambda p: btc_ai.call_claude(p, timeout=btc_ai.CHOOSE_TIMEOUT, cwd=DIR))
+    out = btc_ai.choose({**data, "options": options}, list(options), caller)
+    choice = out["choice"] or fallback
+    reason = out["reason"] if out["choice"] else f"기본 규칙({out['fallback']})"
+    ctx.event(
+        event="ai_choose",
+        packet=data,
+        options=options,
+        ai_raw=out["raw"],
+        choice=choice,
+        fallback=out["fallback"],
+        secs=out["secs"],
+    )
+    return choice, reason
+
+
+def _opt_text(opt: str, cands: dict[str, dict], pos: dict | None) -> str:
+    kind, _, sym = opt.partition(":")
+    if kind == "keep":
+        return f"{_who(pos_symbol(pos), pos['side'])} 유지" if pos else "유지"
+    if kind == "none":
+        return "아무것도 안 함"
+    c = cands[sym]
+    if kind == "flip":
+        return f"{_name(sym)} 갈아타기 → {_who(sym, c['side'])}"
+    if kind == "close":
+        return f"{_name(sym)} 청산만(다시 들어가기는 막힘: {c['skip']})"
+    if kind == "switch":
+        return f"{_who(pos_symbol(pos), pos['side'])} 닫고 {_who(sym, c['side'])}"
+    return f"{_who(sym, c['side'])} 진입"
+
+
+def _plan_or_skip(ctx: Ctx, cand: dict, t_start: float) -> dict | None:
+    """진입 직전 AI 손절·익절. 선택 AI를 기다린 뒤라 시간 한도를 다시 본다."""
+    if _clock() - t_start > MAX_RUN_SECS:
+        cand["skip"] = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(AI 대기)"
+        return None
+    return ai_plan(cand["ctx"], cand["side"], cand["sig"], cand["price"], ctx.now_ms)
+
+
+def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_start: float) -> dict:
+    """이번 봉 매매 결정과 실행. {"decision", "main": 대표 신호, "target": 들어간(갈) 종목}."""
+    pos = state.get("position")
+    a_sym = pos_symbol(pos) if pos else None
+    notes: list[str] = []
+    main: dict | None = None
+    dirs: dict[str, dict] = {}
+    for sym in PRIORITY:
+        g = sigs.get(sym)
+        if not g:
+            continue
+        if g.get("conflict"):
+            mark_bar(state, sym, g["bar"])
+            notes.append(f"{_name(sym)} 같은 봉 롱·숏 동시 신호 → 무시")
+            main = main or g
+        elif g.get("dir"):
+            dirs[sym] = g
+    if a_sym in dirs and dirs[a_sym]["dir"] == pos["side"]:
+        g = dirs.pop(a_sym)
+        mark_bar(state, a_sym, g["bar"])
+        notes.append(f"{_who(a_sym, g['dir'])} 신호, 이미 {_who(a_sym, pos['side'])} 보유 → 유지")
+        main = main or g
+    for sym in [s for s in dirs if s != a_sym and unavailable(state, s, ctx.now_ms)]:
+        # 약관 미동의로 쉬는 종목: 이미 한 번 알렸으니 조용히 넘긴다
+        g = dirs.pop(sym)
+        mark_bar(state, sym, g["bar"])
+        notes.append(f"{_who(sym, g['dir'])} 신호, TradFi 약관 미동의로 쉬는 중")
+        ctx.event(event="skip_unavailable", symbol=sym, side=g["dir"])
+    opp = dirs.pop(a_sym, None) if a_sym else None
+    others = dirs
+    if not opp and not others:
+        return {"decision": " · ".join(notes) or "대기", "main": main}
+
+    # 들어갈 수 있는지 먼저 본다(정지·추격 한도·약관 등). 반대 신호 청산은 막히지 않는다
+    cands: dict[str, dict] = {}
+    for sym, g in ([(a_sym, opp)] if opp else []) + list(others.items()):
+        cands[sym] = prepare(ctx, state, sym, g, halts, t_start)
+    viable = [s for s in others if not cands[s]["skip"]]
+    a_cand = cands.get(a_sym) if opp else None
+
+    # 선택지와 AI 기본값
+    options: dict[str, str] = {}
+    if pos:
+        if not opp:  # 자기 반대 신호면 유지는 없다(사용자 규칙: 반대 신호면 갈아타기)
+            options["keep"] = ""
+        if opp:
+            options[("close:" if a_cand["skip"] else "flip:") + a_sym] = ""
+        for s in viable:
+            options[f"switch:{s}"] = ""
+        fallback = (("close:" if a_cand["skip"] else "flip:") + a_sym) if opp else "keep"
+    else:
+        for s in viable:
+            options[f"enter:{s}"] = ""
+        options["none"] = ""
+        fallback = f"enter:{viable[0]}" if viable else "none"  # viable은 PRIORITY 순서
+    for k in options:
+        options[k] = _opt_text(k, cands, pos)
+
+    if viable and (pos or len(viable) >= 2):
+        data: dict = {
+            "candidates": [_candidate_packet(cands[s]) for s in viable],
+            "held": _held_packet(ctx, pos, bool(opp)) if pos else None,
+            "fallback_rule": options[fallback],
+        }
+        choice, reason = ai_choose(ctx, options, fallback, data)
+        listed = ", ".join(_who(s, cands[s]["side"]) for s in viable)
+        held_txt = f"{_who(a_sym, pos['side'])} 보유 중 " if pos else ""
+        ctx.say(f"🤖 신호 겹침: {held_txt}{listed} 신호 → {options[choice]}\n이유: {reason}")
+    else:
+        choice = fallback
+    kind, _, chosen = choice.partition(":")
+
+    # 고르지 않은 신호는 처리한 것으로 적고, 막힌 신호는 예전처럼 알린다
+    told: set[str] = set()
+    for sym, cand in cands.items():
+        if sym == chosen and kind in ("enter", "switch", "flip", "close"):
+            continue
+        mark_bar(state, sym, cand["sig"]["bar"])
+        who = _who(sym, cand["side"])
+        main = main or cand["sig"]
+        if cand["skip"]:
+            notes.append(f"{who} 신호, {cand['skip']}")
+            if not cand.get("quiet"):
+                ctx.say(f"⏸ {who} 신호가 났지만 {cand['skip']}")
+            told.add(sym)
+        else:
+            notes.append(f"{who} 신호, 고르지 않음({options[choice]})")
+
+    if kind in ("keep", "none"):
+        return {"decision": " · ".join(notes) or "대기", "main": main}
+
+    target = cands[chosen]
+    main = target["sig"]
+    sym, side, sig = chosen, target["side"], target["sig"]
+    who = _who(sym, side)
+    plan = None
+    if kind in ("enter", "switch", "flip"):
+        plan = _plan_or_skip(ctx, target, t_start)
+        if plan is None and kind == "switch":
+            # 갈아탈 종목에 못 들어가면 들고 있는 것을 닫지 않는다
+            # (자기 반대 신호가 있으면 예전처럼 갈아타기)
+            mark_bar(state, sym, sig["bar"])
+            notes.append(f"{who} 신호, {target['skip']}")
+            ctx.say(f"⏸ {who} 신호가 났지만 {target['skip']}")
+            if not opp:
+                return {"decision": " · ".join(notes), "main": main}
+            kind, sym, target = "flip", a_sym, a_cand
+            side, sig, who = target["side"], target["sig"], _who(a_sym, target["side"])
+            plan = None if target["skip"] else _plan_or_skip(ctx, target, t_start)
+    closed_ok = True
+    if pos and kind in ("switch", "flip", "close"):
+        closed_ok = close_position(ctx.at(a_sym), state, sig["bar"])
+    skip = target["skip"] or ("진입 준비 실패(AI 손절·익절 없음)" if plan is None else "")
+    if not closed_ok:
+        decision = f"{who} 신호, 청산 실패"
+    elif skip:
+        decision = f"{who} 신호, {skip}"
+        if sym not in told and not target.get("quiet"):
+            ctx.say(f"⏸ {who} 신호가 났지만 {skip}")
+    else:
+        open_position(target["ctx"], state, sig, target["gate"], target["flt"], plan)
+        p = state.get("position")
+        entered = bool(p and pos_symbol(p) == sym and p["side"] == side)
+        decision = f"{who} 진입" if entered else f"{who} 신호, 진입 안 함"
+        if kind == "switch" and not p and "pending" not in state:
+            ctx.say(
+                f"⚠️ {_who(a_sym, pos['side'])}은 닫았지만 {who} 진입은 못 했어요 → 지금 빈손이에요"
+                "(이유는 위 알림)"
+            )
+    if "pending" not in state:
+        mark_bar(state, sym, sig["bar"])
+    notes.insert(0, decision)
+    return {"decision": " · ".join(notes), "main": main, "target": sym}
+
+
+def check_strays(ctx: Ctx, state: dict, held: str) -> bool:
+    """보유 종목이 아닌 세 종목에 포지션이 보이면(엔진은 하나만 든다) 알리고 신규 진입을 멈춘다.
+    짐작해서 닫지 않는다. 문제없으면 True."""
+    amts = all_position_amts(ctx.client)
+    stray = {s: a for s, a in amts.items() if s != held and a}
+    if not stray:
+        state.pop("stray_key", None)
+        return True
+    txt = ", ".join(f"{s} {a:+}" for s, a in stray.items())
+    if state.get("stray_key") != txt:
+        ctx.say(
+            f"⚠️ 엔진이 들고 있지 않은 종목에 포지션이 있어요({txt}). 건드리지 않고 "
+            "신규 진입을 멈춰요."
+        )
+        state["stray_key"] = txt
+    set_no_entry(f"엔진 밖 포지션 {txt}", ctx.send)
+    return False
 
 
 # ---------------------------------------------------------------- 한 번 실행
@@ -1834,8 +2472,8 @@ def run(
         state["orphan_live"] = pos
         state["position"] = None
         send(
-            f"🆘 실전 {SIDE_KO[pos['side']]} 포지션이 열린 채 드라이런으로 바뀌었어요. "
-            "거래소 손절은 "
+            f"🆘 실전 {_who(pos_symbol(pos), pos['side'])} 포지션이 열린 채 드라이런으로 "
+            "바뀌었어요. 거래소 손절은 "
             "걸려 있지만 반대 신호 청산·손절 확인은 멈춰요. 직접 닫거나 live로 되돌리세요."
         )
     elif pos and pos.get("mode") != ("live" if live else "dry"):
@@ -1843,6 +2481,7 @@ def run(
         state["position"] = None
 
     can_trade = True
+    held = held_symbol(state)
     if live:
         # 시세가 막혀도 손절 확인·체결 대사는 먼저 한다
         dual = _get(client, "/fapi/v1/positionSide/dual")
@@ -1850,15 +2489,23 @@ def run(
             ctx.say("❌ 헤지 모드(양방향)라 매매하지 않아요. 단방향(One-way)으로 바꿔 주세요")
             can_trade = False
         else:
-            can_trade = reconcile_live(ctx, state)
+            can_trade = reconcile_live(ctx.at(held), state)
+            # 엔진은 한 종목만 든다: 다른 종목 포지션이 보이면 짐작하지 않고 신규 진입을 멈춘다
+            if not check_strays(ctx, state, held):
+                can_trade = False
         _save(state_file, state)
-    rows15 = market_.klines(INTERVAL)
-    ctx.rows15 = rows15
+    rows_by, feed_errs = fetch_rows(ctx)
+    ctx.shared["rows"] = rows_by
+    ctx.rows15 = rows_by.get(ctx.symbol, [])
+    if feed_errs:
+        ctx.event(event="feed_error", errors=feed_errs)
+    hctx = ctx.at(held)
     if not live:
-        reconcile_dry(ctx, state, rows15, now_ms)
+        reconcile_dry(hctx, state, hctx.rows15, now_ms)
     _save(state_file, state)
 
     acct = _get(client, "/fapi/v2/account")
+    ctx.shared["acct"] = acct
     if live:
         equity = float(acct["totalMarginBalance"])
     else:
@@ -1868,111 +2515,98 @@ def run(
         )
         equity = state["dry_seed"] + closed
         p = state.get("position")
-        if p:
+        if p and rows_by.get(pos_symbol(p)):
             sign = 1 if p["side"] == "long" else -1
-            equity += sign * p["qty"] * (float(rows15[-1][4]) - p["entry"])
+            last_px = float(rows_by[pos_symbol(p)][-1][4])
+            equity += sign * p["qty"] * (last_px - p["entry"])
     halts = check_halts("live" if live else "dry", state, equity, now, ctx.say)
 
-    sig = latest_signal(rows15, now_ms, state.get("last_bar"), lookback=lookback)
+    sigs: dict[str, dict] = {}
+    for sym in SYMBOLS:
+        if sym not in rows_by:
+            continue
+        g = latest_signal(rows_by[sym], now_ms, last_bar_for(state, sym), lookback=lookback)
+        g["symbol"] = sym
+        sigs[sym] = g
     pos = state.get("position")
-    decision = "대기"
-    if sig.get("error") or sig.get("stale"):
-        decision = f"시세 이상: {sig.get('error') or '마지막 봉이 오래됨'}"
-        ctx.say(f"⚠️ {decision} → 이번 봉은 매매하지 않아요")
-    elif sig.get("conflict"):
-        decision = "같은 봉 롱·숏 동시 신호 → 무시"
-        state["last_bar"] = sig["bar"]
-    elif sig["dir"] and not can_trade:
-        decision = f"{SIDE_KO[sig['dir']]} 신호, 수동 개입·설정 문제로 매매 안 함"
-        state["last_bar"] = sig["bar"]
-    elif sig["dir"] and pos and pos["side"] == sig["dir"]:
-        decision = f"{SIDE_KO[sig['dir']]} 신호, 이미 {SIDE_KO[pos['side']]} 보유 → 유지"
-        state["last_bar"] = sig["bar"]
-    elif sig["dir"]:
-        side = sig["dir"]
-        plan = gate = flt = None
-        skip = ""
-        if halts:
-            skip = f"진입 정지({', '.join(halts)})"
-        elif sig.get("age", 0) > RECOVER_ENTRY_BARS:
-            hours = sig["age"] * BAR_MS / 3_600_000
-            skip = (
-                f"복구: 신호가 {hours:.1f}시간 전이라 새로 들어가지 않음"
-                "(반대 포지션 정리만, 다음 신호 대기)"
-            )
-        elif _clock() - t_start > MAX_RUN_SECS:
-            skip = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
-        else:
-            flt = filters(client)
-            gate = chase_gate(market_, rows15, now_ms)
-            price0 = market_.price()
-            if flt["status"] != "TRADING":
-                skip = f"{SYMBOL} 상태 {flt['status']}"
-            elif not chase_ok(side, price0, sig["close"], gate["pct"]):
-                skip = f"진입 안 함: {_chase_text(side, price0, sig, gate)}"
-                ctx.event(
-                    event="chase_skip", side=side, price=price0, ref=sig["close"], pct=gate["pct"]
-                )
-            else:
-                # 반대 포지션을 닫기 전에 묻는다: 기다리는 동안에도 기존 포지션은 손절이 지킨다
-                plan = ai_plan(ctx, side, sig, price0, now_ms)
-        closed_ok = close_position(ctx, state, sig["bar"]) if pos else True
-        if not closed_ok:
-            decision = f"{SIDE_KO[side]} 신호, 청산 실패"
-        elif skip:
-            decision = f"{SIDE_KO[side]} 신호, {skip}"
-            ctx.say(f"⏸ {SIDE_KO[side]} 신호가 났지만 {skip}")
-        else:
-            open_position(ctx, state, sig, gate, flt, plan)
-            p = state.get("position")
-            decision = (
-                f"{SIDE_KO[side]} 진입"
-                if p and p["side"] == side
-                else f"{SIDE_KO[side]} 신호, 진입 안 함"
-            )
-        if "pending" not in state:
-            state["last_bar"] = sig["bar"]
+    held = pos_symbol(pos) if pos else held
+    bad = {s: g.get("error") or "마지막 봉이 오래됨" for s, g in sigs.items()}
+    bad = {s: why for s, why in bad.items() if sigs[s].get("error") or sigs[s].get("stale")}
+    bad.update({s: f"시세 조회 실패({e})" for s, e in feed_errs.items()})
+    if bad:
+        ctx.event(event="feed_bad", symbols=bad)
+    for s in bad:
+        sigs.pop(s, None)
+    notes: list[str] = []
+    if pos and held in bad:
+        notes.append(f"{_name(held)} 시세 이상: {bad[held]}")
+        ctx.say(f"⚠️ {_name(held)} 시세 이상: {bad[held]} → 이번 봉은 {_name(held)} 신호를 못 봐요")
+    elif not sigs and bad:
+        notes.append(f"시세 이상: {', '.join(f'{_name(s)} {w}' for s, w in bad.items())}")
+        ctx.say(f"⚠️ {notes[-1]} → 이번 봉은 매매하지 않아요")
+    sigged = [g for g in sigs.values() if g.get("dir")]
+    if sigged and not can_trade:
+        for g in sigged:
+            mark_bar(state, g["symbol"], g["bar"])
+        names = ", ".join(_who(g["symbol"], g["dir"]) for g in sigged)
+        out = {"decision": f"{names} 신호, 수동 개입·설정 문제로 매매 안 함", "main": sigged[0]}
+    else:
+        out = trade(ctx, state, sigs, halts, t_start)
+    parts = ([out["decision"]] if out["decision"] != "대기" else []) + notes
+    decision = " · ".join(parts) or "대기"
+    sig = out.get("main") or sigs.get(SYMBOL) or {}
     if ctx.ai_streak is not None:
         state["ai_fallbacks"] = ctx.ai_streak
     state["last_run_ms"] = now_ms
     _save(state_file, state)
     p = state.get("position")
+    btc_sig = sigs.get(SYMBOL) or {}
     summary = {
         "event": "run",
+        "symbol": sig.get("symbol"),
         "bar": _bar_txt(sig["bar"]) if sig.get("bar") else None,
         "signal": sig.get("dir"),
         "close": sig.get("close"),
+        "signals": {s: g["dir"] for s, g in sigs.items() if g.get("dir")},
         "decision": decision,
-        "position": {k: p.get(k) for k in ("side", "qty", "entry", "stop", "tp")} if p else None,
+        "position": {k: p.get(k) for k in ("symbol", "side", "qty", "entry", "stop", "tp")}
+        if p
+        else None,
         "halts": halts,
         "equity": round(equity, 2),
-        "indicators": sig.get("indicators"),
+        "indicators": btc_sig.get("indicators"),
     }
+    if p and "symbol" not in p:
+        summary["position"]["symbol"] = SYMBOL
+    if bad:
+        summary["feed_bad"] = bad
     if recovering and not first:
+        missed = sum(g.get("missed", 0) for g in sigs.values())
         summary["recover"] = {
             "gap_min": round(gap_ms / 60_000) if gap_ms else None,
             "lookback": lookback,
-            "missed": sig.get("missed", 0),
+            "missed": missed,
         }
         stop_ok = None
         if p and live and p.get("stop_id"):
             try:
-                stop_ok = stop_is_open(client, p["stop_id"])
+                stop_ok = stop_is_open(ctx.at(pos_symbol(p)).client, p["stop_id"])
             except (Rejected, NetworkError):
                 stop_ok = False
         elif p and live:
             stop_ok = False
         summary["recover"]["stop_ok"] = stop_ok
-        send(recover_text(live, gap_ms, sig, pos_before, p, decision, halts, state, stop_ok))
+        rsig = {**sig, "missed": missed}
+        send(recover_text(live, gap_ms, rsig, pos_before, p, decision, halts, state, stop_ok))
     ctx.event(**summary)
     if first:
         mode_ko = "실전" if live else "드라이런(주문 없음)"
-        held = f"{SIDE_KO[p['side']]} {p['qty']} BTC" if p else "없음"
+        held_txt = f"{_who(pos_symbol(p), p['side'])} {p['qty']}" if p else "없음"
         send(
             f"🤖 BTC 자동매매 엔진 시작 — {mode_ko}\n"
-            "SCR 15분 · Stoch 9/CCI 20/RSI 21 · 3배 · 손절·익절은 진입 때 AI(기본 손절 3%) · "
-            "롱↔숏 갈아타기\n"
-            f"마지막 봉 {summary['bar']}: {decision} · 포지션 {held}"
+            f"{' · '.join(_name(s) for s in SYMBOLS)} · SCR 15분 · Stoch 9/CCI 20/RSI 21 · 3배 · "
+            "한 번에 한 종목 · 손절·익절은 진입 때 AI(기본 손절 3%) · 롱↔숏 갈아타기\n"
+            f"마지막 봉 {summary['bar']}: {decision} · 포지션 {held_txt}"
             + (f"\n진입 정지: {', '.join(halts)}" if halts else "")
         )
     return summary
@@ -1996,15 +2630,17 @@ def recover_text(
     missed = sig.get("missed", 0)
     if sig.get("dir") or sig.get("conflict"):
         last = SIDE_KO.get(sig.get("dir"), "롱·숏 동시")
-        lines.append(f"놓친 신호 {missed}개 · 가장 최근 {sig.get('bar_txt')} {last}")
+        name = _name(sig.get("symbol") or SYMBOL)
+        lines.append(f"놓친 신호 {missed}개 · 가장 최근 {sig.get('bar_txt')} {name} {last}")
     else:
         lines.append("놓친 신호 없음")
 
     def held(p: dict | None) -> str:
         if not p:
             return "없음"
-        stop = f"손절 {p['stop']:,.1f}" if p.get("stop") else "손절 없음"
-        return f"{SIDE_KO[p['side']]} {p['qty']} BTC @ {p['entry']:,.1f} · {stop}"
+        sym = pos_symbol(p)
+        stop = f"손절 {_px(p['stop'])}" if p.get("stop") else "손절 없음"
+        return f"{_who(sym, p['side'])} {p['qty']} {_name(sym)} @ {_px(p['entry'])} · {stop}"
 
     if before and not after:
         lines.append(f"포지션: {held(before)} → 정리됨")
@@ -2057,15 +2693,16 @@ def preflight(client=None) -> list[tuple[bool, str]]:
         )
     except (Rejected, NetworkError) as e:
         out.append((False, f"키 권한 조회 실패: {e}"))
-    flt = filters(client)
-    out.append(
-        (
-            flt["status"] == "TRADING",
-            f"{SYMBOL} {flt['status']} · 호가 {flt['tick']} · "
-            f"수량 단위 {flt['step']} (최소 {flt['min_qty']}) · "
-            f"최소 주문 {flt['min_notional']} USDT",
+    for sym in SYMBOLS:
+        flt = filters(SymClient(client, sym))
+        out.append(
+            (
+                flt["status"] == "TRADING",
+                f"{sym} {flt['status']} · 호가 {flt['tick']} · "
+                f"수량 단위 {flt['step']} (최소 {flt['min_qty']}) · "
+                f"최소 주문 {flt['min_notional']} USDT",
+            )
         )
-    )
     dual = _get(client, "/fapi/v1/positionSide/dual")["dualSidePosition"]
     out.append(
         (
@@ -2075,17 +2712,17 @@ def preflight(client=None) -> list[tuple[bool, str]]:
     )
     multi = _get(client, "/fapi/v1/multiAssetsMargin").get("multiAssetsMargin")
     out.append((True, f"멀티에셋 모드: {'켜짐' if multi else '꺼짐'}"))
-    sc = next(
-        x for x in _get(client, "/fapi/v1/symbolConfig", symbol=SYMBOL) if x["symbol"] == SYMBOL
-    )
-    lev = int(sc["leverage"])
-    lev_note = "그대로" if lev == LEVERAGE else f"실전 첫 진입 때 {LEVERAGE}배로 바꿈"
-    out.append(
-        (
-            True,
-            f"레버리지 {lev}배 ({lev_note}), 마진 {sc['marginType']}",
+    for sym in SYMBOLS:
+        sc = next(
+            (x for x in _get(client, "/fapi/v1/symbolConfig", symbol=sym) if x["symbol"] == sym),
+            None,
         )
-    )
+        if sc is None:
+            out.append((False, f"{sym} 레버리지 설정을 못 읽음"))
+            continue
+        lev = int(sc["leverage"])
+        lev_note = "그대로" if lev == LEVERAGE else f"그 종목 첫 실전 진입 때 {LEVERAGE}배로 바꿈"
+        out.append((True, f"{_name(sym)} 레버리지 {lev}배 ({lev_note}), 마진 {sc['marginType']}"))
     acct = _get(client, "/fapi/v2/account")
     out.append(
         (
@@ -2095,13 +2732,14 @@ def preflight(client=None) -> list[tuple[bool, str]]:
             f"가용 {float(acct['availableBalance']):.2f} USDT",
         )
     )
-    amt = position_amt(client)
-    out.append(
-        (
-            amt == 0 or bool(_load(DIR / "state.json", {}).get("position")),
-            f"BTCUSDT 포지션 {amt:+} BTC",
-        )
-    )
+    st = _load(DIR / "state.json", {})
+    held = pos_symbol(st.get("position")) if st.get("position") else None
+    for sym, amt in all_position_amts(client).items():
+        out.append((amt == 0 or sym == held, f"{sym} 포지션 {amt:+}"))
+    unav = {s: r for s, r in (st.get("unavailable") or {}).items() if unavailable(st, s, _ms_now())}
+    for sym, r in unav.items():
+        why = f"({r.get('code')}, {r.get('at')}부터 24시간)"
+        out.append((True, f"{sym} 약관 미동의로 쉬는 중{why}"))
     for path, key in (
         ("/fapi/v1/order", "origClientOrderId"),
         ("/fapi/v1/algoOrder", "clientAlgoId"),
@@ -2114,15 +2752,18 @@ def preflight(client=None) -> list[tuple[bool, str]]:
         out.append((gone, f"없는 주문 조회 {path}: {note}"))
     raw = _get(client, "/fapi/v1/openAlgoOrders", symbol=SYMBOL)
     out.append((isinstance(raw, list), f"조건부 미체결 목록 응답 모양: {type(raw).__name__}"))
-    orders = _get(client, "/fapi/v1/openOrders", symbol=SYMBOL)
-    algos = open_algos(client)
-    out.append(
-        (
-            True,
-            f"미체결 일반 {len(orders)} · 조건부 {len(algos)} (엔진 손절 "
-            f"{sum(1 for a in algos if str(a.get('clientAlgoId', '')).startswith(PREFIX))})",
+    for sym in SYMBOLS:
+        sc_ = SymClient(client, sym)
+        orders = _get(sc_, "/fapi/v1/openOrders", symbol=sym)
+        algos = open_algos(sc_)
+        out.append(
+            (
+                True,
+                f"{_name(sym)} 미체결 일반 {len(orders)} · 조건부 {len(algos)} (엔진 손절 "
+                f"{sum(1 for a in algos if str(a.get('clientAlgoId', '')).startswith(PREFIX))})",
+            )
         )
-    )
+    flt = filters(client)
     price = btc.fetch_price()
     qty, why = size_qty(float(acct["availableBalance"]), price, margin_frac(), flt)
     out.append(
@@ -2140,10 +2781,12 @@ def start_live(client=None, send: Callable[[str], Any] = notify.send) -> dict:
     client = client if client is not None else Client()
     if _get(client, "/fapi/v1/positionSide/dual")["dualSidePosition"]:
         raise SystemExit("헤지 모드입니다. 단방향으로 바꾼 뒤 다시 실행하세요.")
-    if position_amt(client) != 0:
-        raise SystemExit("BTCUSDT 포지션이 열려 있습니다. 비운 뒤 다시 실행하세요.")
-    if foreign_orders(client):
-        raise SystemExit("BTCUSDT 미체결 주문이 있습니다. 취소한 뒤 다시 실행하세요.")
+    for sym, amt in all_position_amts(client).items():
+        if amt != 0:
+            raise SystemExit(f"{sym} 포지션이 열려 있습니다. 비운 뒤 다시 실행하세요.")
+    for sym in SYMBOLS:
+        if foreign_orders(SymClient(client, sym)):
+            raise SystemExit(f"{sym} 미체결 주문이 있습니다. 취소한 뒤 다시 실행하세요.")
     now = datetime.now(KST)
     snap = binance.snapshot(client._cfg, now, {"live": False})
     net = float(snap["net_equity"])

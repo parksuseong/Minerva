@@ -27,6 +27,8 @@ from minerva.strategy.indicators import tm_states
 CLAUDE = os.environ.get("MINERVA_CLAUDE", str(Path.home() / ".local/bin/claude"))
 MODEL = os.environ.get("MINERVA_BTC_AI_MODEL", "sonnet")
 TIMEOUT = 60
+# 종목 선택(신호 겹침)은 손절·익절 질문이 뒤에 또 있어 더 짧게
+CHOOSE_TIMEOUT = 45
 BUDGET_USD = "0.50"
 DEFAULT_STOP = 3.0
 STOP_RANGE = (1.0, 5.0)
@@ -35,15 +37,25 @@ BLOCKED_TOOLS = (
     "Bash Edit Write NotebookEdit Read Grep Glob WebFetch WebSearch Task Agent TodoWrite"
 ).split()
 
-PROMPT = """너는 BTCUSDT 선물 자동매매 엔진의 청산 폭 담당이다.
-진입 여부와 방향은 이미 정해졌다(SCR 15분봉 신호, 레버리지 3배). 너는 이번 포지션의 손절 폭과
-익절 폭만 정한다. 아래 자료만 근거로 쓴다.
+PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 청산 폭 담당이다.
+종목(<SYMBOL>)과 진입 여부·방향은 이미 정해졌다(SCR 15분봉 신호, 레버리지 3배). 너는 이번
+포지션의 손절 폭과 익절 폭만 정한다. 아래 자료만 근거로 쓴다.
+
+가장 중요한 것은 돈을 잃지 않는 것이다(사용자 지시 "최대한 손해 보면 안 된다").
+- 손절은 15분봉 잡음(recent_15m_range_pct, atr14_pct의 15m) 바깥에 두되, 구조(swing20 고저)가
+  허락하는 한 가장 가깝게. 잡음 안이면 흔들려 나가고, 너무 멀면 한 번에 크게 잃는다.
+- 이미 많이 움직였으면(신호 종가와 지금 가격 차이, 20봉 고저까지 거리) 익절을 걸어 이익을 챙긴다.
+  익절 없이(null) 들고 가는 것은 추세가 뚜렷하고 아직 덜 움직였을 때만.
+- backtest_winrate_pct는 이 종목에서 이 신호의 과거 1년 승률이다. 낮으면(50% 아래) 익절을 더
+  가깝게, 손절도 구조가 허락하는 만큼 좁게 잡는다.
+- SOXLUSDT는 반도체 3배 ETF라 15분봉 하나가 2~7%씩 움직인다. 손절을 1~2%로 두면 잡음에 바로
+  걸린다: 15분 폭을 꼭 보고 정한다. NVDAUSDT·SOXLUSDT는 미국 주식 시세라 장 시간대에 크게 움직인다.
 
 규칙:
 - stop_pct: 진입가에서 손절까지 거리(%), 1.0 이상 5.0 이하. 기본은 3.0.
 - tp_pct: 진입가에서 익절까지 거리(%), 1.0 이상 10.0 이하.
   익절 없이 반대 신호까지 들고 가려면 null.
-- 3배 레버리지라 가격 1%는 계좌 약 3%다.
+- 3배 레버리지라 가격 1%는 계좌 약 3%다(손절 5%면 계좌 약 15%).
 - reason: 왜 그렇게 정했는지 한국어 한 문장(80자 이내).
 
 출력은 JSON 객체 하나만. 설명·코드 블록·다른 글자를 붙이지 않는다.
@@ -51,6 +63,22 @@ PROMPT = """너는 BTCUSDT 선물 자동매매 엔진의 청산 폭 담당이다
 
 자료:
 """
+
+
+def _bar_range(rows: list[list], n: int = 16) -> dict | None:
+    """최근 n개 15분봉의 고저 폭(종가 대비 %): 평균·가장 큰 값·마지막 봉."""
+    win = rows[-n:]
+    if not win:
+        return None
+    rng = [(float(r[2]) - float(r[3])) / float(r[4]) * 100 for r in win if float(r[4])]
+    if not rng:
+        return None
+    return {
+        "bars": len(rng),
+        "avg": round(sum(rng) / len(rng), 3),
+        "max": round(max(rng), 3),
+        "last": round(rng[-1], 3),
+    }
 
 
 def _atr_pct(rows: list[list], n: int = 14) -> float | None:
@@ -112,6 +140,8 @@ def packet(
     closed: list[dict],
     mode: str,
     ref_stats: dict | None,
+    symbol: str = "BTCUSDT",
+    winrate: float | None = None,
 ) -> dict:
     """AI에게 넘길 자료(작게). klines(interval)는 마감 여부와 상관없이 받은 봉."""
     frames = {k: [r for r in klines(k) if int(r[6]) < now_ms] for k in ("15m", "1h", "4h", "1d")}
@@ -125,6 +155,7 @@ def packet(
             "this_side_all": ref_stats.get("by", {}).get(f"{side}|all"),
         }
     return {
+        "symbol": symbol,
         "side": side,
         "signal_bar_kst": sig.get("bar_txt"),
         "signal_close": sig.get("close"),
@@ -135,7 +166,9 @@ def packet(
             "4h": _direction(frames["4h"], now_ms),
             "1d": d1,
         },
+        "backtest_winrate_pct": winrate,
         "atr14_pct": {k: _atr_pct(frames[k]) for k in ("15m", "1h", "1d")},
+        "recent_15m_range_pct": _bar_range(frames["15m"]),
         "swing20": {k: _swing(frames[k], price) for k in ("4h", "1d") if len(frames[k]) >= 20},
         "funding_rate_pct": round(funding * 100, 4) if funding is not None else None,
         "own_trades": own_summary(closed, mode),
@@ -143,8 +176,8 @@ def packet(
     }
 
 
-def parse(text: str) -> tuple[dict | None, str]:
-    """(값, 실패 이유). JSON 객체 하나만 받는다(앞뒤 공백·코드 울타리 하나만 허용)."""
+def _json_obj(text: str) -> tuple[dict | None, str]:
+    """JSON 객체 하나만 받는다(앞뒤 공백·코드 울타리 하나만 허용)."""
     t = (text or "").strip()
     if t.startswith("```") and t.endswith("```"):
         t = t[3:-3].strip()
@@ -156,6 +189,14 @@ def parse(text: str) -> tuple[dict | None, str]:
         return None, "JSON 아님"
     if not isinstance(obj, dict):
         return None, "JSON 객체 아님"
+    return obj, ""
+
+
+def parse(text: str) -> tuple[dict | None, str]:
+    """(값, 실패 이유). JSON 객체 하나만 받는다(앞뒤 공백·코드 울타리 하나만 허용)."""
+    obj, err = _json_obj(text)
+    if obj is None:
+        return None, err
     stop, tp, reason = obj.get("stop_pct"), obj.get("tp_pct", "missing"), obj.get("reason")
     if isinstance(stop, bool) or not isinstance(stop, (int, float)):
         return None, "stop_pct 숫자 아님"
@@ -224,7 +265,8 @@ def decide(data: dict, caller: Callable[[str], str] = call_claude) -> dict:
     t0 = time.monotonic()
     raw, err = "", ""
     try:
-        raw = caller(PROMPT + json.dumps(data, ensure_ascii=False))
+        head = PROMPT.replace("<SYMBOL>", str(data.get("symbol") or "자료의 symbol"))
+        raw = caller(head + json.dumps(data, ensure_ascii=False))
         parsed, err = parse(raw)
     except subprocess.TimeoutExpired:
         parsed, err = None, f"시간 초과({TIMEOUT}초)"
@@ -245,4 +287,66 @@ def decide(data: dict, caller: Callable[[str], str] = call_claude) -> dict:
         "used": used,
         "fallback": err or None,
         "secs": secs,
+    }
+
+
+# ---------------------------------------------------------------- 종목 선택(신호 겹침)
+
+CHOOSE_PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 종목 선택 담당이다.
+엔진은 BTCUSDT·ETHUSDT·SOXLUSDT·NVDAUSDT에 같은 신호(SCR 15분봉, 마감 봉)를 쓰고, 포지션은 한 번에
+하나만 든다(계좌 전체, 레버리지 3배). 이번 봉에 신호가 겹쳤다. options 중 하나만 고른다.
+- keep: 들고 있는 포지션 유지. flip:종목: 그 종목을 반대로 갈아타기. close:종목: 그 종목 청산만.
+- switch:종목: 들고 있는 포지션을 닫고 그 종목 신호 방향으로 진입. enter:종목: 그 종목 진입.
+- none: 아무것도 안 함.
+자료(candidates: 신호 난 종목, held: 들고 있는 포지션)만 근거로 쓴다. 갈아타면 수수료가 두 번 든다.
+backtest_winrate_pct는 종목별 이 신호의 과거 1년 승률이다. 뚜렷한 이유가 없으면 승률이 높은
+종목을 고른다.
+reason: 왜 골랐는지 한국어 한 문장(80자 이내).
+
+출력은 JSON 객체 하나만. 설명·코드 블록·다른 글자를 붙이지 않는다.
+{"choice": "options의 키 하나", "reason": "..."}
+
+자료:
+"""
+
+
+def brief_frames(klines: Callable[[str], list[list]], price: float, now_ms: int) -> dict:
+    """선택용 작은 시세 요약: 4시간·일봉 TM 방향, 15분·일봉 ATR%, 4시간·일봉 20봉 고저 거리."""
+    frames = {k: [r for r in klines(k) if int(r[6]) < now_ms] for k in ("15m", "4h", "1d")}
+    return {
+        "direction_tm": {k: _direction(frames[k], now_ms) for k in ("4h", "1d")},
+        "atr14_pct": {k: _atr_pct(frames[k]) for k in ("15m", "1d")},
+        "swing20": {k: _swing(frames[k], price) for k in ("4h", "1d") if len(frames[k]) >= 20},
+    }
+
+
+def parse_choice(text: str, options: list[str]) -> tuple[dict | None, str]:
+    obj, err = _json_obj(text)
+    if obj is None:
+        return None, err
+    choice, reason = obj.get("choice"), obj.get("reason")
+    if not isinstance(choice, str) or choice not in options:
+        return None, f"choice {choice!r}가 선택지에 없음"
+    if not isinstance(reason, str) or not reason.strip():
+        return None, "reason 없음"
+    return {"choice": choice, "reason": reason.strip()[:120]}, ""
+
+
+def choose(data: dict, options: list[str], caller: Callable[[str], str] = call_claude) -> dict:
+    """신호가 겹칠 때 고른 선택지. 답이 없거나 틀리면 choice None(엔진이 기본 규칙을 쓴다)."""
+    t0 = time.monotonic()
+    raw, err = "", ""
+    try:
+        raw = caller(CHOOSE_PROMPT + json.dumps(data, ensure_ascii=False))
+        parsed, err = parse_choice(raw, options)
+    except subprocess.TimeoutExpired:
+        parsed, err = None, f"시간 초과({CHOOSE_TIMEOUT}초)"
+    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+        parsed, err = None, f"호출 실패: {e}"
+    return {
+        "raw": raw[:1000],
+        "choice": parsed["choice"] if parsed else None,
+        "reason": parsed["reason"] if parsed else "",
+        "fallback": err or None,
+        "secs": round(time.monotonic() - t0, 1),
     }

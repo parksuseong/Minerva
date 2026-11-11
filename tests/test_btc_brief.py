@@ -100,10 +100,11 @@ def test_brief_text(files):
     assert "🔴 실전 · 정지 없음" in text
     assert "숏 0.031 BTC @ 76,000.0 · 지금 75,500.0 (+0.66%, 3배 +1.97%)" in text
     assert "손절 78,280.0 (−3%) · 익절 72,200.0 (+5%)" in text
-    assert "밤사이 청산 2건: 롱 -3.00% (손절) · 롱 +1.20% (반대 신호) · 합계 -1.50 USDT" in text
+    night = "밤사이 청산 2건: BTC 롱 -3.00% (손절) · BTC 롱 +1.20% (반대 신호) · 합계 -1.50 USDT"
+    assert night in text
     assert "평가액 830.20 USDT · 시드 815.53 대비 +1.80% (+14.67 USDT)" in text
     assert "−20%선 652.42 (여유 +27.2%)" in text and "30일 승률 1/2 = 50%" in text
-    assert "마지막 신호: 11-09 04:00 봉 숏 → 숏 진입" in text
+    assert "마지막 신호: 11-09 04:00 봉 BTC 숏 → 숏 진입" in text
     assert (
         "방향 1h 상방 · 4h 하방 · 1d 하방 · SCR① Stoch 35.2 / CCI -60.1 / RSI 44.8 (11-09 08:00 봉)"
         in text

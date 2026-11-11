@@ -83,7 +83,10 @@ def engine_view(now: datetime | None = None) -> dict:
             "ai_tp_range": list(bt.btc_ai.TP_RANGE),
             "margin_frac": bt.margin_frac(),
             "working_type": bt.WORKING_TYPE,
+            "symbols": list(bt.SYMBOLS),
         },
+        # TradFi 약관 미동의로 쉬는 종목 {종목: {"at", "until_ms", "code", ...}}
+        "unavailable": state.get("unavailable") or {},
         "position": state.get("position"),
         "last_run": last_run,
         "last_signal": last_sig,

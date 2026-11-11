@@ -26,7 +26,8 @@ def expected_token() -> str | None:
 
 def check_token(token: str) -> None:
     want = expected_token()
-    if want and not hmac.compare_digest(token, want):
+    # 비 ASCII str은 compare_digest가 TypeError(500)를 내서 바이트로 비교한다
+    if want and not hmac.compare_digest(token.encode(), want.encode()):
         raise HTTPException(status_code=403, detail="invalid token")
 
 

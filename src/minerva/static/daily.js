@@ -77,7 +77,7 @@
   }
 
   // 예전 분석 파일에 남은 인버스 상품(kind inv)은 보여주지 않는다
-  const rows = (d) => d.assets.concat(d.products || []).filter((a) => !a.error && a.kind !== "inv");
+  const rows = (d) => (d.assets || []).concat(d.products || []).filter((a) => !a.error && a.kind !== "inv");
 
   function renderToday(d) {
     const acts = d.actions || [];
@@ -122,13 +122,13 @@
   fetch("/api/daily").then((r) => r.json()).then((d) => {
     if (d.status === "pending") { $("daily-meta").textContent = d.message; return; }
     data = d;
-    const v = d.vix, f = d.fear;
+    const v = d.vix || {}, f = d.fear || {};
     const regCls = v.regime === "R0" || v.regime === "R1" ? "good" : "warn";
     $("daily-meta").innerHTML = `<div class="regime">
         <span class="chip ${regCls}">VIX ${v.close} · 주봉 5/10 ${v.gate ? `${v.gate.w5}/${v.gate.w10}` : "-"} · 롱 매수 ${regCls === "good" ? "열림" : "닫힘"}</span>
         <span class="chip">신규 비중 ${esc(v.size_limit)}</span>
         <span class="chip ${f.state === "없음" ? "" : "good"}">공포 초입: ${esc(f.state)} (VIX/VIX3M ${pct(f.premium)})</span>
-      </div><div class="detail">분석 ${esc(d.generated_at.replace("T", " "))} KST · 매일 09:10·16:30 갱신</div>` +
+      </div><div class="detail">분석 ${esc(String(d.generated_at || "-").replace("T", " "))} KST · 매일 09:10·16:30 갱신</div>` +
       (d.summary?.length ? `<ul style="margin:8px 0 0 16px;padding:0">${
         d.summary.map((s) => `<li class="detail" style="color:inherit">${esc(s)}</li>`).join("")}</ul>` : "");
     $("trade-memo").hidden = !d.memo?.length && !d.plan?.length;
@@ -137,6 +137,6 @@
     $("trade-plan-list").innerHTML = (d.plan || []).map((s) => `<li>${esc(s)}</li>`).join("");
     renderToday(d);
     renderList();
-    $("daily-note").textContent = d.note;
+    $("daily-note").textContent = d.note || "";
   }).catch(() => { $("daily-meta").textContent = "분석 데이터를 불러오지 못했어요"; });
 })();

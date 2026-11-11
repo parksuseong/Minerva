@@ -75,6 +75,12 @@ def test_hold_reports_drawdown_from_high():
     assert mdd == pytest.approx(-0.5) and cagr > 0
 
 
+def test_hold_without_drawdown_does_not_divide_by_zero():
+    bars = _bars([100, 110, 120, 130])
+    cagr, mdd, ratio = bt.hold(bars, 0, 4)
+    assert mdd == 0.0 and cagr > 0 and ratio == 0.0
+
+
 def test_side_pnl_adds_up_to_total_after_costs():
     bars = _bars([100, 100, 100, 200, 200, 100, 100])
     lo, sh = [0, 1, 0, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 0]

@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -65,14 +67,24 @@ def fetch_yahoo(symbol: str, rng: str = "10y", ttl: float | None = None) -> list
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         payload = json.load(resp)
+    _write_cache(path, payload)
+    return parse_yahoo(payload)
+
+
+def _write_cache(path: Path, payload: dict) -> None:
+    """임시 파일은 스레드·프로세스마다 따로 쓴다.
+
+    같은 이름을 쓰면 일일 분석의 여러 스레드(같은 기초 지수를 받는 상품들)나 연구 CLI가
+    동시에 받을 때 서로의 반쯤 쓴 파일을 옮겨 깨진 캐시가 남는다.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{threading.get_ident()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload))
         tmp.replace(path)
-    except OSError:
-        pass  # 캐시 실패는 조회 결과에 영향이 없다
-    return parse_yahoo(payload)
+    except OSError:  # 캐시 실패는 조회 결과에 영향이 없다
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 def summarize(bars: list[Bar], cci_n: int = 20) -> dict:

@@ -12,6 +12,7 @@ d 전날까지의 봉으로 `daily.verify`와 같은 판정(비용 차감 + BH �
 
 from __future__ import annotations
 
+import bisect
 import json
 import os
 from datetime import date
@@ -39,8 +40,9 @@ def month_starts(days: list[date]) -> list[date]:
 
 
 def window_of(day: date, starts: list[date]) -> date | None:
-    past = [m for m in starts if m <= day]
-    return past[-1] if past else None
+    """day가 속한 판정 월초. starts는 오름차순(`month_starts`)이다."""
+    i = bisect.bisect_right(starts, day) - 1
+    return starts[i] if i >= 0 else None
 
 
 def gate(flags: dict[date, bool], starts: list[date], ok) -> dict[date, bool]:

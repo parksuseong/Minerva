@@ -17,6 +17,17 @@ def test_gate_keeps_entries_only_in_passing_months():
     assert out[date(2025, 12, 30)] is False  # 첫 판정 전에는 사지 않는다
 
 
+def test_window_of_matches_linear_scan():
+    from datetime import timedelta
+
+    starts = wf.month_starts(DAYS)
+    day = date(2025, 12, 25)
+    while day <= date(2026, 3, 10):
+        past = [m for m in starts if m <= day]
+        assert wf.window_of(day, starts) == (past[-1] if past else None)
+        day += timedelta(days=1)
+
+
 def _v(trades=40, edge=0.01, p=0.001):
     return {
         "label": "검증됨",

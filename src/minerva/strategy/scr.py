@@ -40,9 +40,16 @@ GATE_OPEN = ("R0", "R1")
 SPLIT = date(2021, 10, 29)
 
 
-def confirmed(states: Sequence[TMState], day: date) -> TMState | None:
+def _closed_index(states: Sequence[TMState], day: date, days: Sequence[date] | None) -> int:
+    """그날까지 마감이 확정된 마지막 상위 봉의 위치(없으면 -1). days는 미리 뽑은 봉 날짜."""
+    return bisect.bisect_right(days if days is not None else [s.day for s in states], day) - 1
+
+
+def confirmed(
+    states: Sequence[TMState], day: date, days: Sequence[date] | None = None
+) -> TMState | None:
     """그날까지 마감이 확정된 마지막 상위 봉."""
-    i = bisect.bisect_right([s.day for s in states], day) - 1
+    i = _closed_index(states, day, days)
     return states[i] if i >= 0 else None
 
 
@@ -57,16 +64,17 @@ def rising(cur: TMState | None, prev: TMState | None) -> bool:
     return all(a is not None and b is not None and a > b for a, b in pairs)
 
 
-def frame_up(states: Sequence[TMState], day: date) -> bool:
+def frame_up(states: Sequence[TMState], day: date, days: Sequence[date] | None = None) -> bool:
     """원문 \"우상향하거나 SCR 지표가 양수\"."""
-    i = bisect.bisect_right([s.day for s in states], day) - 1
+    i = _closed_index(states, day, days)
     if i < 0:
         return False
     return is_up(states[i]) or (i > 0 and rising(states[i], states[i - 1]))
 
 
 def is_down(s: TMState | None) -> bool:
-    return s is not None and (s.cci or 0) < 0 and (s.rsi or 100) < 50
+    # `s.rsi or 100`은 RSI 0.0(연속 하락)을 100으로 읽어 하방을 놓쳤다
+    return s is not None and s.cci is not None and s.rsi is not None and s.cci < 0 and s.rsi < 50
 
 
 def entry_signal(
@@ -129,11 +137,13 @@ def plan_for(code: str, name: str, weight: float, bars: list[Bar]) -> Plan | Non
     pdi, mdi, adx = dmi(bars)
     week = tm_states(resample(bars, "W"))
     month = tm_states(resample(bars, "M"))
+    # 날마다 날짜 목록을 새로 만들면 종목당 수백만 번 비교한다
+    wdays, mdays = [s.day for s in week], [s.day for s in month]
     entry, add2, add3, strong, htf_exit, take, below = {}, {}, {}, {}, {}, {}, {}
     oversold, overbought, above50, below50, score, topdown = {}, {}, {}, {}, {}, {}
     for i, b in enumerate(bars):
         d = b.day
-        w, m = confirmed(week, d), confirmed(month, d)
+        w, m = confirmed(week, d, wdays), confirmed(month, d, mdays)
         take[d] = i > 0 and crossed_down(st, i, 80.0)
         strong[d] = is_up(w) and is_up(m)
         htf_exit[d] = (
@@ -145,7 +155,7 @@ def plan_for(code: str, name: str, weight: float, bars: list[Bar]) -> Plan | Non
         add2[d] = i > 0 and crossed_up(cc, i, -100.0)
         add3[d] = i > 0 and crossed_up(rs, i, 30.0)
         below[d] = ma[20][i] is not None and b.close < ma[20][i]
-        week_up, month_up = frame_up(week, d), frame_up(month, d)
+        week_up, month_up = frame_up(week, d, wdays), frame_up(month, d, mdays)
         day_up = is_up(daily[i]) or (i > 0 and rising(daily[i], daily[i - 1]))
         score[d] = week_up + month_up + day_up
         topdown[d] = week_up and m is not None and m.long_level >= 1

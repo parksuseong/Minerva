@@ -93,6 +93,8 @@ CID_TAG = {"BTCUSDT": "", "ETHUSDT": "E", "SOXLUSDT": "S", "NVDAUSDT": "N"}
 SWITCH_EDGE_PP = 5.0
 CHOOSE_FLAT_MAX = 5  # 빈손 동시 신호: AI에 우선순위 위 이만큼만
 CHOOSE_SWITCH_MAX = 3  # 보유 중 바꾸기 선택지 최대
+# 한 실행에서 진입 점검(시세·거래소 조회)을 하는 다른 종목 수 한도(신호가 몰려도 실행이 늘지 않게)
+PREPARE_MAX = 10
 # 15분봉 동시 받기(종목 50개). 499봉은 무게 2(1000봉은 5): 엔진 실행 한 번에 약 100
 FETCH_WORKERS = 10
 FETCH_BUDGET_S = 45
@@ -2293,13 +2295,17 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
     else:
         try:
             flt = filters(c.client)
-            gate = chase_gate(c.market, c.rows15, ctx.now_ms)
-            price0 = c.market.price()
+            # 거래 상태·장 시간은 시세(4시간·일봉)를 받기 전에 본다(무게 아끼기)
+            closed = "" if flt["status"] != "TRADING" else market_closed(ctx, state, flt)
+            if flt["status"] != "TRADING" or closed:
+                gate, price0 = {}, None
+            else:
+                gate = chase_gate(c.market, c.rows15, ctx.now_ms)
+                price0 = c.market.price()
         except (NetworkError, Rejected, OSError, ValueError, KeyError) as e:
             out["skip"] = f"시세·거래 규칙 조회 실패({type(e).__name__})"
             return out
         out.update(flt=flt, gate=gate, price=price0)
-        closed = "" if flt["status"] != "TRADING" else market_closed(ctx, state, flt)
         if flt["status"] != "TRADING":
             out["skip"] = f"{sym} 상태 {flt['status']}"
         elif closed:
@@ -2504,15 +2510,17 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
     cap = CHOOSE_SWITCH_MAX if pos else CHOOSE_FLAT_MAX
     viable: list[str] = []
     passed: dict[str, str] = {}  # 보지 않은 신호 {종목: 이유}
+    tried = 0
     for sym, g in others.items():
         rate = float(SYMBOL_WINRATE.get(sym) or 0)
         if pos and rate < a_rate + SWITCH_EDGE_PP:
             passed[sym] = (
                 f"승률 {rate:g}%가 보유 {_name(a_sym)} {a_rate:g}% + {SWITCH_EDGE_PP:g}%p보다 낮음"
             )
-        elif len(viable) >= cap:
+        elif len(viable) >= cap or tried >= PREPARE_MAX:
             passed[sym] = f"우선순위 밖(후보 {cap}개까지)"
         else:
+            tried += 1
             cands[sym] = prepare(ctx, state, sym, g, halts, t_start)
             if not cands[sym]["skip"]:
                 viable.append(sym)

@@ -108,7 +108,7 @@ Minerva/
   - 빈손 동시 신호: 우선순위 위 5개(들어갈 수 있는 것)만 AI 선택에 넣고, 답이 없으면 1순위. 보유 중 다른 종목 신호: 그 종목 승률 ≥ 보유 종목 승률 + 5%p(보유 종목이 범위 밖이면 0%)이고 진입 점검을 통과한 종목만 바꾸기 선택지(위 3개). 그런 종목이 없으면 AI를 부르지 않고 유지(자기 반대 신호면 갈아타기). 후보가 아닌 신호는 처리한 봉으로 적고 `events.jsonl`(`signal_passed`)에만.
   - 들고 있는 종목(`position`·`pending`·`last_symbol`)은 범위에서 빠져도 봉을 받아 대사·손절·반대 신호 청산을 계속한다. 다만 범위 밖이면 반대 신호에 다시 들어가지 않고 청산만 한다.
   - TradFi(`contractType` TRADIFI_PERPETUAL): 진입 전에 `/fapi/v1/tradingSchedule`(실행마다 한 번)을 보고 그 시장(exchangeInfo `underlyingType` = EQUITY·KR_EQUITY·HK_EQUITY·CN_EQUITY·COMMODITY·FX)이 지금 NO_TRADING이면 진입하지 않는다(기록만, 알림 없음). 종류를 모르거나(INDEX·PREMARKET) 시간표를 못 받으면 막지 않는다. 보유·청산은 영향 없음. 약관 미동의(-4411)는 계좌 단위라 TradFi 전체를 24시간 쉬고(`tradfi_until_ms`) 알림은 한 번.
-  - 알림: 막힌 신호("⏸ … 신호가 났지만")는 1순위 신호와 보유 종목만 텔레그램, 나머지는 `events.jsonl`(`signal_skip`).
+  - 알림: 막힌 신호("⏸ … 신호가 났지만")는 1순위 신호와 보유 종목만 텔레그램, 나머지는 `events.jsonl`(`signal_skip`). 한 실행에서 진입 점검(시세·거래소 조회)은 다른 종목 10개까지(`PREPARE_MAX`), TradFi 장 시간은 4시간·일봉을 받기 전에 본다.
   - 15분봉은 실행마다 범위 종목 + 보유 종목을 10개씩 동시에 받는다(499봉, 무게 2, 50종목 약 100). 45초 안에 못 받거나 실패한 종목은 그 실행에서 신호만 빠진다. 그 봉으로 `near.json`(종목·방향별 넘어온 지표 수, 지금 신호, 남은 지표의 기준선 가격 어림값 = 화면 `ScrView.linePrice` 포팅 `scr_lab.line_price`, 승률·우선순위)을 원자적으로 쓰고, 화면 「신호 가까운 순」(`static/scrnear.js`)이 `/api/btc/near`로 위 15줄을 그린다.
   - 웹 봉 허용 종목은 네 종목 ∪ 범위 종목(`routes.kline_symbols`, 1분 캐시). 계좌 체결 내역은 네 종목 + 엔진이 든 종목(상태·`closed.jsonl`) + 지금 포지션이 있는 종목만 묻는다(`binance.trade_symbols`, 50종목을 매분 묻지 않음).
   - 주문 ID 태그: BTC(빈칸)·ETH `E`·SOXL `S`·NVDA `N`은 그대로(실전 상태 호환), 나머지는 기초자산 글자 앞 4자 + 이름 crc 확인 글자(최대 5자, `cid_tag`), 범위 안 겹침은 `cid_tags`가 해시 태그로 바꾼다. ID는 36자 안.

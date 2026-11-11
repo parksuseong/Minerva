@@ -2854,3 +2854,19 @@ def test_exit_prompt_has_market_kind(env, multi, monkeypatch):
     mrun(env, ex, multi)
     assert '"market_kind": "TradFi US stock/ETF"' in asked["exits"][0]
     assert "market_kind" in bt.btc_ai.PROMPT and "SOXLUSDT" in bt.btc_ai.PROMPT
+
+
+def test_prepare_attempts_are_capped(env, multi, monkeypatch):
+    monkeypatch.setattr(bt, "PREPARE_MAX", 2)
+    ex = MultiExchange()
+    signals(monkeypatch, multi, {s: "long" for s in bt.SYMBOLS})
+    for s in bt.SYMBOLS:
+        multi.for_symbol(s)._price = PRICES[s] * 1.05  # 모두 추격 한도 밖
+    mrun(env, ex, multi)
+    ev = jsonl("events.jsonl")
+    assert len([e for e in ev if e.get("event") == "chase_skip"]) == 2
+    assert {e["symbol"] for e in ev if e.get("event") == "signal_passed"} == {
+        "ETHUSDT",
+        "SOXLUSDT",
+    }
+    assert all(state()["last_bars"][s] == BAR for s in bt.SYMBOLS)

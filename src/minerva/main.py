@@ -1,7 +1,7 @@
 import socket
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -9,12 +9,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from minerva import __version__, notify
+from minerva.kis import KST
 from minerva.office import router as office_router
 from minerva.routes import router as data_router
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-KST = timezone(timedelta(hours=9))
 
 
 def startup_message() -> str:

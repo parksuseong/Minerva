@@ -170,7 +170,7 @@
     const LC = window.LightweightCharts;
     if (!LC || !$("bte-chart") || !$("bte-chart").clientWidth) return false;
     ({ chart, series } = U.scrChart($("bte-chart"), { timeFormatter: (t) => fmt(t),
-      titles: ["Stoch 9", "CCI 20", "RSI 21"], up: GREEN, down: RED }));
+      titles: ["Stoch 9 (20/80)", "CCI 20 (±100)", "RSI 21 (30/70)"], up: GREEN, down: RED }));
     series.marks = LC.createSeriesMarkers(series.candle, []);
     return true;
   };

@@ -39,6 +39,20 @@ window.MinervaUI = (() => {
     };
     const panes = chart.panes();
     [0.52, 0.16, 0.16, 0.16].forEach((f, i) => panes[i] && panes[i].setStretchFactor(f));
+    // 칸마다 왼쪽 위에 이름을 크게 붙인다(사용자 2026-11-12 "아래 차트는 무슨 차트인지 모르겠네").
+    // 축의 작은 제목만으로는 아래 세 칸이 무엇인지 안 보였다.
+    if (LC.createTextWatermark) {
+      const tag = (i, txt, color) => panes[i] && LC.createTextWatermark(panes[i], {
+        horzAlign: "left", vertAlign: "top",
+        lines: [{ text: txt, color, fontSize: 12, fontStyle: "bold" }],
+      });
+      const hint = opts.hints || ["가격", "점선 아래선 위로 → 롱 · 윗선 아래로 → 숏",
+        "점선 아래선 위로 → 롱 · 윗선 아래로 → 숏", "점선 아래선 위로 → 롱 · 윗선 아래로 → 숏"];
+      tag(0, hint[0], text);
+      tag(1, `${ts} · ${hint[1]}`, "#f7a21b");
+      tag(2, `${tc} · ${hint[2]}`, "#ab47bc");
+      tag(3, `${tr} · ${hint[3]}`, "#2962ff");
+    }
     return { chart, series };
   };
 

@@ -44,8 +44,8 @@ def test_build_long_setup_after_crash_and_rebound():
     assert out["ind"]["long_level"] == out["long_setup"]["scr_level"]
     # 환산: SOXX 종가에서 +1%면 SOXL은 +3%
     line = out["lines"][0]
-    want = 40.0 * (1 + 3 * (line["soxx"] / out["close"] - 1))
-    assert line["soxl"] == pytest.approx(want, abs=0.01)
+    want = 40.0 * (1 + 3 * (line["base"] / out["close"] - 1))
+    assert line["tgt"] == pytest.approx(want, abs=0.01)
 
 
 def test_build_short_setup_turn_near_ma20():
@@ -54,3 +54,11 @@ def test_build_short_setup_turn_near_ma20():
     out = sc.build(_bars(closes), 50.0)
     s = out["short_setup"]
     assert s["near_ma20"] is True and s["stoch_turn"] is True and s["ok"] is True
+
+
+def test_build_one_times_self_has_identical_target_prices():
+    closes = [100 + i * 0.1 for i in range(280)]
+    out = sc.build(_bars(closes), closes[-1], lev=1, base_name="NVDA", stock_name="NVDA")
+    assert out["lev"] == 1 and out["base"] == "NVDA"
+    assert all(x["tgt"] == pytest.approx(x["base"], abs=0.01) for x in out["lines"])
+    assert "어림" not in out["note"]

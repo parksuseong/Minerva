@@ -27,7 +27,7 @@
   // [키, 이름, 최소, 최대, 켜기 칸 키]. 켜기를 끄면 그 청산은 계산에서 뺀다.
   const EXIT_FIELDS = [["stop_pct", "손절 %", 0.1, 50, "use_stop"], ["tp_pct", "익절 %", 0.1, 100, "use_tp"]];
   // 종목: 가격 소수 자리(dp). 서버 KLINE_SYMBOLS와 맞춘다.
-  const SYMS = { BTCUSDT: { dp: 1 }, SOXLUSDT: { dp: 2 } };
+  const SYMS = { BTCUSDT: { dp: 1 }, SOXLUSDT: { dp: 2 }, NVDAUSDT: { dp: 2 } };
   const BASE = { symbol: "BTCUSDT", interval: "15m", days: 7, show_long: true, show_short: true,
     use_stop: true, stop_pct: 3, use_tp: false, tp_pct: 3 };
   const defaults = () => Object.assign({}, core ? core.DEFAULTS : {}, BASE);

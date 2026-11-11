@@ -80,7 +80,7 @@
       const el = $(`${t.id}-chart`);
       if (!LC || !el || !el.clientWidth) return false;
       ({ chart, series } = U.scrChart(el, { timeFormatter: (x) => V.fmt(x),
-        titles: ["Stoch 9", "CCI 20", "RSI 21"], up: GREEN, down: RED }));
+        titles: ["Stoch 9 (20/80)", "CCI 20 (±100)", "RSI 21 (30/70)"], up: GREEN, down: RED }));
       series.marks = LC.createSeriesMarkers(series.candle, []);
       series.candle.applyOptions({ priceFormat: { type: "price", precision: DP, minMove: 0.01 } });
       return true;

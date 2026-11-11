@@ -278,6 +278,8 @@ def env(tmp_path, monkeypatch):
     for name in ("SYMBOLS", "SYMBOL_WINRATE", "PRIORITY", "UNIVERSE"):
         monkeypatch.setattr(bt, name, getattr(bt, name))
     monkeypatch.setattr(bt, "_TAGS", {})
+    # 다른 흐름 시험은 ETH·SOXL로도 들어간다. 승률 50% 바닥은 따로 시험한다
+    monkeypatch.setattr(bt, "MIN_ENTRY_WINRATE", 0.0)
     monkeypatch.setattr(bt, "DIR", tmp_path / "btc_trade")
     monkeypatch.setattr(bt, "CAPITAL_FILE", tmp_path / "binance_capital.json")
     clock = {"t": 0.0}
@@ -2875,18 +2877,22 @@ def test_prepare_attempts_are_capped(env, multi, monkeypatch):
     assert all(state()["last_bars"][s] == BAR for s in bt.SYMBOLS)
 
 
-def test_tradable_set_keeps_user_four_and_backtest_winners():
+def test_tradable_set_needs_winrate_50_and_profit():
     stats = {
-        "BNBUSDT": {"ret": 99.4, "trades": 123, "days": 365},
-        "SOLUSDT": {"ret": -93.7, "trades": 123, "days": 365},
-        "NEWUSDT": {"ret": 50.0, "trades": 5, "days": 30},
-        "SOXLUSDT": {"ret": -99.3, "trades": 131, "days": 177},
+        "BNBUSDT": {"winrate": 56.9, "ret": 99.4, "trades": 123, "days": 365},
+        "XRPUSDT": {"winrate": 43.7, "ret": 82.4, "trades": 151, "days": 365},  # 50% 미만
+        "XAUUSDT": {"winrate": 57.9, "ret": -21.0, "trades": 95, "days": 332},  # 손실
+        "NEWUSDT": {"winrate": 70.0, "ret": 50.0, "trades": 5, "days": 30},  # 표본 작음
+        # 네 종목: NVDA는 손실이어도 되지만 ETH처럼 50% 미만은 안 된다
+        "NVDAUSDT": {"winrate": 54.9, "ret": -27.7, "trades": 91, "days": 227},
+        "ETHUSDT": {"winrate": 43.3, "ret": 89.6, "trades": 104, "days": 365},
+        "SOXLUSDT": {"winrate": 16.0, "ret": -99.3, "trades": 131, "days": 177},
     }
-    got = bt.tradable_set(list(stats), stats)
-    assert "BNBUSDT" in got
-    assert "SOLUSDT" not in got
-    assert "NEWUSDT" not in got  # 표본 작음
-    assert set(bt.DEFAULT_SYMBOLS) <= got  # 사용자가 고른 네 종목은 그대로
+    assert bt.MIN_ENTRY_WINRATE == 50.0
+    assert bt.tradable_set(list(stats), stats) == {"BNBUSDT", "NVDAUSDT"}
+    # universe.json이 없을 때(네 종목): 승률 50% 이상만 → BTC
+    assert bt._default_tradable() == {"BTCUSDT"}
+
 
 
 def test_flat_losing_symbol_signal_not_entered(env, multi, monkeypatch):

@@ -2934,3 +2934,28 @@ def test_public_stops_after_rate_limit(monkeypatch):
         assert calls == ["https://x/a"]
     finally:
         bt._RATE_HIT.clear()
+
+
+def test_flat_signal_below_winrate_50_not_entered(env, multi, monkeypatch):
+    monkeypatch.setattr(bt, "MIN_ENTRY_WINRATE", 50.0)
+    ex = MultiExchange()  # 드라이런
+    rates = {"BTCUSDT": 54, "ETHUSDT": 44, "SOXLUSDT": 17, "NVDAUSDT": 49}
+    grow(monkeypatch, ex, rates)  # 모두 수익 +10%
+    sig_all(monkeypatch, multi, {"ETHUSDT": "long"}, rates)
+    asked = ai_answers(monkeypatch, "모르겠어요")
+    mrun(env, ex, multi)
+    assert not asked["choose"]
+    assert state().get("position") is None
+    ev = [json.loads(x) for x in (bt.DIR / "events.jsonl").read_text().splitlines()]
+    assert any(e.get("event") == "signal_passed" and e.get("symbol") == "ETHUSDT" for e in ev)
+
+
+def test_held_symbol_below_winrate_50_closes_without_flip(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    monkeypatch.setattr(bt, "MIN_ENTRY_WINRATE", 50.0)  # 보유 BTC 승률 40 → 진입 불가
+    sig_all(monkeypatch, multi, {"BTCUSDT": "short"}, bt.DEFAULT_SYMBOLS, bar=BAR + bt.BAR_MS)
+    bt.run(now=NOW.replace(minute=45), client=ex, market_=multi, send=env["send"])
+    assert ex.amts["BTCUSDT"] == 0 and state().get("position") is None
+    assert jsonl("closed.jsonl")[-1]["symbol"] == "BTCUSDT"

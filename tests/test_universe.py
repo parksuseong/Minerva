@@ -59,3 +59,37 @@ def test_kospi_dedupes_stock_seen_on_two_pages():
     s = {"itemCode": "000001", "stockName": "A", "stockEndType": "stock"}
     b = {"itemCode": "000002", "stockName": "B", "stockEndType": "stock"}
     assert universe.pick_kospi([s, s, b], 5) == [("000001.KS", "A"), ("000002.KS", "B")]
+
+
+def test_corrupt_cache_refetches(tmp_path, monkeypatch):
+    # 반쯤 쓴 캐시 파일이 남아도 일일 분석이 멈추지 않는다
+    monkeypatch.setattr(universe, "CACHE_DIR", tmp_path)
+    (tmp_path / "universe-nasdaq2.json").write_text('[["NVDA", "엔')
+    stocks = [
+        {"symbolCode": "NVDA", "stockName": "엔비디아", "stockEndType": "stock"},
+        {"symbolCode": "AAPL", "stockName": "애플", "stockEndType": "stock"},
+    ]
+    monkeypatch.setattr(universe, "_get_json", lambda url: {"stocks": stocks})
+    want = [("NVDA", "엔비디아"), ("AAPL", "애플")]
+    assert universe.nasdaq_top(2) == want
+    assert universe._read(tmp_path / "universe-nasdaq2.json") == want
+
+
+def test_corrupt_cache_offline_uses_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(universe, "CACHE_DIR", tmp_path)
+    (tmp_path / "universe-kospi50.json").write_text("{")
+
+    def boom(url):
+        raise OSError("offline")
+
+    monkeypatch.setattr(universe, "_get_json", boom)
+    assert universe.kospi_top(50) == universe.FALLBACK_KOSPI
+
+
+def test_fresh_list_kept_when_cache_unwritable(tmp_path, monkeypatch):
+    blocker = tmp_path / "file"
+    blocker.write_text("")
+    monkeypatch.setattr(universe, "CACHE_DIR", blocker / "sub")  # 폴더를 만들 수 없다
+    stocks = [{"symbolCode": "NVDA", "stockName": "엔비디아", "stockEndType": "stock"}]
+    monkeypatch.setattr(universe, "_get_json", lambda url: {"stocks": stocks})
+    assert universe.nasdaq_top(1) == [("NVDA", "엔비디아")]

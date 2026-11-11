@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import time
 import urllib.request
+from pathlib import Path
 
 from minerva.strategy.report import CACHE_DIR
 
@@ -47,21 +50,39 @@ def _get_json(url: str) -> dict:
         return json.load(r)
 
 
+def _read(path: Path) -> list[tuple[str, str]] | None:
+    """캐시 목록. 없거나 깨졌으면 None (깨진 캐시 하나로 일일 분석 전체가 멈추지 않게)."""
+    try:
+        return [tuple(x) for x in json.loads(path.read_text())] or None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _write(path: Path, items: list[tuple[str, str]]) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(items, ensure_ascii=False))
+        tmp.replace(path)
+    except OSError:  # 캐시를 못 써도 방금 받은 순위는 쓴다
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
 def _cached(name: str, fetch, fallback: list[tuple[str, str]]) -> list[tuple[str, str]]:
     path = CACHE_DIR / f"universe-{name}.json"
     if path.exists() and time.time() - path.stat().st_mtime < TTL:
-        return [tuple(x) for x in json.loads(path.read_text())]
+        items = _read(path)
+        if items:
+            return items
     try:
         items = fetch()
-        if items:
-            CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(items, ensure_ascii=False))
-            return items
     except Exception:  # noqa: BLE001 — 순위를 못 받아도 분석은 돈다
-        pass
-    if path.exists():
-        return [tuple(x) for x in json.loads(path.read_text())]
-    return fallback
+        items = None
+    if items:
+        _write(path, items)
+        return items
+    return _read(path) or fallback
 
 
 def pick_kospi(stocks: list[dict], n: int) -> list[tuple[str, str]]:

@@ -55,6 +55,7 @@ import logging
 import os
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -773,10 +774,31 @@ def _close_result(client, pos: dict, close_side: str) -> tuple[float | None, flo
 # ---------------------------------------------------------------- 시세·신호
 
 
+# 공개 시세에서 429·418을 한 번 받으면 이번 실행의 남은 공개 요청은 보내지 않는다
+# (레드팀 2026-11-12: 50종목 동시 받기가 429 뒤에도 계속 보내면 418 차단으로 번지고,
+# 같은 IP의 주문도 막힌다)
+_RATE_HIT = threading.Event()
+
+
 def _public(url: str, timeout: float = 15):
+    if _RATE_HIT.is_set():
+        raise ConnectionError("요청 한도(429/418) 뒤라 이번 실행의 공개 시세 요청을 멈춤")
     req = urllib.request.Request(url, headers={"User-Agent": "minerva"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code in (418, 429):
+            _RATE_HIT.set()
+            log.error("공개 시세 요청 한도 %s: 이번 실행의 공개 요청을 멈춤", e.code)
+        raise
+
+
+def _close_qty(amt: float) -> Decimal:
+    """거래소가 준 포지션 수량을 그대로(뒤 0 없이) 쓴다. 이미 그 종목 수량 단위라 내림이 필요 없고,
+    0.001로 맞추면 단위 1·0.01 종목에 '12345.000'처럼 정밀도 넘는 값이 나간다(레드팀 2026-11-12)."""
+    d = Decimal(repr(abs(float(amt)))).normalize()
+    return Decimal(format(d, "f"))
 
 
 class Market:
@@ -1175,8 +1197,7 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
     try:
         amt = position_amt(ctx.client)
         if amt:
-            # 거래소 수량은 이미 그 종목 단위(BTC·ETH 0.001, SOXL·NVDA 0.01)라 0.001 내림은 그대로다
-            market(ctx.client, close_side, _round(abs(amt), "0.001"), cid, reduce=True)
+            market(ctx.client, close_side, _close_qty(amt), cid, reduce=True)
         if position_amt(ctx.client) != 0:
             raise RuntimeError("청산 뒤에도 포지션이 남음")
     except (Rejected, NetworkError, RuntimeError) as e:
@@ -1486,7 +1507,7 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
         cancel_engine_stops(c)
         amt = position_amt(c)
         if amt:
-            market(c, close_side, _round(abs(amt), "0.001"), cid, reduce=True)
+            market(c, close_side, _close_qty(amt), cid, reduce=True)
         if position_amt(c) != 0:
             raise RuntimeError("청산 주문 뒤에도 포지션이 남음")
     except (Rejected, NetworkError, RuntimeError) as e:

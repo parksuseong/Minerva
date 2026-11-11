@@ -2900,3 +2900,31 @@ def test_flat_losing_symbol_signal_not_entered(env, multi, monkeypatch):
     assert state().get("position") is None
     ev = [json.loads(x) for x in (bt.DIR / "events.jsonl").read_text().splitlines()]
     assert any(e.get("event") == "signal_passed" and e.get("symbol") == "AAAUSDT" for e in ev)
+
+
+def test_close_qty_uses_exchange_amount_without_trailing_zeros():
+    assert str(bt._close_qty(12345.0)) == "12345"
+    assert str(bt._close_qty(-40.25)) == "40.25"
+    assert str(bt._close_qty(0.003)) == "0.003"
+    assert str(bt._close_qty(1e-05)) == "0.00001"
+
+
+def test_public_stops_after_rate_limit(monkeypatch):
+    import io
+    import urllib.error
+
+    calls = []
+
+    def fake_open(req, timeout=0):
+        calls.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 429, "Too Many", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(bt.urllib.request, "urlopen", fake_open)
+    try:
+        with pytest.raises(urllib.error.HTTPError):
+            bt._public("https://x/a")
+        with pytest.raises(OSError):
+            bt._public("https://x/b")  # 보내지 않는다
+        assert calls == ["https://x/a"]
+    finally:
+        bt._RATE_HIT.clear()

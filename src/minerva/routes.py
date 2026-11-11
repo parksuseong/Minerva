@@ -104,27 +104,12 @@ def btc_near() -> dict:
 KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
 # SCR 실험실에서 고를 수 있는 봉(분 단위)
 # 봉을 내줄 수 있는 선물 종목(공개 시세). SOXL은 종목 분석 > SOXL 탭(보기만, 2026-11-11).
-# 여기에 엔진 종목 범위(거래량 상위 50, universe.json)를 더한다(`kline_symbols`)
 KLINE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
-UNIVERSE_TTL = 60.0
-_uni_cache: dict = {}
-
-
-def _universe_symbols() -> tuple[str, ...]:
-    return tuple(btc_view.universe_symbols())
-
-
 def kline_symbols() -> set[str]:
-    """고정 네 종목 ∪ 엔진 종목 범위(1분 캐시). 파일을 못 읽으면 네 종목만."""
-    hit = _uni_cache.get("v")
-    if hit and _mono() - hit[0] < UNIVERSE_TTL:
-        return hit[1]
-    try:
-        syms = set(KLINE_SYMBOLS) | set(_universe_symbols())
-    except (OSError, ValueError):
-        syms = set(KLINE_SYMBOLS)
-    _uni_cache["v"] = (_mono(), syms)
-    return syms
+    """화면 봉 허용 종목: 고정 네 종목만. 범위 50종목을 열면 공개 주소 하나로 무게 큰 요청
+    (1년 15분봉 ≈ 250)을 종목마다 보낼 수 있어 같은 IP의 실전 엔진까지 차단될 수 있다
+    (레드팀 2026-11-12). 신호 가까운 순은 엔진이 쓴 near.json만 읽는다."""
+    return set(KLINE_SYMBOLS)
 
 
 LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}

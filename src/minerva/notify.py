@@ -26,9 +26,18 @@ def load_config() -> tuple[str, str] | None:
     return (token, chat) if token and chat else None
 
 
+def _config() -> tuple[str, str] | None:
+    """설정 파일을 못 읽어도(권한·깨진 파일) 알림 실패로만 끝낸다. 호출한 작업은 계속 돈다."""
+    try:
+        return load_config()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("telegram config unreadable: %s", type(exc).__name__)
+        return None
+
+
 def send(text: str, timeout: float = 10) -> bool:
     """메시지를 보낸다. 설정이 없거나 실패하면 False (서버 기동을 막지 않는다)."""
-    cfg = load_config()
+    cfg = _config()
     if cfg is None:
         log.info("telegram not configured; skip")
         return False
@@ -48,11 +57,16 @@ def send(text: str, timeout: float = 10) -> bool:
 
 def send_document(path: Path, caption: str = "", timeout: float = 30) -> bool:
     """파일을 텔레그램으로 보낸다 (백업용). 실패하면 False."""
-    cfg = load_config()
+    cfg = _config()
     if cfg is None:
         log.info("telegram not configured; skip")
         return False
     token, chat = cfg
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        log.warning("telegram document unreadable: %s", type(exc).__name__)
+        return False
     boundary = "minerva" + os.urandom(8).hex()
     parts = []
     for name, value in (("chat_id", chat), ("caption", caption)):
@@ -61,7 +75,7 @@ def send_document(path: Path, caption: str = "", timeout: float = 30) -> bool:
     parts.append(
         f'--{boundary}\r\nContent-Disposition: form-data; name="document"; '
         f'filename="{path.name}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()
-        + path.read_bytes()
+        + payload
         + b"\r\n"
     )
     body = b"".join(parts) + f"--{boundary}--\r\n".encode()

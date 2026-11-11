@@ -58,3 +58,23 @@ def test_send_failure_returns_false(monkeypatch):
 
 def test_startup_message_mentions_minerva():
     assert "미네르바 기동" in main.startup_message()
+
+
+def test_send_returns_false_when_config_unreadable(tmp_path, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    env = tmp_path / "telegram.env"
+    env.mkdir()  # 읽으면 IsADirectoryError: 작업이 죽지 않고 False여야 한다
+    monkeypatch.setattr(notify, "ENV_FILE", env)
+    assert notify.send("hi") is False
+
+
+def test_send_document_missing_file_returns_false(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abc:123")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+    def no_network(*a, **k):
+        raise AssertionError("should not send")
+
+    monkeypatch.setattr(notify.urllib.request, "urlopen", no_network)
+    assert notify.send_document(tmp_path / "gone.tar.gz") is False

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -56,12 +57,21 @@ def load_config(path: Path = ENV_FILE) -> dict:
 
 
 def _write_private(path: Path, text: str) -> None:
+    """권한 600으로 원자적으로 쓴다 (임시 파일에 쓰고 바꾼다).
+
+    임시 파일 이름에 프로세스·스레드를 넣는다. 공용 이름(`x.tmp`)이면 두 프로세스가 같은 파일을
+    동시에 쓸 때 서로의 임시 파일을 덮거나 지워 반쪽 파일이 남을 수 있다.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # 쓰다 실패한 임시 파일을 남기지 않는다
+        raise
 
 
 def _request(req: urllib.request.Request) -> tuple[dict, dict]:
@@ -85,10 +95,14 @@ def access_token(cfg: dict, now: datetime | None = None) -> str:
     now = now or datetime.now(KST)
     cache = STATE_DIR / "token.json"
     if cache.exists():
-        data = json.loads(cache.read_text())
-        expires = datetime.strptime(data["access_token_token_expired"], "%Y-%m-%d %H:%M:%S")
-        if expires.replace(tzinfo=KST) - now > timedelta(minutes=30):
-            return data["access_token"]
+        try:
+            data = json.loads(cache.read_text())
+            expires = datetime.strptime(data["access_token_token_expired"], "%Y-%m-%d %H:%M:%S")
+            if expires.replace(tzinfo=KST) - now > timedelta(minutes=30):
+                return data["access_token"]
+        except (ValueError, KeyError, TypeError) as e:
+            # 깨진 캐시 때문에 매 실행이 실패하지 않게 새로 받는다
+            log.warning("token cache unreadable (%s); reissuing", type(e).__name__)
     body = json.dumps(
         {
             "grant_type": "client_credentials",
@@ -291,7 +305,10 @@ def run(out: Path) -> dict:
         data = snapshot(load_config(), now)
     except (KisError, OSError, KeyError, ValueError) as e:
         log.error("account snapshot failed: %s", e)
-        data = json.loads(out.read_text()) if out.exists() else {"status": "error"}
+        try:
+            data = json.loads(out.read_text()) if out.exists() else {"status": "error"}
+        except ValueError:  # 직전 스냅숏이 깨졌으면 오류 표시만 남긴다
+            data = {"status": "error"}
         data["error"] = str(e)
         data["error_at"] = now.strftime("%Y-%m-%d %H:%M")
         _write_private(out, json.dumps(data, ensure_ascii=False))

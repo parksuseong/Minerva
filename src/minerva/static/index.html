@@ -300,7 +300,12 @@
 
   <div class="panel" id="tab-scrlab" hidden>
     <section class="card">
-      <h2>🧪 SCR 실험실 <span class="mini">BTCUSDT 선물 · 숫자를 바꾸면 바로 다시 계산 · 주문 없음</span></h2>
+      <h2>🧪 SCR 실험실 <span class="mini"><span id="lab-sym-name">BTCUSDT</span> 선물 · 숫자를 바꾸면 바로 다시 계산 · 주문 없음</span></h2>
+      <div class="filters" id="lab-sym" role="group" aria-label="종목">
+        <span class="mini">종목</span>
+        <button type="button" data-sym="BTCUSDT">₿ 비트코인</button>
+        <button type="button" data-sym="SOXLUSDT">🔧 SOXL</button>
+      </div>
       <div class="filters" id="lab-tf" role="group" aria-label="봉">
         <span class="mini">봉</span>
         <button type="button" data-tf="5m">5분</button>
@@ -333,7 +338,7 @@
         <b>숏 열림</b>은 반대로 위선을 위에서 아래로 넘어올 때. 조건이 처음 맞은 봉에만 표시하고, 계속 맞는 동안은 다시 찍지 않아요.<br>
         <b>구간 안에 있음</b>: 넘어옴 대신 최근 W봉 안에 아래선 밑(롱)·위선 위(숏)에 있었으면 그 지표는 맞은 걸로 쳐요.
         <b>3개 중 2개</b>: 세 지표 중 두 개만 맞아도 신호. 숫자를 바꾸는 동안 기간·봉은 그대로예요.<br>
-        기본값: Stoch 9 (20/80) · CCI 20 (−100/+100) · RSI 21 (30/70) · W 3 · 3개 중 3개 · 기준선 다시 넘어옴 · 손절 켬 3% · 익절 끔 · 15분 · 7일 ("기본값으로"는 봉·기간도 되돌려요). 5분봉은 90일까지.
+        기본값: Stoch 9 (20/80) · CCI 20 (−100/+100) · RSI 21 (30/70) · W 3 · 3개 중 3개 · 기준선 다시 넘어옴 · 손절 켬 3% · 익절 끔 · 15분 · 7일 ("기본값으로"는 봉·기간도 되돌리고 종목은 그대로예요). 5분봉은 90일까지.
       </details>
       <div id="lab-status" class="mini">탭을 열면 불러와요</div>
     </section>
@@ -435,7 +440,7 @@
   <script src="/static/daily.js?v=20261111b"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
   <script src="/static/scrlab_core.js?v=20261110b"></script>
-  <script src="/static/scrlab.js?v=20261111a"></script>
+  <script src="/static/scrlab.js?v=20261111b"></script>
   <script src="/static/scrview.js?v=20261111a"></script>
   <script src="/static/btcengine.js?v=20261111c"></script>
   <script src="/static/soxl.js?v=20261111a"></script>

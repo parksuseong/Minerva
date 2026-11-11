@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from minerva.strategy import btc_bt as bt
 from minerva.strategy.btc_bt import (
     RULES,
     YEAR_DAYS,
@@ -137,9 +138,7 @@ def run(
     if pos:
         leave(bars[end - 1].close, bars[end - 1].day.year)
     days = max((bars[end - 1].day - bars[start].day).days, 1)
-    cagr = 0.0 if ruined and equity <= 0 else equity ** (YEAR_DAYS / days) - 1
-    if ruined:
-        cagr = -1.0
+    cagr = -1.0 if ruined else equity ** (YEAR_DAYS / days) - 1
     return Run(equity, cagr, mdd, cagr / abs(mdd) if mdd else 0.0, log)
 
 
@@ -168,22 +167,11 @@ def yearly_plans(tables: dict[int, dict]) -> dict[int, dict]:
 
 
 def without_top(trades: Sequence[tuple[int, int, float]], n: int, days: int) -> float:
-    kept = sorted(r for _, _, r in trades)[: max(len(trades) - n, 0)]
-    equity = 1.0
-    for r in kept:
-        equity *= 1 + r
-    return equity ** (YEAR_DAYS / max(days, 1)) - 1
+    return bt.without_top([r for _, _, r in trades], n, days)
 
 
 def hold(bars: Sequence[Bar], start: int) -> tuple[float, float, float]:
-    entry = bars[start].open
-    peak, mdd = entry, 0.0
-    for b in bars[start:]:
-        mdd = min(mdd, b.low / peak - 1)
-        peak = max(peak, b.high)
-    days = max((bars[-1].day - bars[start].day).days, 1)
-    cagr = (bars[-1].close / entry) ** (YEAR_DAYS / days) - 1
-    return cagr, mdd, cagr / abs(mdd)
+    return bt.hold(bars, start, len(bars))
 
 
 def evaluate(upper: str, root: Path = OUT) -> dict:

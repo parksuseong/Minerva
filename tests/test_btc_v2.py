@@ -88,3 +88,10 @@ def test_pick_cannot_see_the_test_year():
 def test_without_top_removes_largest():
     trades = [(2020, 1, 0.5), (2020, 1, -0.1), (2020, 1, 0.1)]
     assert v2.without_top(trades, 1, 365) == pytest.approx(0.9 * 1.1 - 1, rel=1e-2)
+
+
+def test_hold_runs_from_start_to_last_bar():
+    cagr, mdd, ratio = v2.hold(_bars([50, 100, 120, 90, 130]), 1)
+    assert mdd == pytest.approx(90 / 120 - 1)
+    assert cagr == pytest.approx(1.3 ** (v2.YEAR_DAYS / 3) - 1)
+    assert ratio == pytest.approx(cagr / abs(mdd))

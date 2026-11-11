@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from minerva.strategy import btc_bt as bt
 from minerva.strategy.btc_data import OUT
-from minerva.strategy.indicators import Bar, Num, dmi, tm_states
+from minerva.strategy.indicators import Bar, Num, dmi, sma, tm_states
 
 TOUCH = 0.01
 MAX_BARS = 2000
@@ -29,16 +29,8 @@ def ema(values: Sequence[float], n: int) -> list[float]:
     return out
 
 
-def rolling_mean(values: Sequence[float], n: int) -> list[Num]:
-    out: list[Num] = [None] * len(values)
-    total = 0.0
-    for i, v in enumerate(values):
-        total += v
-        if i >= n:
-            total -= values[i - n]
-        if i >= n - 1:
-            out[i] = total / n
-    return out
+# indicators.sma와 줄 단위로 같은 계산이었다
+rolling_mean = sma
 
 
 def true_range(bars: Sequence[Bar]) -> list[float]:

@@ -163,7 +163,8 @@ def hold(bars: Sequence[Bar], start: int, end: int) -> tuple[float, float, float
         peak = max(peak, b.high)
     days = max((bars[end - 1].day - bars[start].day).days, 1)
     cagr = (bars[end - 1].close / entry) ** (YEAR_DAYS / days) - 1
-    return cagr, mdd, cagr / abs(mdd)
+    # 저가가 한 번도 앞 고점 아래로 안 내려간 구간(짧은 상승 구간)은 낙폭이 0이다
+    return cagr, mdd, cagr / abs(mdd) if mdd else 0.0
 
 
 def split_at(bars: Sequence[Bar]) -> int:

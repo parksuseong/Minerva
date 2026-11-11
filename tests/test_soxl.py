@@ -66,3 +66,37 @@ def test_soxl_route_rejects_unknown_symbol_and_caches_per_symbol(monkeypatch):
     assert client.get("/api/soxl").json() == {"s": "SOXLUSDT"}
     assert seen == ["NVDAUSDT", "SOXLUSDT"]
     routes._soxl_cache.clear()
+
+
+def test_eth_uses_binance_daily_and_skips_yahoo(monkeypatch):
+    """코인(ETH)은 일·주·월봉도 바이낸스 선물에서 받고 야후를 부르지 않는다."""
+    from datetime import datetime
+
+    from minerva.strategy import btc, soxl
+
+    now = datetime(2026, 11, 12, 1, 0, tzinfo=btc.KST)
+    day_ms = 86_400_000
+    end = int(now.timestamp() * 1000)
+    calls = []
+
+    def rows(interval, symbol):
+        calls.append((interval, symbol))
+        step = day_ms if interval == "1d" else day_ms // 6
+        out = []
+        for i in range(400, 0, -1):
+            t0 = end - i * step
+            px = 2000 + (i % 37) * 5
+            out.append([t0, px, px + 10, px - 10, px + 2, 100, t0 + step - 1])
+        return out
+
+    monkeypatch.setattr(soxl, "fetch", rows)
+    monkeypatch.setattr(soxl, "fetch_price", lambda symbol: 2050.0)
+    monkeypatch.setattr(
+        soxl, "fetch_yahoo", lambda *_: (_ for _ in ()).throw(AssertionError("야후 호출"))
+    )
+    d = soxl.build(now=now, symbol="ETHUSDT")
+    assert d["status"] == "ok" and d["stock"] == "ETH"
+    assert ("1d", "ETHUSDT") in calls and ("4h", "ETHUSDT") in calls
+    assert "바이낸스 ETH 선물" in d["outlook"]["note"]
+    assert "원문" not in str(d["outlook"].get("summary", {}))
+    assert d["classic"].get("lev") == 1, d["classic"]

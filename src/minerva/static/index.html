@@ -165,9 +165,14 @@
   </div>
 
   <div class="panel" id="tab-analysis" hidden>
+    <section class="card">
+      <h2>🎯 신호 가까운 순 <span class="mini">자동매매 4종목 · SCR ① 15분 · 마감 봉 · 1분마다</span></h2>
+      <div id="near-list" class="placeholder">불러오는 중…</div>
+    </section>
     <div class="filters" data-pick="an" role="group" aria-label="주식/비트코인 선택">
       <button type="button" data-show="an-kr" class="on" aria-pressed="true">📈 주식</button>
       <button type="button" data-show="an-bn" aria-pressed="false">₿ 비트코인</button>
+      <button type="button" data-show="an-et" aria-pressed="false">⟠ ETH</button>
       <button type="button" data-show="an-sx" aria-pressed="false">🔧 SOXL</button>
       <button type="button" data-show="an-nv" aria-pressed="false">🟢 NVDA</button>
     </div>
@@ -219,6 +224,7 @@
     </div>
     <div id="an-sx" hidden></div>
     <div id="an-nv" hidden></div>
+    <div id="an-et" hidden></div>
   </div>
 
   <div class="panel" id="tab-account" hidden>
@@ -292,6 +298,7 @@
       <div class="filters" id="lab-sym" role="group" aria-label="종목">
         <span class="mini">종목</span>
         <button type="button" data-sym="BTCUSDT">₿ 비트코인</button>
+        <button type="button" data-sym="ETHUSDT">⟠ ETH</button>
         <button type="button" data-sym="SOXLUSDT">🔧 SOXL</button>
         <button type="button" data-sym="NVDAUSDT">🟢 NVDA</button>
       </div>
@@ -429,10 +436,11 @@
   <script src="/static/daily.js?v=20261111b"></script>
   <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
   <script src="/static/scrlab_core.js?v=20261110b"></script>
-  <script src="/static/scrlab.js?v=20261111c"></script>
+  <script src="/static/scrlab.js?v=20261112a"></script>
   <script src="/static/scrview.js?v=20261111a"></script>
   <script src="/static/btcengine.js?v=20261112a"></script>
-  <script src="/static/soxl.js?v=20261111d"></script>
+  <script src="/static/soxl.js?v=20261112a"></script>
+  <script src="/static/scrnear.js?v=20261112a"></script>
   <script src="/static/account.js?v=20261112a"></script>
   <script src="/static/trade.js?v=20261111a"></script>
   <script src="/static/office.js?v=20261111a"></script>

@@ -904,6 +904,9 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
         px, pnl = _close_result(ctx.client, pos, close_side)
     except (Rejected, NetworkError):
         px = pnl = None
+    # 같은 실행에서 새로 들어가면 이 청산 체결이 새 포지션 손익에 섞이지 않게(close_position과 같게)
+    state["closed_through_ms"] = pos.get("closed_ms") or int(time.time() * 1000) - 2000
+    _save(DIR / "state.json", state)
     _record_close(ctx, pos, px, pnl, why)
 
 
@@ -919,10 +922,17 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         row = position_row(c)
         sign = 1 if pending["side"] == "long" else -1
         if row["amt"] and (row["amt"] > 0) == (sign > 0):
+            # 손익 창은 진입을 시작한 실행 시각부터(open_position과 같게). 지금부터 세면 진입
+            # 체결(수수료)이 빠진다. 같은 실행의 앞 청산은 closed_through_ms → after_ms가 뺀다
+            try:
+                at = datetime.strptime(pending["at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
+                started = int(at.timestamp() * 1000) - 1000
+            except (KeyError, TypeError, ValueError):
+                started = int(time.time() * 1000)
             o = {
                 "executedQty": str(abs(row["amt"])),
                 "avgPrice": str(row["entry"]),
-                "updateTime": int(time.time() * 1000),
+                "updateTime": started,
             }
             pos = _adopt(state, pending, o)
             ctx.event(event="adopt_pending", cid=pending["open"], amt=row["amt"])
@@ -973,6 +983,8 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
                 why = "tp"
         state["position"] = None
         state.pop("pending", None)
+        # 실행 시작 뒤에 체결된 손절·익절이 같은 실행의 새 포지션 손익에 섞이지 않게
+        state["closed_through_ms"] = pos.get("closed_ms") or int(time.time() * 1000) - 2000
         cancel_engine_stops(c)  # 손절·익절 중 남은 쪽을 취소 (OCO처럼)
         _save(DIR / "state.json", state)
         _record_close(ctx, pos, px, pnl, why)

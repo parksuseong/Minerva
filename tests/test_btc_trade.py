@@ -1708,3 +1708,67 @@ def test_entry_skipped_if_stale_stop_cannot_be_cancelled(env, monkeypatch):
     run(env, ex)
     assert ex.amt == 0 and state().get("position") is None
     assert any("남은 엔진 손절을 취소하지 못함" in m for m in env["sent"])
+
+
+# ---------------------------------------------------------------- 엔진 버그 수정(2026-11-11)
+
+
+def test_stop_fill_seen_in_reconcile_not_counted_in_new_position(env, monkeypatch):
+    """실행 시작 직후 체결된 손절이 같은 실행의 새 포지션 손익에 섞였다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    ex.trigger_stop(pos["stop_id"], 97_000.0)  # 체결 시각이 이번 실행 시작(NOW) 뒤
+    ex.t += 6000  # 이후 체결은 손절보다 늦다
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    short = state()["position"]
+    assert short["side"] == "short" and short.get("after_ms")
+    ex.trigger_stop(short["stop_id"], 103_000.0)
+    ex.trades[-1]["realizedPnl"] = "10"
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    last = jsonl("closed.jsonl")[-1]
+    assert last["side"] == "short" and last["why"] == "stop"
+    assert last["pnl"] == pytest.approx(10 - 0.05 - 0.004, abs=0.02)  # 앞 롱 손절 −30 안 섞임
+
+
+def test_protect_close_marks_close_time_for_next_entry(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    st = state()
+    ctx = bt.Ctx(ex, FakeMarket(ex.price), env["send"], NOW, True)
+    bt.protect_close(ctx, st, "protect")
+    assert st["position"] is None
+    assert st["closed_through_ms"] == max(t["time"] for t in ex.trades if t["side"] == "SELL")
+
+
+def test_adopted_entry_keeps_entry_fee_in_pnl_window(env, monkeypatch):
+    """이어 받은 진입의 손익 창이 이어 받은 시각부터라 진입 체결(수수료)이 빠졌다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["partial:0.012"]
+
+    def boom(*a, **k):
+        raise KeyboardInterrupt
+
+    real_cancel = bt.LiveVenue.cancel
+    monkeypatch.setattr(bt.LiveVenue, "cancel", boom)
+    with_signal(monkeypatch, "long")
+    with pytest.raises(KeyboardInterrupt):
+        run(env, ex)
+    monkeypatch.setattr(bt.LiveVenue, "cancel", real_cancel)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    entry_fill = next(t for t in ex.trades if t["side"] == "BUY")
+    assert pos["entry_ms"] < entry_fill["time"]
+    ex.trigger_stop(pos["stop_id"], 97_000.0)
+    ex.trades[-1]["realizedPnl"] = "-10"
+    run(env, ex)
+    last = jsonl("closed.jsonl")[-1]
+    assert last["why"] == "stop"
+    assert last["pnl"] == pytest.approx(-10 - 0.05 - 0.004, abs=1e-6)  # 진입 수수료 포함

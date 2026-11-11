@@ -1,4 +1,5 @@
 // 🧪 SCR 실험실: SCR 숫자를 바꿔 가며 BTCUSDT 롱·숏 열림 신호를 바로 다시 그린다 (사용자 요청 2026-11-08).
+// 종목 버튼으로 SOXLUSDT 선물도 본다(2026-11-11). 종목은 "기본값으로"를 눌러도 그대로 둔다.
 // 봉은 /api/btc/klines(바이낸스 선물 공개 시세), 계산은 전부 화면에서(scrlab_core.js). 주문과 연결되지 않는다.
 // 서버에 브라우저가 없어 화면은 직접 못 보고 만들었다 — 값이 이상하면 화면을 그리지 않고 안내만 한다.
 (() => {
@@ -25,11 +26,15 @@
   // 손절·익절(%): 진입가 기준. 익절 0 = 없음. 엔진 기본값(손절 3%, 익절 없음)과 같게 시작한다.
   // [키, 이름, 최소, 최대, 켜기 칸 키]. 켜기를 끄면 그 청산은 계산에서 뺀다.
   const EXIT_FIELDS = [["stop_pct", "손절 %", 0.1, 50, "use_stop"], ["tp_pct", "익절 %", 0.1, 100, "use_tp"]];
-  const BASE = { interval: "15m", days: 7, show_long: true, show_short: true,
+  // 종목: 가격 소수 자리(dp). 서버 KLINE_SYMBOLS와 맞춘다.
+  const SYMS = { BTCUSDT: { dp: 1 }, SOXLUSDT: { dp: 2 } };
+  const BASE = { symbol: "BTCUSDT", interval: "15m", days: 7, show_long: true, show_short: true,
     use_stop: true, stop_pct: 3, use_tp: false, tp_pct: 3 };
   const defaults = () => Object.assign({}, core ? core.DEFAULTS : {}, BASE);
 
   const num = (v, d = 1) => U.num(v, d);
+  // 지금 보는 종목의 가격 소수 자리(받은 봉 기준, 없으면 고른 종목)
+  const dp = () => (SYMS[(data && data.symbol) || cfg.symbol] || SYMS.BTCUSDT).dp;
   const pct = (v) => (v == null ? "-"
     : `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${num(v, 2)}%</span>`);
   // 차트 시각은 KST 벽시계를 UTC 자리에 둔 초(U.kst)라 표시는 UTC 필드로 읽는다.
@@ -51,6 +56,7 @@
       cfg = Object.assign(cfg, saved);
     }
   } catch (e) { /* 저장된 값이 없거나 막혀도 기본값으로 연다 */ }
+  if (!SYMS[cfg.symbol]) cfg.symbol = BASE.symbol;
   if (!MIN[cfg.interval]) cfg.interval = BASE.interval;
   if (!DAYS.includes(Number(cfg.days))) cfg.days = BASE.days;
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* 기억만 못 한다 */ } };
@@ -61,9 +67,10 @@
   const buildControls = () => {
     $("lab-params").innerHTML = FIELDS.map(([k, name, lo, hi, int]) =>
       `<label>${esc(name)}<input data-k="${k}" type="number" inputmode="decimal" min="${lo}" max="${hi}" step="${int ? 1 : "any"}"></label>`).join("");
-    document.querySelectorAll("#lab-tf button, #lab-days button").forEach((b) => {
+    document.querySelectorAll("#lab-sym button, #lab-tf button, #lab-days button").forEach((b) => {
       b.onclick = () => {
-        if (b.dataset.tf) cfg.interval = b.dataset.tf; else cfg.days = Number(b.dataset.days);
+        if (b.dataset.sym) cfg.symbol = b.dataset.sym;
+        else if (b.dataset.tf) cfg.interval = b.dataset.tf; else cfg.days = Number(b.dataset.days);
         save(); syncControls(); load(true);
       };
     });
@@ -88,13 +95,16 @@
     $("lab-short").onchange = (e) => { cfg.show_short = e.target.checked; later(); };
     $("lab-reset").onclick = () => {
       const refetch = cfg.interval !== BASE.interval || Number(cfg.days) !== BASE.days;
-      cfg = defaults();
+      const symbol = cfg.symbol;
+      cfg = Object.assign(defaults(), { symbol });
       save(); syncControls();
       if (refetch) load(true); else recompute();
     };
   };
 
   const syncControls = () => {
+    document.querySelectorAll("#lab-sym button").forEach((b) => b.classList.toggle("on", b.dataset.sym === cfg.symbol));
+    if ($("lab-sym-name")) $("lab-sym-name").textContent = cfg.symbol;
     document.querySelectorAll("#lab-tf button").forEach((b) => b.classList.toggle("on", b.dataset.tf === cfg.interval));
     document.querySelectorAll("#lab-days button").forEach((b) => b.classList.toggle("on", Number(b.dataset.days) === Number(cfg.days)));
     document.querySelectorAll("#lab-params input[data-k], #lab-exits input[data-k]").forEach((i) => { i.value = cfg[i.dataset.k]; });
@@ -137,7 +147,7 @@
   const load = (fit) => {
     const ticket = ++loading;
     $("lab-status").textContent = "봉 받는 중…";
-    return fetch(`/api/btc/klines?interval=${encodeURIComponent(cfg.interval)}&days=${Number(cfg.days)}`)
+    return fetch(`/api/btc/klines?symbol=${encodeURIComponent(cfg.symbol)}&interval=${encodeURIComponent(cfg.interval)}&days=${Number(cfg.days)}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d) => {
         if (ticket !== loading) return;
@@ -164,6 +174,7 @@
       $("lab-chart").innerHTML = '<p class="placeholder">차트 도구를 불러오지 못했어요. 아래 목록은 그대로 볼 수 있어요.</p>';
       return;
     }
+    series.candle.applyOptions({ priceFormat: { type: "price", precision: dp(), minMove: 10 ** -dp() } });
     const { guide } = U.scrFill(series, bars, from, res, p, GREEN, RED);
     // 시뮬레이션 마지막 포지션이 열려 있으면 진입·손절·익절 선을 캔들 위에 긋는다.
     if (sim && sim.open) {
@@ -208,9 +219,9 @@
     const tpTxt = p.tp_pct > 0 ? `익절 ${num(p.tp_pct, 1)}%` : "익절 없음";
     const stTxt = p.stop_pct > 0 ? `손절 ${num(p.stop_pct, 1)}%` : "손절 없음";
     const o = r.open;
-    const openTxt = o ? `<br>📍 지금 ${o.dir > 0 ? "롱" : "숏"} 보유 (계산상): 진입 ${num(o.entry, 1)} · `
-      + (o.stop ? `손절 ${num(o.stop, 1)}` : `손절 없음 (청산가 ${num(o.liq, 1)})`)
-      + (o.tp ? ` · 익절 ${num(o.tp, 1)}` : "") : "";
+    const openTxt = o ? `<br>📍 지금 ${o.dir > 0 ? "롱" : "숏"} 보유 (계산상): 진입 ${num(o.entry, dp())} · `
+      + (o.stop ? `손절 ${num(o.stop, dp())}` : `손절 없음 (청산가 ${num(o.liq, dp())})`)
+      + (o.tp ? ` · 익절 ${num(o.tp, dp())}` : "") : "";
     return `<div class="mini" style="margin:4px 0 8px">📐 <b>${stTxt} · ${tpTxt} · ${LEV}배 단순 계산</b> (거친 추정): 보이는 신호로 롱↔숏 갈아타기 →
       거래 ${r.trades}번 · 이익 ${r.wins} · 손절 ${r.stops} · 익절 ${r.tps}${r.liqs ? ` · <span class="down">강제 청산 ${r.liqs}</span>` : ""} · 누적 <b>${pct(r.ret)}</b> · 최대 낙폭 −${num(r.mdd, 1)}%${r.holding ? " · 마지막 포지션은 종가로 정리" : ""}${openTxt}<br>
       신호 다음 봉 시가 진입, 반대 신호에 뒤집기, 진입가 기준 손절·익절선에 봉 고가·저가가 닿으면 청산 후 다음 신호까지 쉼(한 봉에서 둘 다 닿으면 손절로 침), 수수료 0.05%/편도.
@@ -242,7 +253,7 @@
       </tr></thead><tbody>${rows.slice(-MAX_ROWS).reverse().map((r) => `<tr>
         <td>${fmt(kst(bars[r.i][0] + step * 60000), true)}</td>
         <td><span class="chip ${r.dir > 0 ? "good" : "warn"}">${r.dir > 0 ? "● 롱" : "▼ 숏"}</span></td>
-        <td>${num(c[r.i], 1)}</td><td>${pct(r.m[0])}</td><td>${pct(r.m[1])}</td><td>${pct(r.m[2])}</td><td>${outcome(r, sim)}</td></tr>`).join("")}
+        <td>${num(c[r.i], dp())}</td><td>${pct(r.m[0])}</td><td>${pct(r.m[1])}</td><td>${pct(r.m[2])}</td><td>${outcome(r, sim)}</td></tr>`).join("")}
       </tbody></table></div>${rows.length > MAX_ROWS ? `<p class="mini">최근 ${MAX_ROWS}개만 표에 보여요 (요약은 전체 ${num(rows.length, 0)}개 기준).</p>` : ""}`
       : '<p class="placeholder">이 설정으로는 이 기간에 신호가 없어요.</p>';
   };

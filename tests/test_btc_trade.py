@@ -1877,3 +1877,36 @@ def test_last_bar_saved_with_new_position(env, monkeypatch):
         run(env, ex)
     st = state()
     assert st["position"]["side"] == "long" and st["last_bar"] == BAR
+
+
+def test_lost_market_entry_keeps_pending_until_position_shows(env, monkeypatch):
+    """시장가 진입 응답을 잃고 포지션도 아직 0으로 보이면 pending을 남겨, 다음 대사가 엔진 밖
+    포지션으로 보지 않고 이어 받아 손절을 건다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    monkeypatch.setattr(bt, "fast_market", lambda *a: "급변동")
+    ex.lose_response = {"POST /fapi/v1/order"}
+    real_query, real_row = bt._query, bt.position_row
+    lag = {"on": True}
+
+    def lagging_query(client, path, key, cid):
+        if cid.endswith("-of") and lag["on"]:
+            return None
+        return real_query(client, path, key, cid)
+
+    def lagging_row(client):
+        return {"amt": 0.0, "entry": 0.0} if lag["on"] else real_row(client)
+
+    monkeypatch.setattr(bt, "_query", lagging_query)
+    monkeypatch.setattr(bt, "position_row", lagging_row)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert ex.amt > 0 and state()["pending"]["open"].endswith("-o")
+    assert state().get("last_bar") != BAR
+    lag["on"] = False
+    run(env, ex)
+    pos = state()["position"]
+    assert pos and pos["side"] == "long" and not bt.entries_blocked()
+    assert any(a["algoStatus"] == "NEW" and a["type"] == "STOP_MARKET" for a in ex.algos.values())
+    assert len([w for w in ex.writes if w[1] == "/fapi/v1/order"]) == 1  # 진입은 한 번만

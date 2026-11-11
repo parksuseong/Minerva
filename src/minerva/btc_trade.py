@@ -1720,6 +1720,15 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
         if fill and fill["qty"] > 0:
             ctx.say("🆘 체결을 셌는데 포지션이 아직 0으로 보여요 → 다음 실행에서 다시 대사해요")
             return  # pending을 남긴다
+        if err:
+            # 응답을 잃은 시장가 진입은 체결됐어도 포지션이 늦게 보일 수 있다. pending을 버리면
+            # 다음 실행이 그 포지션을 '엔진 밖'으로 보고 손절 없이 정지한다. 남겨 두면 다음 대사가
+            # 이어 받는다(그때도 0이면 pending을 버리고 같은 신호를 새 ID로 다시 본다)
+            ctx.say(
+                f"⚠️ {SIDE_KO[side]} 진입 중 오류({why}), 포지션은 아직 0 → "
+                "다음 실행에서 다시 대사해요"
+            )
+            return  # pending을 남긴다
         state.pop("pending", None)
         ctx.say(f"⏭ {SIDE_KO[side]} 진입 안 됨: {fill_text(fill) if fill else why}")
         return

@@ -15,10 +15,26 @@ def test_confirmed_uses_only_closed_bars():
     assert scr.confirmed(weeks, date(2024, 1, 4)) is None
 
 
+def test_precomputed_days_match_fresh_lookup():
+    weeks = [_state(date(2024, 1, 5), cci_v=1), _state(date(2024, 1, 12), cci_v=2, rsi_v=60)]
+    days = [s.day for s in weeks]
+    for d in (date(2024, 1, 4), date(2024, 1, 5), date(2024, 1, 11), date(2024, 1, 20)):
+        assert scr.confirmed(weeks, d, days) == scr.confirmed(weeks, d)
+        assert scr.frame_up(weeks, d, days) == scr.frame_up(weeks, d)
+
+
 def test_up_down_use_baselines():
     assert scr.is_up(_state(date(2024, 1, 5), cci_v=10, rsi_v=55))
     assert scr.is_down(_state(date(2024, 1, 5), cci_v=-10, rsi_v=45))
     assert not scr.is_down(_state(date(2024, 1, 5), cci_v=-10, rsi_v=55))
+
+
+def test_is_down_reads_rsi_zero_as_down():
+    # 연속 하락이면 RSI가 정확히 0.0이 된다. 거짓 값이라 없는 값처럼 읽으면 안 된다
+    assert scr.is_down(_state(date(2024, 1, 5), cci_v=-150, rsi_v=0.0))
+    assert not scr.is_down(_state(date(2024, 1, 5), cci_v=-150, rsi_v=None))
+    assert not scr.is_down(_state(date(2024, 1, 5), cci_v=None, rsi_v=10))
+    assert not scr.is_down(None)
 
 
 BASE = dict(

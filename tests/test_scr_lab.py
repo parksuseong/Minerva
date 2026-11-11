@@ -276,6 +276,9 @@ def fake_binance(monkeypatch):
     monkeypatch.setattr(routes, "_get_klines", fake)
     monkeypatch.setattr(routes, "_now_ms", lambda: fake.now)
     monkeypatch.setattr(routes, "_mono", lambda: fake.mono)
+    # 실제 엔진 종목 범위 파일과 무관하게(시험마다 네 종목만)
+    monkeypatch.setattr(routes, "_universe_symbols", lambda: ())
+    routes._uni_cache.clear()
     calls.fake = fake
     yield calls
     routes._kline_cache.clear()
@@ -388,3 +391,20 @@ def test_klines_other_symbol_is_whitelisted_and_cached_apart(fake_binance):
     # 비트코인 덩어리 키는 예전 모양 그대로
     client.get("/api/btc/klines?interval=15m&days=3")
     assert any(len(k) == 2 for k in routes._kline_cache)
+
+
+def test_klines_whitelist_adds_engine_universe(fake_binance, monkeypatch):
+    client = TestClient(app)
+    assert client.get("/api/btc/klines?symbol=DOGEUSDT").status_code == 400
+    monkeypatch.setattr(routes, "_universe_symbols", lambda: ("DOGEUSDT",))
+    assert client.get("/api/btc/klines?symbol=DOGEUSDT").status_code == 400  # 1분 캐시
+    fake_binance.fake.mono += routes.UNIVERSE_TTL + 1
+    assert client.get("/api/btc/klines?symbol=DOGEUSDT").status_code == 200
+    assert client.get("/api/btc/klines?symbol=PEPEUSDT").status_code == 400
+
+    def broken():
+        raise ValueError("깨진 파일")
+
+    monkeypatch.setattr(routes, "_universe_symbols", broken)
+    fake_binance.fake.mono += routes.UNIVERSE_TTL + 1
+    assert client.get("/api/btc/klines?symbol=ETHUSDT").status_code == 200

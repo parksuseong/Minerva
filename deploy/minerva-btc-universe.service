@@ -1,0 +1,19 @@
+# 자동매매 종목 범위 갱신(공개 시세 GET만, 주문 없음). minerva-btc-universe.timer가 실행한다.
+# 실전 엔진과 같은 IP라 요청 무게를 아끼며 천천히 받는다(약 15~25분). 엔진 타이머 앞뒤 1분은 비켜 간다.
+# 결과: ~/.minerva/btc_trade/universe.json (엔진이 다음 실행부터 읽는다, 14일 넘으면 네 종목으로 돌아감)
+# 설치: sudo cp deploy/minerva-btc-universe.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-btc-universe.timer
+[Unit]
+Description=Minerva BTC engine universe refresh (top 50 USDT-M by volume)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.btc_universe refresh
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=600M
+TimeoutStartSec=3600

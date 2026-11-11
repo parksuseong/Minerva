@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -274,6 +274,10 @@ def rows(n: int, px: float) -> list[list]:
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    # run()이 universe.json으로 바꾸는 모듈 값: 시험이 끝나면 되돌린다
+    for name in ("SYMBOLS", "SYMBOL_WINRATE", "PRIORITY", "UNIVERSE"):
+        monkeypatch.setattr(bt, name, getattr(bt, name))
+    monkeypatch.setattr(bt, "_TAGS", {})
     monkeypatch.setattr(bt, "DIR", tmp_path / "btc_trade")
     monkeypatch.setattr(bt, "CAPITAL_FILE", tmp_path / "binance_capital.json")
     clock = {"t": 0.0}
@@ -2144,8 +2148,8 @@ def test_choose_packet_has_winrates_and_prompt_prefers_them(env, multi, monkeypa
     assert "승률이 높은" in prompt
     data = json.loads(prompt[len(bt.btc_ai.CHOOSE_PROMPT) :])
     rates = {c["symbol"]: c["backtest_winrate_pct"] for c in data["candidates"]}
-    assert rates == {"NVDAUSDT": 49, "SOXLUSDT": 17}
-    assert data["held"]["backtest_winrate_pct"] == 54
+    assert rates == {"NVDAUSDT": 49, "SOXLUSDT": 46}
+    assert data["held"]["backtest_winrate_pct"] == 40
 
 
 def test_ai_none_enters_nothing(env, multi, monkeypatch):
@@ -2160,7 +2164,29 @@ def test_ai_none_enters_nothing(env, multi, monkeypatch):
     assert state()["last_bars"] == {"BTCUSDT": BAR, "ETHUSDT": BAR}
 
 
+def universe_file(rates: dict, at: datetime = NOW, extra: dict | None = None) -> None:
+    """종목 범위 파일(거래량 순 = rates 순서)."""
+    stats = {
+        s: {"rank": i + 1, "winrate": r, "trades": 50, "days": 300.0, "contract": "PERPETUAL"}
+        for i, (s, r) in enumerate(rates.items())
+    }
+    for s, more in (extra or {}).items():
+        stats[s].update(more)
+    data = {
+        "updated_at": at.strftime("%Y-%m-%d %H:%M"),
+        "rule": "test",
+        "symbols": list(rates),
+        "stats": stats,
+    }
+    (bt.DIR / "universe.json").write_text(json.dumps(data))
+
+
+# 보유 BTC(40%)보다 5%p 이상 높은 종목이 바꾸기 후보가 되는 승률
+HELD_RATES = {"BTCUSDT": 40, "ETHUSDT": 50, "SOXLUSDT": 46, "NVDAUSDT": 49}
+
+
 def held_btc_long(ex):
+    universe_file(HELD_RATES)
     pos = engine_long(ex)
     st = state()
     st["position"]["symbol"] = "BTCUSDT"
@@ -2515,3 +2541,316 @@ def test_exit_plan_prompt_is_symbol_aware(env, multi, monkeypatch):
     pos = state()["position"]  # 답이 없으면 손절 3%·익절 없음 그대로
     assert pos["stop_pct"] == 3.0 and pos["tp"] is None
     assert bt.btc_ai.STOP_RANGE == (1.0, 5.0) and bt.btc_ai.TP_RANGE == (1.0, 10.0)
+
+
+# ---------------------------------------------------------------- 종목 범위(상위 50)
+
+
+def grow(monkeypatch, ex, rates: dict, extra: dict | None = None) -> None:
+    """범위 파일을 쓰고 가짜 거래소·시세가 새 종목도 알게 한다(가격 10, 단위 0.01)."""
+    universe_file(rates, extra=extra)
+    for s in rates:
+        if s not in PRICES:
+            monkeypatch.setitem(PRICES, s, 10.0)
+            monkeypatch.setitem(
+                FLTS, s, {**FLT, "tick": "0.001", "step": "0.01", "min_notional": 5.0}
+            )
+        ex.amts.setdefault(s, 0.0)
+        ex.levs.setdefault(s, 3)
+        ex.margins.setdefault(s, "CROSSED")
+    bt.use_universe(NOW_MS)
+
+
+def sig_all(monkeypatch, mk, dirs: dict, syms, bar=BAR):
+    """signals()와 같은데 범위 종목 전체(새 종목 포함)를 안다."""
+    by_rows = {id(mk.for_symbol(s).rows): s for s in syms}
+
+    def fake(r, n, last, lookback=2):
+        sym = by_rows[id(r)]
+        d = dirs.get(sym)
+        if not d or (last is not None and bar <= last):
+            return {"dir": None, "bar": bar, "close": PRICES[sym]}
+        return {"dir": d, "bar": bar, "close": PRICES[sym], "bar_txt": bt._bar_txt(bar)}
+
+    monkeypatch.setattr(bt, "latest_signal", fake)
+
+
+def test_universe_missing_stale_corrupt_falls_back_to_four(env):
+    for setup in (
+        lambda: None,
+        lambda: universe_file({"DOGEUSDT": 70}, at=NOW - timedelta(days=15)),
+        lambda: (bt.DIR / "universe.json").write_text("{깨짐"),
+    ):
+        (bt.DIR / "universe.json").unlink(missing_ok=True)
+        setup()
+        u = bt.use_universe(NOW_MS)
+        assert u["source"] == "default" and bt.SYMBOLS == bt.DEFAULT_SYMBOLS
+        assert bt.PRIORITY == ("BTCUSDT", "NVDAUSDT", "ETHUSDT", "SOXLUSDT")
+        assert bt.SYMBOL_WINRATE == bt.DEFAULT_WINRATE
+    universe_file(
+        {"DOGEUSDT": 70, "BTCUSDT": 55, "PEPEUSDT": 90}, extra={"PEPEUSDT": {"trades": 5}}
+    )
+    u = bt.use_universe(NOW_MS)
+    assert u["source"] == "universe" and bt.SYMBOLS == ("DOGEUSDT", "BTCUSDT", "PEPEUSDT")
+    # 승률 순, 표본 작은 PEPE(90%, 5회)는 맨 뒤
+    assert bt.PRIORITY == ("DOGEUSDT", "BTCUSDT", "PEPEUSDT")
+    assert bt.SYMBOL_WINRATE["DOGEUSDT"] == 70
+
+
+def test_cid_tags_keep_four_and_are_unique_and_short():
+    top50 = (
+        "BTCUSDT ETHUSDT SOXLUSDT ZECUSDT SNDKUSDT XAUUSDT SOLUSDT NVDAUSDT SKHYNIXUSDT INITUSDT "
+        "MUUSDT SOXSUSDT SPCXUSDT KORUUSDT XRPUSDT CLUSDT 1000PEPEUSDT XAGUSDT SKHYUSDT JCTUSDT "
+        "NEARUSDT BZUSDT HYPEUSDT SNXXUSDT AGTUSDT QQQUSDT ARIAUSDT DOGEUSDT NBISUSDT INTCUSDT "
+        "BNBUSDT ANTHROPICUSDT AMDUSDT UNIUSDT CRWVUSDT MSTRUSDT ONEUSDT ENAUSDT TQQQUSDT "
+        "GOOGLUSDT CRCLUSDT MUUUSDT SAMSUNGUSDT DRAMUSDT SUIUSDT MRVLUSDT AVAXUSDT TSLAUSDT "
+        "EWYUSDT INJUSDT PEPEUSDT 1000SHIBUSDT SHIBUSDT"
+    ).split()
+    tags = bt.cid_tags(top50)
+    assert {s: tags[s] for s in bt.DEFAULT_SYMBOLS} == bt.CID_TAG  # 실전 ID 호환
+    assert len(set(tags.values())) == len(top50)
+    assert all(len(t) <= 5 for t in tags.values())
+    assert all(t[:1].isalpha() for s, t in tags.items() if s != "BTCUSDT")
+    assert bt.cid_tag("SKHYNIXUSDT") == bt.cid_tag("SKHYNIXUSDT")  # 실행마다 같다
+    # 가장 긴 ID도 36자 안(바이낸스 한도)
+    worst = max((bt.PREFIX + t + str(BAR // 60000) + "-o12-6m" for t in tags.values()), key=len)
+    assert len(worst) <= 36
+    # 겹치면 해시 태그로 비킨다
+    clash = {"AAAAXUSDT": "AAAAQ", "AAAAYUSDT": "AAAAQ"}
+    orig = bt.cid_tag
+    try:
+        bt.cid_tag = lambda s: clash.get(s) or orig(s)
+        t2 = bt.cid_tags(list(clash))
+        assert len(set(t2.values())) == 2 and all(len(t) <= 5 for t in t2.values())
+    finally:
+        bt.cid_tag = orig
+
+
+def test_flat_many_signals_ai_sees_only_top5(env, multi, monkeypatch):
+    ex = MultiExchange()  # 드라이런
+    rates = {
+        "BTCUSDT": 54, "ETHUSDT": 44, "SOXLUSDT": 17, "NVDAUSDT": 49,
+        "AAAUSDT": 60, "BBBUSDT": 58, "CCCUSDT": 30, "DDDUSDT": 99, "EEEUSDT": 41,
+    }  # fmt: skip
+    grow(monkeypatch, ex, rates, extra={"DDDUSDT": {"trades": 3}})  # DDD 표본 적음 → 맨 뒤
+    sig_all(monkeypatch, multi, {s: "long" for s in rates}, rates)
+    asked = ai_answers(monkeypatch, "모르겠어요")
+    mrun(env, ex, multi)
+    assert len(asked["choose"]) == 1
+    data = json.loads(asked["choose"][0][len(bt.btc_ai.CHOOSE_PROMPT) :])
+    got = [c["symbol"] for c in data["candidates"]]
+    assert got == ["AAAUSDT", "BBBUSDT", "BTCUSDT", "NVDAUSDT", "ETHUSDT"]
+    assert set(data["options"]) == {f"enter:{s}" for s in got} | {"none"}
+    pos = state()["position"]
+    assert pos["symbol"] == "AAAUSDT"  # 답이 없으면 1순위
+    assert all(state()["last_bars"][s] == BAR for s in rates)  # 나머지 신호도 처리됨
+    passed = [e for e in jsonl("events.jsonl") if e.get("event") == "signal_passed"]
+    assert {e["symbol"] for e in passed} == {"EEEUSDT", "CCCUSDT", "SOXLUSDT", "DDDUSDT"}
+
+
+def test_holding_other_signal_below_edge_no_ai_call(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)  # BTC 40%
+    grow(monkeypatch, ex, {**HELD_RATES, "ETHUSDT": 44.9})
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    asked = ai_answers(monkeypatch, '{"choice": "switch:ETHUSDT", "reason": "x"}')
+    s = mrun(env, ex, multi)
+    assert not asked["choose"] and not asked["exits"] and not ex.writes
+    assert state()["position"]["symbol"] == "BTCUSDT"
+    assert state()["last_bars"]["ETHUSDT"] == BAR
+    assert "후보 아님" in s["decision"]
+    ev = [e for e in jsonl("events.jsonl") if e.get("event") == "signal_passed"]
+    assert ev and "5%p" in ev[0]["why"]
+
+
+def test_holding_opposite_with_no_eligible_switch_flips_without_ai(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    grow(monkeypatch, ex, {**HELD_RATES, "ETHUSDT": 41})
+    signals(monkeypatch, multi, {"BTCUSDT": "short", "ETHUSDT": "long"})
+    asked = ai_answers(monkeypatch, '{"choice": "switch:ETHUSDT", "reason": "x"}')
+    mrun(env, ex, multi)
+    assert not asked["choose"]
+    pos = state()["position"]
+    assert pos["symbol"] == "BTCUSDT" and pos["side"] == "short"
+
+
+def test_holding_switch_options_capped_at_three(env, multi, monkeypatch):
+    ex = MultiExchange()  # 드라이런
+    held_btc_long(ex)
+    st = state()
+    st["position"]["mode"] = "dry"
+    bt._save(bt.DIR / "state.json", st)
+    rates = {**HELD_RATES, "AAAUSDT": 70, "BBBUSDT": 65, "CCCUSDT": 44}
+    grow(monkeypatch, ex, rates)
+    sig_all(monkeypatch, multi, {s: "short" for s in rates if s != "BTCUSDT"}, rates)
+    asked = ai_answers(monkeypatch, '{"choice": "keep", "reason": "x"}')
+    mrun(env, ex, multi)
+    data = json.loads(asked["choose"][0][len(bt.btc_ai.CHOOSE_PROMPT) :])
+    assert [c["symbol"] for c in data["candidates"]] == ["AAAUSDT", "BBBUSDT", "ETHUSDT"]
+    assert set(data["options"]) == {"keep", "switch:AAAUSDT", "switch:BBBUSDT", "switch:ETHUSDT"}
+    assert state()["position"]["symbol"] == "BTCUSDT"
+
+
+SCHED = {
+    "EQUITY": {"sessions": [
+        {"startTime": NOW_MS - 3_600_000, "endTime": NOW_MS + 3_600_000, "type": "NO_TRADING"},
+    ]},
+    "COMMODITY": {"sessions": [
+        {"startTime": NOW_MS - 3_600_000, "endTime": NOW_MS + 3_600_000, "type": "REGULAR"},
+    ]},
+}  # fmt: skip
+
+
+def test_market_closed_by_schedule(env, monkeypatch):
+    calls = []
+
+    def pub(url, timeout=15):
+        calls.append(url)
+        return {"marketSchedules": SCHED}
+
+    monkeypatch.setattr(bt, "_public", pub)
+    ctx = bt.Ctx(MultiExchange(), MultiMarket(), env["send"], NOW, False)
+    tf = {"contract": bt.TRADFI}
+    assert "NO_TRADING" in bt.market_closed(ctx, {}, {**tf, "underlying": "EQUITY"})
+    assert bt.market_closed(ctx, {}, {**tf, "underlying": "COMMODITY"}) == ""
+    assert bt.market_closed(ctx, {}, {**tf, "underlying": "PREMARKET"}) == ""  # 모름 → 허용
+    assert bt.market_closed(ctx, {}, {**tf, "underlying": "FX"}) == ""  # 시간표 없음 → 허용
+    assert bt.market_closed(ctx, {}, {"contract": "PERPETUAL", "underlying": "COIN"}) == ""
+    assert len(calls) == 1  # 실행마다 한 번
+    st = {"tradfi_until_ms": NOW_MS + 1000}
+    assert "약관" in bt.market_closed(ctx, st, {**tf, "underlying": "COMMODITY"})
+
+    def down(url, timeout=15):
+        raise OSError("down")
+
+    monkeypatch.setattr(bt, "_public", down)
+    ctx2 = bt.Ctx(MultiExchange(), MultiMarket(), env["send"], NOW, False)
+    assert bt.market_closed(ctx2, {}, {**tf, "underlying": "EQUITY"}) == ""  # 못 받으면 허용
+
+
+def test_tradfi_entry_skipped_quietly_when_market_closed(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    monkeypatch.setitem(
+        FLTS, "NVDAUSDT", {**FLTS["NVDAUSDT"], "contract": bt.TRADFI, "underlying": "EQUITY"}
+    )
+    monkeypatch.setattr(bt, "_public", lambda url, timeout=15: {"marketSchedules": SCHED})
+    signals(monkeypatch, multi, {"NVDAUSDT": "long", "BTCUSDT": "long"})
+    asked = ai_answers(monkeypatch, '{"choice": "enter:NVDAUSDT", "reason": "x"}')
+    mrun(env, ex, multi)
+    assert not asked["choose"]  # 들어갈 수 있는 건 BTC 하나
+    assert state()["position"]["symbol"] == "BTCUSDT"
+    assert not any("NVDA" in m and "⏸" in m for m in env["sent"])
+    ev = [e for e in jsonl("events.jsonl") if e.get("event") == "session_skip"]
+    assert ev and ev[0]["symbol"] == "NVDAUSDT"
+
+
+def test_tradfi_rejection_pauses_all_tradfi(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    for s in ("SOXLUSDT", "NVDAUSDT"):
+        monkeypatch.setitem(FLTS, s, {**FLTS[s], "contract": bt.TRADFI, "underlying": "EQUITY"})
+    monkeypatch.setattr(bt, "_public", lambda url, timeout=15: {"marketSchedules": {}})
+    ex.tradfi_reject = {"SOXLUSDT", "NVDAUSDT"}
+    signals(monkeypatch, multi, {"SOXLUSDT": "long"})
+    mrun(env, ex, multi)
+    assert state()["tradfi_until_ms"] == NOW_MS + bt.UNAVAILABLE_MS
+    n_sent, n_writes = len(env["sent"]), len(ex.writes)
+    signals(monkeypatch, multi, {"NVDAUSDT": "long"}, bar=BAR + bt.BAR_MS)
+    bt.run(now=NOW.replace(minute=45), client=ex, market_=multi, send=env["send"])
+    assert not any(x.get("symbol") == "NVDAUSDT" for m, p, x in ex.writes[n_writes:])
+    assert not any("TradFi" in m or "⏸" in m for m in env["sent"][n_sent:])  # 한 번만 알림
+
+
+def test_held_symbol_outside_universe_is_still_managed(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    universe_file({"ETHUSDT": 50, "SOXLUSDT": 46, "NVDAUSDT": 49})  # BTC가 빠졌다
+    ex.algos.clear()  # 손절이 사라졌다 → 다시 건다
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    assert "BTCUSDT" not in bt.SYMBOLS
+    stops = [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder" and m == "POST"]
+    assert stops and stops[0]["symbol"] == "BTCUSDT"
+    # 반대 신호: 닫기만 하고 범위 밖이라 다시 들어가지 않는다
+    sig_all(monkeypatch, multi, {"BTCUSDT": "short"}, bt.DEFAULT_SYMBOLS, bar=BAR + bt.BAR_MS)
+    s = bt.run(now=NOW.replace(minute=45), client=ex, market_=multi, send=env["send"])
+    assert ex.amts["BTCUSDT"] == 0 and state().get("position") is None
+    assert jsonl("closed.jsonl")[-1]["symbol"] == "BTCUSDT"
+    assert "범위" in s["decision"]
+
+
+def test_fetch_slow_symbol_dropped_others_kept(env, multi, monkeypatch):
+    import time as _t
+
+    monkeypatch.setitem(PRICES, "PEPEUSDT", 0.01)
+
+    slow = multi.for_symbol("ETHUSDT")
+    slow.klines = lambda iv: (_t.sleep(1.0), slow.rows)[1]
+    ctx = bt.Ctx(MultiExchange(), multi, env["send"], NOW, False)
+    t0 = _t.monotonic()
+    rows, errs = bt.fetch_rows(ctx, ("PEPEUSDT",), budget_s=0.2)
+    assert _t.monotonic() - t0 < 0.9  # 늦은 종목을 기다리지 않는다
+    assert errs == {"ETHUSDT": "시간 안에 못 받음"}
+    assert set(rows) == {"BTCUSDT", "SOXLUSDT", "NVDAUSDT", "PEPEUSDT"}  # 보유 종목도 받는다
+
+
+def test_position_on_symbol_outside_universe_blocks_entries(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    ex.amts["PEPEUSDT"] = 1000.0  # 범위 밖 종목 수동 포지션
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    mrun(env, ex, multi)
+    assert not ex.writes and state().get("position") is None
+    assert (bt.DIR / "NO_ENTRY").exists()
+    assert any("PEPEUSDT +1000.0" in m for m in env["sent"])
+
+
+def test_skip_notices_only_for_top_priority(env, multi, monkeypatch):
+    ex = MultiExchange()  # 드라이런
+    signals(monkeypatch, multi, {"BTCUSDT": "long", "ETHUSDT": "long", "NVDAUSDT": "long"})
+    for s in ("BTCUSDT", "ETHUSDT", "NVDAUSDT"):
+        multi.for_symbol(s)._price = PRICES[s] * 1.05  # 모두 추격 한도 밖
+    mrun(env, ex, multi)
+    skips = [m for m in env["sent"] if "⏸" in m]
+    assert len(skips) == 1 and "BTC 롱" in skips[0]
+    ev = [e for e in jsonl("events.jsonl") if e.get("event") == "signal_skip"]
+    assert {e["symbol"] for e in ev} == {"ETHUSDT", "NVDAUSDT"}
+
+
+def test_near_json_written_each_run(env, multi, monkeypatch):
+    ex = MultiExchange()
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    near = json.loads((bt.DIR / "near.json").read_text())
+    assert near["source"] == "default" and near["w"] == 3
+    rows = near["rows"]
+    assert {(r["symbol"], r["side"]) for r in rows} == {
+        (s, d) for s in bt.DEFAULT_SYMBOLS for d in ("long", "short")
+    }
+    r = next(x for x in rows if x["symbol"] == "BTCUSDT" and x["side"] == "long")
+    assert r["winrate"] == 54 and r["priority"] == 1 and r["bar"] == BAR
+    assert r["k"] == len(r["hit"]) and r["k"] + len(r["need"]) == 3
+    from minerva import btc_view
+
+    v = btc_view.near_view()
+    assert v["status"] == "ok" and len(v["rows"]) == 8
+    (bt.DIR / "near.json").write_text("{")
+    assert btc_view.near_view()["status"] == "pending"
+
+
+def test_exit_prompt_has_market_kind(env, multi, monkeypatch):
+    monkeypatch.setitem(
+        FLTS, "NVDAUSDT", {**FLTS["NVDAUSDT"], "contract": bt.TRADFI, "underlying": "EQUITY"}
+    )
+    monkeypatch.setattr(bt, "_public", lambda url, timeout=15: {"marketSchedules": {}})
+    ex = MultiExchange()
+    signals(monkeypatch, multi, {"NVDAUSDT": "long"})
+    asked = ai_answers(monkeypatch, "")
+    mrun(env, ex, multi)
+    assert '"market_kind": "TradFi US stock/ETF"' in asked["exits"][0]
+    assert "market_kind" in bt.btc_ai.PROMPT and "SOXLUSDT" in bt.btc_ai.PROMPT

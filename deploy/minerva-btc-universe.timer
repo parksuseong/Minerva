@@ -1,0 +1,10 @@
+# 매주 월요일 06:05 KST(= 일요일 21:05 UTC) 자동매매 종목 범위(거래량 상위 50 + 종목별 백테스트 승률)를 다시 만든다.
+[Unit]
+Description=Refresh Minerva BTC engine universe (top 50 by volume) Mondays 06:05 KST
+
+[Timer]
+OnCalendar=Mon *-*-* 06:05:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

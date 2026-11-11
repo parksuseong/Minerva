@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 from minerva import btc_trade as bt
 from minerva.kis import KST
@@ -15,17 +16,33 @@ from minerva.kis import KST
 MAX_TRADES = 50
 
 
-def _tail(name: str, n: int) -> list[dict]:
-    path = bt.DIR / name
+def tail_jsonl(path: Path, n: int) -> list[dict]:
+    """JSONL 파일의 마지막 n줄(객체만). 쓰는 중이라 잘린 줄·깨진 줄은 건너뛴다(500 방지)."""
     if not path.exists():
         return []
     out = []
     for line in path.read_text().splitlines()[-n:]:
         try:
-            out.append(json.loads(line))
+            rec = json.loads(line)
         except ValueError:
             continue
+        if isinstance(rec, dict):
+            out.append(rec)
     return out
+
+
+def _tail(name: str, n: int) -> list[dict]:
+    return tail_jsonl(bt.DIR / name, n)
+
+
+def _no_entry_reason() -> str | None:
+    # exists() 확인 뒤 읽기 전에 엔진이나 사용자가 파일을 지울 수 있어 바로 읽는다
+    try:
+        text = (bt.DIR / "NO_ENTRY").read_text().strip()
+    except FileNotFoundError:
+        return None
+    # 손으로 `touch`한 빈 파일도 정지다. 빈 문자열이면 화면이 정지 표시를 빠뜨린다.
+    return text or "NO_ENTRY 파일 (사유 없음)"
 
 
 def _last(events: list[dict], pred) -> dict | None:
@@ -50,7 +67,7 @@ def engine_view(now: datetime | None = None) -> dict:
     seed = bt.seed(mode, state)
     n, wins = bt.winrate(mode, now)
     equity = last_run.get("equity") if last_run else None
-    no_entry = (bt.DIR / "NO_ENTRY").read_text().strip() if bt.entries_blocked() else None
+    no_entry = _no_entry_reason()
     return {
         "status": "ok",
         "mode": mode,

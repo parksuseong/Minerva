@@ -61,6 +61,13 @@ def account_view_token() -> str | None:
     return path.read_text().strip() or None
 
 
+def _check_account_token(token: str) -> None:
+    want = account_view_token()
+    # 비 ASCII str은 compare_digest가 TypeError(500)를 내서 바이트로 비교한다
+    if want and not hmac.compare_digest(token.encode(), want.encode()):
+        raise HTTPException(status_code=403, detail="invalid token")
+
+
 def _read(path: Path) -> dict | None:
     return json.loads(path.read_text()) if path.exists() else None
 
@@ -202,20 +209,19 @@ def signals() -> dict:
     data = _read(daily_path())
     if data is None:
         return {"status": "pending", "actions": []}
+    vix = data.get("vix") or {}
     return {
         "status": "ok",
         "generated_at": data.get("generated_at"),
-        "regime": data.get("vix", {}).get("regime"),
-        "size_limit": data.get("vix", {}).get("size_limit"),
+        "regime": vix.get("regime"),
+        "size_limit": vix.get("size_limit"),
         "actions": data.get("actions", []),
     }
 
 
 @router.get("/api/account")
 def account(x_minerva_token: str = Header("")) -> dict:
-    want = account_view_token()
-    if want and not hmac.compare_digest(x_minerva_token, want):
-        raise HTTPException(status_code=403, detail="invalid token")
+    _check_account_token(x_minerva_token)
     data = _read(account_path())
     if data is None:
         return {
@@ -233,9 +239,7 @@ def account(x_minerva_token: str = Header("")) -> dict:
 
 @router.get("/api/account/binance")
 def binance_account(x_minerva_token: str = Header("")) -> dict:
-    want = account_view_token()
-    if want and not hmac.compare_digest(x_minerva_token, want):
-        raise HTTPException(status_code=403, detail="invalid token")
+    _check_account_token(x_minerva_token)
     folder = account_path().parent
     data = _read(folder / "binance.json")
     if data is None:
@@ -273,9 +277,7 @@ def binance_account(x_minerva_token: str = Header("")) -> dict:
 @router.get("/api/account/binance/series")
 def binance_series(x_minerva_token: str = Header("")) -> dict:
     """자산 차트: 5분 단위 순평가액(USDT)과 시드."""
-    want = account_view_token()
-    if want and not hmac.compare_digest(x_minerva_token, want):
-        raise HTTPException(status_code=403, detail="invalid token")
+    _check_account_token(x_minerva_token)
     folder = account_path().parent
     capital = _read(folder / "binance_capital.json") or {}
     if capital.get("live") is False:
@@ -310,11 +312,11 @@ def trade_status() -> dict:
     """자동매매 상태: 모드·중지 여부·봇 보유 종목·최근 주문 결과 (`minerva.trade`가 쓴 파일)."""
     d = trade_dir()
     mode_file = d / "mode"
-    journal = d / "journal.jsonl"
-    lines = journal.read_text().splitlines()[-30:] if journal.exists() else []
+    # 주문 기록은 덧붙여 쓰는 파일이라 마지막 줄이 쓰는 중일 수 있다: 깨진 줄은 건너뛴다
+    orders = btc_view.tail_jsonl(d / "journal.jsonl", 30)
     return {
         "mode": "live" if mode_file.exists() and mode_file.read_text().strip() == "live" else "dry",
         "halted": (d / "HALT").exists(),
         "positions": _read(d / "positions.json") or {},
-        "orders": [json.loads(line) for line in reversed(lines) if line.strip()],
+        "orders": list(reversed(orders)),
     }

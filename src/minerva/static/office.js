@@ -53,8 +53,7 @@ let after = 0, stats = { tools: 0, agents: 0, commits: 0 }, failures = 0;
 function cast(type) { return CAST[type] || ["🐰", type || "요원", type || "", "임시로 투입된 요원이에요."]; }
 function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls;
   if (html !== undefined) e.innerHTML = html; return e; }
-function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;",
-  ">": "&gt;", '"': "&quot;" }[c])); }
+const { esc } = window.MinervaUI;
 
 function desk(key, type) {
   if (desks.has(key)) return desks.get(key);
@@ -129,8 +128,14 @@ function keyFor(ev) {
   if (!ev.agent_id) return "main";
   if (!desks.has(ev.agent_id)) {
     const i = pending.findIndex(p => p.type === ev.agent_type);
-    if (i >= 0) { const p = pending.splice(i, 1)[0]; desks.set(ev.agent_id, desks.get(p.key));
-      desks.delete(p.key); }
+    if (i >= 0) {
+      // 투입 때 만든 임시 책상을 진짜 에이전트 ID로 옮긴다. 책상의 key도 바꿔야 클릭했을 때
+      // 이 에이전트의 최근 작업(recent는 agent_id로 쌓인다)이 보인다.
+      const p = pending.splice(i, 1)[0];
+      const d = desks.get(p.key);
+      desks.delete(p.key);
+      if (d) { d.key = ev.agent_id; desks.set(ev.agent_id, d); }
+    }
   }
   return ev.agent_id;
 }

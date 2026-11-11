@@ -4,18 +4,15 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const core = window.ScrLab;
-  const GREEN = "#26a69a", RED = "#ef5350", BLUE = "#2962ff", AMBER = "#f7a21b";
-  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;",
-    ">": "&gt;", '"': "&quot;" }[c]));
-  const num = (v, d = 1) => (v == null ? "-" : Number(v).toLocaleString("ko-KR", { maximumFractionDigits: d }));
+  const U = window.MinervaUI;
+  const { esc, css, pad, kst } = U;
+  const GREEN = "#26a69a", RED = "#ef5350";
+  const num = (v, d = 1) => U.num(v, d);
   const pct = (v, d = 2) => (v == null ? "-"
     : `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${num(v, d)}%</span>`);
   const SIDE = { long: "롱", short: "숏" };
   const WHY = { signal: "반대 신호", stop: "손절", tp: "익절", manual: "수동·강제", protect: "손절 실패 정리" };
-  const css = (k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
-  const pad = (n) => String(n).padStart(2, "0");
-  // 차트 시각: KST 벽시계를 UTC 자리에 둔 초. 엔진 기록 "YYYY-MM-DD HH:MM:SS"(KST)도 같은 방식으로 바꾼다.
-  const kst = (ms) => Math.floor(ms / 1000) + 9 * 3600;
+  // 차트 시각은 KST 벽시계를 UTC 자리에 둔 초(U.kst). 엔진 기록 "YYYY-MM-DD HH:MM:SS"(KST)도 같은 방식으로 바꾼다.
   const wall = (s) => {
     const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(s || "");
     return m ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) / 1000 : null;
@@ -209,28 +206,9 @@
   const buildChart = () => {
     const LC = window.LightweightCharts;
     if (!LC || !$("bte-chart") || !$("bte-chart").clientWidth) return false;
-    const text = css("--text") || "#d1d4dc", grid = css("--line") || "#2a2e39";
-    chart = LC.createChart($("bte-chart"), {
-      autoSize: true,
-      localization: { locale: "ko-KR", timeFormatter: (t) => fmt(t) },
-      layout: { background: { type: "solid", color: css("--card") || "#131722" }, textColor: text, fontSize: 11,
-        panes: { separatorColor: grid } },
-      grid: { vertLines: { color: grid }, horzLines: { color: grid } },
-      crosshair: { mode: LC.CrosshairMode.Normal },
-      rightPriceScale: { borderColor: grid },
-      timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false, rightOffset: 4 },
-    });
-    const line = (pane, color, title) => chart.addSeries(LC.LineSeries, { color, lineWidth: 2, title,
-      priceLineVisible: false, lastValueVisible: true }, pane);
-    series = {
-      candle: chart.addSeries(LC.CandlestickSeries, { upColor: GREEN, downColor: RED, borderVisible: false,
-        wickUpColor: GREEN, wickDownColor: RED }, 0),
-      stoch: line(1, AMBER, "Stoch 9"), cci: line(2, "#ab47bc", "CCI 20"), rsi: line(3, BLUE, "RSI 21"),
-      lines: [],
-    };
+    ({ chart, series } = U.scrChart($("bte-chart"), { timeFormatter: (t) => fmt(t),
+      titles: ["Stoch 9", "CCI 20", "RSI 21"], up: GREEN, down: RED }));
     series.marks = LC.createSeriesMarkers(series.candle, []);
-    const panes = chart.panes();
-    [0.52, 0.16, 0.16, 0.16].forEach((f, i) => panes[i] && panes[i].setStretchFactor(f));
     return true;
   };
 
@@ -255,31 +233,18 @@
 
   const renderChart = (res, p, from) => {
     if (!chart && !buildChart()) return;
-    const shown = bars.slice(from);
-    const first = kst(shown[0][0]);
-    series.candle.setData(shown.map((b) => ({ time: kst(b[0]), open: b[1], high: b[2], low: b[3], close: b[4] })));
-    const ind = (arr) => shown.map((b, j) => ({ time: kst(b[0]), v: arr[from + j] }))
-      .filter((x) => x.v != null && Number.isFinite(x.v)).map((x) => ({ time: x.time, value: x.v }));
-    series.stoch.setData(ind(res.stoch)); series.cci.setData(ind(res.cci)); series.rsi.setData(ind(res.rsi));
-    series.lines.forEach(([s, l]) => s.removePriceLine(l));
-    const guide = (s, price, color, title = "", style = 2) => [s, s.createPriceLine({ price, color, lineWidth: 1, lineStyle: style,
-      axisLabelVisible: true, title })];
-    series.lines = [
-      guide(series.stoch, p.stoch_lo, GREEN), guide(series.stoch, p.stoch_hi, RED),
-      guide(series.cci, p.cci_lo, GREEN), guide(series.cci, p.cci_hi, RED),
-      guide(series.rsi, p.rsi_lo, GREEN), guide(series.rsi, p.rsi_hi, RED),
-    ];
+    const { times, guide } = U.scrFill(series, bars, from, res, p, GREEN, RED);
+    const first = times[0];
     const pos = eng && eng.position;
     if (pos) {
-      series.lines.push(guide(series.candle, pos.entry, css("--muted") || "#888", "진입", 1));
-      series.lines.push(guide(series.candle, pos.stop, RED, "손절", 0));
-      if (pos.tp) series.lines.push(guide(series.candle, pos.tp, GREEN, "익절", 0));
+      guide(series.candle, pos.entry, css("--muted") || "#888", "진입", 1);
+      if (pos.stop) guide(series.candle, pos.stop, RED, "손절", 0);
+      if (pos.tp) guide(series.candle, pos.tp, GREEN, "익절", 0);
     }
     const sigMarks = [];
     res.long.forEach((i) => { if (i >= from) sigMarks.push({ time: kst(bars[i][0]), position: "belowBar", color: GREEN, shape: "circle", text: "" }); });
     res.short.forEach((i) => { if (i >= from) sigMarks.push({ time: kst(bars[i][0]), position: "aboveBar", color: RED, shape: "arrowDown", text: "" }); });
     // 엔진 표시는 그 시각이 든 15분봉에 붙인다. 아직 안 끝난 봉이면 마지막 마감 봉에 붙인다.
-    const times = shown.map((b) => kst(b[0]));
     const snap = (t) => {
       let k = times.length - 1;
       while (k >= 0 && times[k] > t) k -= 1;
@@ -305,7 +270,10 @@
       eng = e || { status: "error" };
       if (k && k.bars && k.bars.length) { bars = k.bars; bars.showFrom = k.show_from; }
       gate = g;
-      renderStatus(); renderGate(); renderOutlook(); recompute();
+      // 한 조각이 이상한 자료로 실패해도 나머지 조각은 그린다
+      [renderStatus, renderGate, renderOutlook, recompute].forEach((f) => {
+        try { f(); } catch (err) { console.error(err); }
+      });
     });
 
   window.addEventListener("hashchange", () => setTimeout(recompute, 50));

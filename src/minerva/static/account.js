@@ -3,9 +3,8 @@
 // 서버에 열람 토큰이 설정돼 있으면 입력을 받고, 한 번 입력하면 이 기기에 기억한다.
 (() => {
   const $ = (id) => document.getElementById(id);
-  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;",
-    ">": "&gt;", '"': "&quot;" }[c]));
-  const num = (v) => (v == null ? "-" : Number(v).toLocaleString("ko-KR", { maximumFractionDigits: 2 }));
+  const { esc } = window.MinervaUI;
+  const num = (v) => window.MinervaUI.num(v, 2);
   const won = (v) => (v == null ? "-" : `${num(Math.round(v))}원`);
   const signed = (v, s) => `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${s}</span>`;
   const KEY = "minerva-account-token";

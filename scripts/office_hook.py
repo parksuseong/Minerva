@@ -70,7 +70,10 @@ def append(rec: dict) -> None:
     LOG.parent.mkdir(parents=True, exist_ok=True)
     if LOG.exists() and LOG.stat().st_size > MAX_BYTES:
         lines = LOG.read_text().splitlines()[-2000:]
-        LOG.write_text("\n".join(lines) + "\n")
+        # 제자리에 다시 쓰면 화면이 잠깐 빈 파일을 읽을 수 있어 임시 파일로 바꿔 끼운다
+        tmp = LOG.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text("\n".join(lines) + "\n")
+        os.replace(tmp, LOG)
     with LOG.open("a") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 

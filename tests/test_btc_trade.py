@@ -2494,3 +2494,24 @@ def test_time_budget_fallback_to_flip_has_reason(env, multi, monkeypatch):
     skips = [m for m in env["sent"] if "신호가 났지만" in m]
     assert skips and all(m.split("신호가 났지만", 1)[1].strip() for m in skips)
     assert "초를 넘겨" in s["decision"]
+
+
+def test_exit_plan_prompt_is_symbol_aware(env, multi, monkeypatch):
+    """손절·익절 질문(사용자 2026-11-11 "최대한 손해 보면 안 된다"): 실제 종목 이름, 그 종목의
+    15분 폭·ATR·백테스트 승률, 자본 보존 지시. 범위·기본값은 그대로."""
+    ex = MultiExchange()
+    signals(monkeypatch, multi, {"SOXLUSDT": "long"})
+    asked = ai_answers(monkeypatch, "")
+    mrun(env, ex, multi)
+    prompt = asked["exits"][0]
+    assert "종목(SOXLUSDT)" in prompt and "<SYMBOL>" not in prompt
+    assert "손해 보면 안 된다" in prompt and "SOXLUSDT는 반도체 3배 ETF" in prompt
+    data = json.loads(prompt[prompt.index("자료:\n") + 4 :])
+    assert data["symbol"] == "SOXLUSDT" and data["backtest_winrate_pct"] == 17
+    assert data["recent_15m_range_pct"]["bars"] == 16
+    assert data["recent_15m_range_pct"]["avg"] == pytest.approx(0.2, abs=1e-3)
+    assert data["atr14_pct"]["15m"] is not None
+    assert data["backtest_ref"] is None  # BTC 통계는 다른 종목에 넘기지 않는다
+    pos = state()["position"]  # 답이 없으면 손절 3%·익절 없음 그대로
+    assert pos["stop_pct"] == 3.0 and pos["tp"] is None
+    assert bt.btc_ai.STOP_RANGE == (1.0, 5.0) and bt.btc_ai.TP_RANGE == (1.0, 10.0)

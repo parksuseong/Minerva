@@ -1425,10 +1425,12 @@ def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
             mode_,
             ref,
             symbol=ctx.symbol,
+            winrate=SYMBOL_WINRATE.get(ctx.symbol),
         )
     except (OSError, ValueError, KeyError, IndexError) as e:
         data = {
             "symbol": ctx.symbol,
+            "backtest_winrate_pct": SYMBOL_WINRATE.get(ctx.symbol),
             "side": side,
             "signal_close": sig.get("close"),
             "price_now": price,

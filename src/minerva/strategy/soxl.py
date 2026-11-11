@@ -68,6 +68,11 @@ def build(now: datetime | None = None) -> dict:
     price = fetch_price()
     out = btc_outlook.build(raw, price)
     out["note"] = NOTE
+    # 화면에 "원문"이라고 쓰지 않는다(사용자 요청 2026-11-11). 판독 문장은 비트코인과 같이 쓴다.
+    if out.get("summary"):
+        out["summary"]["watch"] = [
+            w.replace("원문 규칙: ", "") for w in out["summary"].get("watch", [])
+        ]
     try:
         soxx = closed_days(fetch_yahoo("SOXX"), now)
         same = [b.close for b in days if b.day == soxx[-1].day]

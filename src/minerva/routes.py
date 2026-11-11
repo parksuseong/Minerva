@@ -98,7 +98,7 @@ def btc_engine() -> dict:
 KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
 # SCR 실험실에서 고를 수 있는 봉(분 단위)
 # 봉을 내줄 수 있는 선물 종목(공개 시세). SOXL은 종목 분석 > SOXL 탭(보기만, 2026-11-11)
-KLINE_SYMBOLS = ("BTCUSDT", "SOXLUSDT", "NVDAUSDT")
+KLINE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
 LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 LAB_MAX_DAYS = 365
 # 5분봉 1년은 10만 봉이 넘어 휴대폰 화면이 버거워 90일까지만 (사용자 요청 2026-11-08 1년 보기)

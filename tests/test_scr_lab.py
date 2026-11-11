@@ -380,7 +380,7 @@ def test_page_has_lab_tab_and_scripts():
 
 def test_klines_other_symbol_is_whitelisted_and_cached_apart(fake_binance):
     client = TestClient(app)
-    assert client.get("/api/btc/klines?symbol=ETHUSDT").status_code == 400
+    assert client.get("/api/btc/klines?symbol=DOGEUSDT").status_code == 400
     d = client.get("/api/btc/klines?symbol=SOXLUSDT&interval=15m&days=3").json()
     assert d["symbol"] == "SOXLUSDT" and d["bars"]
     assert any(c[0] == "SOXLUSDT" for c in fake_binance)

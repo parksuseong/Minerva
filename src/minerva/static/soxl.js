@@ -1,5 +1,5 @@
-// 종목 분석 > SOXL·NVDA: 비트코인 화면과 같은 조건(SCR ① 15분, Stoch 9·CCI 20·RSI 21, W3, 3개 중 3개, 넘어옴)으로
-// 미국 주식 무기한 선물을 보여준다(사용자 요청 2026-11-11). 보기만 하고 자동매매와 연결되지 않는다.
+// 종목 분석 > SOXL·NVDA·ETH: 비트코인 화면과 같은 조건(SCR ① 15분, Stoch 9·CCI 20·RSI 21, W3, 3개 중 3개, 넘어옴)으로
+// 무기한 선물을 보여준다(사용자 요청 2026-11-11). 화면은 보기만 한다(자동매매는 btc_trade 엔진이 따로 같은 신호로).
 // 큰 그림·일봉 지표 분석 /api/soxl?symbol=, 봉 /api/btc/klines?symbol=. 종목마다 같은 틀을 상자 안에 그린다.
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -14,6 +14,8 @@
     { box: "an-sx", id: "sx", symbol: "SOXLUSDT", stock: "SOXL", base: "SOXX", what: "반도체 3배 ETF",
       short: "숏 타점 (뒤집은 차트 = SOXS 눌림)" },
     { box: "an-nv", id: "nv", symbol: "NVDAUSDT", stock: "NVDA", base: "NVDA", what: "엔비디아",
+      short: "숏 타점 (20일선 되돌림 뒤 스토캐 꺾임)" },
+    { box: "an-et", id: "et", symbol: "ETHUSDT", stock: "ETH", base: "ETH", what: "이더리움", crypto: true,
       short: "숏 타점 (20일선 되돌림 뒤 스토캐 꺾임)" },
   ];
 
@@ -49,7 +51,7 @@
 
   const skeleton = (t) => `
     <section class="card">
-      <h2>🧭 큰 그림 <span class="mini">${t.stock} · 4시간(선물)·일·주·월(미국 주가) · 마감 봉 기준 · 5분마다 갱신</span></h2>
+      <h2>🧭 큰 그림 <span class="mini">${t.stock} · ${t.crypto ? "4시간·일·주·월(바이낸스 선물)" : "4시간(선물)·일·주·월(미국 주가)"} · 마감 봉 기준 · 5분마다 갱신</span></h2>
       <div id="${t.id}-outlook" class="placeholder">불러오는 중…</div>
     </section>
     <section class="card">
@@ -57,8 +59,8 @@
       <div id="${t.id}-classic" class="placeholder">불러오는 중…</div>
     </section>
     <section class="card">
-      <h2>차트 <span class="mini">${t.symbol} 선물 15분봉 7일 · SCR ① (비트코인과 같은 조건) · 보기만, 자동매매 없음</span></h2>
-      <div class="mini">● 초록 = 롱 신호, ▼ 빨강 = 숏 신호. 아래: Stoch 9 · CCI 20 · RSI 21. 미국 장이 닫힌 밤·주말엔 선물 거래가 얇아요.</div>
+      <h2>차트 <span class="mini">${t.symbol} 선물 15분봉 7일 · SCR ① (비트코인과 같은 조건) · 자동매매 대상(4종목 엔진, 상태는 ₿ 비트코인 화면)</span></h2>
+      <div class="mini">● 초록 = 롱 신호, ▼ 빨강 = 숏 신호. 아래: Stoch 9 · CCI 20 · RSI 21.${t.crypto ? "" : " 미국 장이 닫힌 밤·주말엔 선물 거래가 얇아요."}</div>
       <div id="${t.id}-chart" style="height:640px;margin-top:6px"></div>
     </section>
     <section class="card">

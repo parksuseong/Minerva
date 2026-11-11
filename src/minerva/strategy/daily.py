@@ -50,6 +50,7 @@ from minerva.strategy.regime import (
 from minerva.strategy.report import CACHE_DIR, fetch_yahoo
 from minerva.strategy.universe import kospi_top, nasdaq_top
 
+KST = timezone(timedelta(hours=9))
 OUT = Path(os.environ.get("MINERVA_DAILY_OUT", "~/.minerva/daily/latest.json")).expanduser()
 
 TM_RULE = Rule(level=1, above_ma=50, hold=20, stop=0.10, vix="calm", align=True)
@@ -634,7 +635,7 @@ def build() -> dict:
     vix3m = completed(fetch_yahoo("^VIX3M", "max"), "US")
     raw = vix_regimes(vix).get(vix[-1].day)
     vix_ma50 = sma([b.close for b in vix], 50)[-1]
-    today = datetime.now(timezone(timedelta(hours=9))).date()
+    today = datetime.now(KST).date()
     w5, w10, calm = weekly_gate_at(vix_weekly(vix), today)
     regime = gated_regime(raw, calm)
     gate = {"w5": _r(w5), "w10": _r(w10), "open": calm}
@@ -665,7 +666,7 @@ def build() -> dict:
             products.append(pfut[p.symbol].result())
         except Exception as exc:  # noqa: BLE001
             products.append({"symbol": p.symbol, "name": p.name, "error": type(exc).__name__})
-    kst = datetime.now(timezone(timedelta(hours=9)))
+    kst = datetime.now(KST)
     return {
         "generated_at": kst.isoformat(timespec="minutes"),
         "vix": {
@@ -958,24 +959,34 @@ def telegram_summary(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """임시 파일에 쓰고 바꾼다. 쓰다 끊겨도 자동매매가 읽는 파일이 반쪽이 되지 않는다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--out", default=str(OUT))
     p.add_argument("--notify", action="store_true", help="텔레그램으로 요약 전송")
     args = p.parse_args(argv)
     data = build()
-    data["summary"] = write_summary(data)
-    add_memo(data, datetime.now(timezone(timedelta(hours=9))).date())
+    try:
+        data["summary"] = write_summary(data)
+    except Exception as exc:  # noqa: BLE001 — 요약문 오류로 주문 근거 파일 저장이 멈추면 안 된다
+        data["summary"] = [f"요약을 만들지 못했어요 ({type(exc).__name__})."]
+    add_memo(data, datetime.now(KST).date())
     out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1))
-    tmp.replace(out)
+    _write_atomic(out, json.dumps(data, ensure_ascii=False, indent=1))
     # 신호 기록: 실제 성과 추적과 규칙 고도화용 (실행마다 한 파일)
-    hist = out.parent / "history"
-    hist.mkdir(exist_ok=True)
     stamp = data["generated_at"][:16].replace(":", "").replace("T", "-")
-    (hist / f"{stamp}.json").write_text(json.dumps(data, ensure_ascii=False))
+    _write_atomic(out.parent / "history" / f"{stamp}.json", json.dumps(data, ensure_ascii=False))
     print(f"wrote {out}")
     if args.notify:
         from minerva import notify

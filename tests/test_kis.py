@@ -232,3 +232,26 @@ def test_market_order_shows_fill_price():
     }
     orders, trades = kis.parse_orders([{"output1": [row]}])
     assert orders[0]["price"] == 1583 and trades[0]["price"] == 1583
+
+
+def test_access_token_reissues_when_cache_is_corrupt(tmp_path, monkeypatch):
+    monkeypatch.setattr(kis, "STATE_DIR", tmp_path)
+    (tmp_path / "token.json").write_text('{"access_token": "x"')  # 쓰다 끊긴 파일
+    fresh = {"access_token": "new", "access_token_token_expired": "2026-10-29 11:00:00"}
+    monkeypatch.setattr(kis, "_request", lambda req: (fresh, {}))
+    assert kis.access_token(CFG, NOW) == "new"
+
+
+def test_write_private_is_atomic_and_cleans_up(tmp_path, monkeypatch):
+    target = tmp_path / "sub" / "state.json"
+    kis._write_private(target, "one")
+    assert target.read_text() == "one" and target.stat().st_mode & 0o777 == 0o600
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(kis.os, "replace", boom)
+    with pytest.raises(OSError):
+        kis._write_private(target, "two")
+    assert target.read_text() == "one"
+    assert [p.name for p in target.parent.iterdir()] == ["state.json"]  # 임시 파일 안 남김

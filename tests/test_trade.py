@@ -862,3 +862,67 @@ def test_liquidate_requires_yes_flag(capsys):
     with pytest.raises(SystemExit):
         trade.main(["liquidate"])
     assert "--yes" in capsys.readouterr().err
+
+
+def test_send_order_checks_history_after_last_failed_attempt(monkeypatch):
+    # 마지막 시도 응답을 잃었는데 실제로 접수됐으면 "failed"가 아니라 "sent"여야 봇이 추적한다
+    o = _live(monkeypatch, [kis.KisError("timeout")] * (trade.RETRIES + 1))
+    checks = iter([False] * trade.RETRIES + [True])
+    monkeypatch.setattr(trade, "_already_sent", lambda cfg, token, o, since: next(checks))
+    assert trade.send_order(CFG, o, live=True)["result"] == "sent"
+
+
+def test_read_journal_skips_truncated_line(tmp_path):
+    (tmp_path / "journal.jsonl").write_text('{"key": "a"}\n{"key": "b", "res\n{"key": "c"}\n')
+    assert [e["key"] for e in trade._read_journal()] == ["a", "c"]
+
+
+def _two_buys(tmp_path, monkeypatch):
+    acts = [_act("LONG_ENTRY", "005930.KS", "A"), _act("LONG_ENTRY", "000660.KS", "B")]
+    (tmp_path / "daily.json").write_text(json.dumps(_daily(acts)))
+    monkeypatch.setattr(trade, "DAILY_FILE", tmp_path / "daily.json")
+    monkeypatch.setattr(kis, "load_config", lambda: CFG)
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: ACCOUNT)
+
+
+def test_run_open_stops_when_halt_appears_mid_run(tmp_path, monkeypatch):
+    _two_buys(tmp_path, monkeypatch)
+
+    def send(cfg, o, live):
+        (tmp_path / "HALT").write_text("")  # 첫 주문 뒤 사용자가 매매중지
+        return {**o, "result": "dry"}
+
+    monkeypatch.setattr(trade, "send_order", send)
+    assert len(trade.run_open(NOW)) == 1
+
+
+def test_run_open_reports_sent_orders_when_it_crashes(tmp_path, monkeypatch):
+    _two_buys(tmp_path, monkeypatch)
+    calls = iter([None, kis.KisError("boom")])
+
+    def send(cfg, o, live):
+        err = next(calls)
+        if err:
+            raise err
+        return {**o, "result": "sent"}
+
+    texts = []
+    monkeypatch.setattr(trade, "send_order", send)
+    monkeypatch.setattr(trade.notify, "send", lambda text: texts.append(text) or True)
+    with pytest.raises(kis.KisError):
+        trade.run_open(NOW)
+    assert any("이미 낸 주문" in t for t in texts)
+    assert json.loads((tmp_path / "positions.json").read_text())  # 낸 매수는 추적된다
+
+
+def test_held_days_tolerates_missing_open_date():
+    assert trade._held_days({"opened": None}, "2026-10-29") == 0
+
+
+def test_preflight_unknown_holiday_is_not_labeled_closed(monkeypatch):
+    monkeypatch.setattr(trade, "_timer_active", lambda unit: True)
+    monkeypatch.setattr(trade, "is_open_day", lambda cfg, day: None)
+    monkeypatch.setattr(kis, "access_token", lambda cfg, now=None: "t")
+    monkeypatch.setattr(kis, "_snapshot", lambda cfg, now=None: ACCOUNT)
+    checks = dict((m, ok) for ok, m in trade.preflight_checks(NOW, _daily([]), lambda: CFG))
+    assert checks["개장일 확인 불가"] is True and "오늘 휴장일" not in checks

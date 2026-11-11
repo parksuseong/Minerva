@@ -1,10 +1,9 @@
 // "오늘 할 일"·"종목 분석" 탭. /api/daily 결과(배치가 매일 09:10·16:30 갱신)를 그린다.
 (() => {
   const $ = (id) => document.getElementById(id);
-  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;",
-    ">": "&gt;", '"': "&quot;" }[c]));
+  const { esc } = window.MinervaUI;
   const pct = (v) => (v == null ? "-" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`);
-  const num = (v) => (v == null ? "-" : Number(v).toLocaleString("ko-KR", { maximumFractionDigits: 2 }));
+  const num = (v) => window.MinervaUI.num(v, 2);
   const SIDE = { long: "롱" };
   const ICON = { "진입 신호": "🟢", "청산 신호": "🔷", "보유 중": "🔵", "대기": "⏳" };
 

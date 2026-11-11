@@ -4,6 +4,8 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const core = window.ScrLab;
+  const U = window.MinervaUI;
+  const { esc, css, pad, kst } = U;
   // 기본값이 바뀌면 판을 올린다. 옛 판에 저장된 값은 읽지 않아 새 기본값이 한 번 보인다.
   const KEY = "minerva-scrlab-v2";
   const DAYS = [3, 7, 14, 30, 90, 180, 365];
@@ -27,15 +29,10 @@
     use_stop: true, stop_pct: 3, use_tp: false, tp_pct: 3 };
   const defaults = () => Object.assign({}, core ? core.DEFAULTS : {}, BASE);
 
-  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;",
-    ">": "&gt;", '"': "&quot;" }[c]));
-  const num = (v, d = 1) => (v == null ? "-" : Number(v).toLocaleString("ko-KR", { maximumFractionDigits: d }));
+  const num = (v, d = 1) => U.num(v, d);
   const pct = (v) => (v == null ? "-"
     : `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${num(v, 2)}%</span>`);
-  const css = (k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
-  const pad = (n) => String(n).padStart(2, "0");
-  // 차트 시각은 KST 벽시계를 UTC 자리에 둔 초 단위 값이다. 표시는 UTC 필드로 읽는다.
-  const kst = (ms) => Math.floor(ms / 1000) + 9 * 3600;
+  // 차트 시각은 KST 벽시계를 UTC 자리에 둔 초(U.kst)라 표시는 UTC 필드로 읽는다.
   const fmt = (sec, withDate) => {
     const d = new Date(sec * 1000);
     const hm = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
@@ -155,31 +152,10 @@
   const buildChart = () => {
     const LC = window.LightweightCharts;
     if (!LC) return false;
-    const text = css("--text") || "#d1d4dc", grid = css("--line") || "#2a2e39";
-    chart = LC.createChart($("lab-chart"), {
-      autoSize: true,
-      localization: { locale: "ko-KR", timeFormatter: (t) => fmt(t, true) },
-      layout: { background: { type: "solid", color: css("--card") || "#131722" }, textColor: text, fontSize: 11,
-        panes: { separatorColor: grid } },
-      grid: { vertLines: { color: grid }, horzLines: { color: grid } },
-      crosshair: { mode: LC.CrosshairMode.Normal },
-      rightPriceScale: { borderColor: grid },
-      timeScale: { borderColor: grid, timeVisible: true, secondsVisible: false, rightOffset: 4,
-        tickMarkFormatter: (t, type) => (type <= 2 ? fmt(t, true).slice(0, 5) : fmt(t, false)) },
-    });
-    const line = (pane, color, title) => chart.addSeries(LC.LineSeries, { color, lineWidth: 2, title,
-      priceLineVisible: false, lastValueVisible: true }, pane);
-    series = {
-      candle: chart.addSeries(LC.CandlestickSeries, { upColor: GREEN, downColor: RED, borderVisible: false,
-        wickUpColor: GREEN, wickDownColor: RED }, 0),
-      stoch: line(1, "#f7a21b", "Stoch"),
-      cci: line(2, "#ab47bc", "CCI"),
-      rsi: line(3, "#2962ff", "RSI"),
-      lines: [],
-    };
+    ({ chart, series } = U.scrChart($("lab-chart"), { timeFormatter: (t) => fmt(t, true),
+      tickMarkFormatter: (t, type) => (type <= 2 ? fmt(t, true).slice(0, 5) : fmt(t, false)),
+      titles: ["Stoch", "CCI", "RSI"], up: GREEN, down: RED }));
     series.marks = ["candle", "stoch", "cci", "rsi"].map((k) => LC.createSeriesMarkers(series[k], []));
-    const panes = chart.panes();
-    [0.52, 0.16, 0.16, 0.16].forEach((f, i) => panes[i] && panes[i].setStretchFactor(f));
     return true;
   };
 
@@ -188,28 +164,14 @@
       $("lab-chart").innerHTML = '<p class="placeholder">차트 도구를 불러오지 못했어요. 아래 목록은 그대로 볼 수 있어요.</p>';
       return;
     }
-    const shown = bars.slice(from);
-    series.candle.setData(shown.map((b) => ({ time: kst(b[0]), open: b[1], high: b[2], low: b[3], close: b[4] })));
-    const ind = (arr) => shown.map((b, j) => ({ time: kst(b[0]), v: arr[from + j] }))
-      .filter((x) => x.v != null && Number.isFinite(x.v)).map((x) => ({ time: x.time, value: x.v }));
-    series.stoch.setData(ind(res.stoch)); series.cci.setData(ind(res.cci)); series.rsi.setData(ind(res.rsi));
-    series.lines.forEach(([s, l]) => s.removePriceLine(l));
-    const guide = (s, price, color) => [s, s.createPriceLine({ price, color, lineWidth: 1, lineStyle: 2,
-      axisLabelVisible: true, title: "" })];
-    series.lines = [
-      guide(series.stoch, p.stoch_lo, GREEN), guide(series.stoch, p.stoch_hi, RED),
-      guide(series.cci, p.cci_lo, GREEN), guide(series.cci, p.cci_hi, RED),
-      guide(series.rsi, p.rsi_lo, GREEN), guide(series.rsi, p.rsi_hi, RED),
-    ];
+    const { guide } = U.scrFill(series, bars, from, res, p, GREEN, RED);
     // 시뮬레이션 마지막 포지션이 열려 있으면 진입·손절·익절 선을 캔들 위에 긋는다.
     if (sim && sim.open) {
       const o = sim.open;
-      const pl = (price, color, title, style) => [series.candle, series.candle.createPriceLine({ price, color,
-        lineWidth: 1, lineStyle: style, axisLabelVisible: true, title })];
-      series.lines.push(pl(o.entry, css("--muted") || "#888", o.dir > 0 ? "롱 진입" : "숏 진입", 0));
-      if (o.stop) series.lines.push(pl(o.stop, RED, `손절 −${num(p.stop_pct, 1)}%`, 2));
-      else series.lines.push(pl(o.liq, RED, `청산가 (${LEV}배)`, 1));
-      if (o.tp) series.lines.push(pl(o.tp, GREEN, `익절 +${num(p.tp_pct, 1)}%`, 2));
+      guide(series.candle, o.entry, css("--muted") || "#888", o.dir > 0 ? "롱 진입" : "숏 진입", 0);
+      if (o.stop) guide(series.candle, o.stop, RED, `손절 −${num(p.stop_pct, 1)}%`, 2);
+      else guide(series.candle, o.liq, RED, `청산가 (${LEV}배)`, 1);
+      if (o.tp) guide(series.candle, o.tp, GREEN, `익절 +${num(p.tp_pct, 1)}%`, 2);
     }
     // 롱 열림 = 초록 동그라미(봉 아래), 숏 열림 = 빨강 삼각형(봉 위). 사용자 표시 규칙.
     const marks = sigs.map((s) => ({

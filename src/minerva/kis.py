@@ -69,7 +69,7 @@ def _write_private(path: Path, text: str) -> None:
         with os.fdopen(fd, "w") as f:
             f.write(text)
             f.flush()
-            os.fsync(f.fileno())  # 전원이 갑자기 꺼져도 0바이트 파일로 바뀌지 않게 내용부터 디스크에
+            os.fsync(f.fileno())  # 전원이 꺼져도 0바이트로 남지 않게
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)  # 쓰다 실패한 임시 파일을 남기지 않는다

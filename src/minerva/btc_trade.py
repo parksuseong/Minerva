@@ -764,6 +764,13 @@ def _cid(bar: int, tag: str) -> str:
     return f"{PREFIX}{bar // 60000}-{tag}"
 
 
+def _pos_cid(pos: dict, tag: str, n: int) -> str:
+    """다시 거는 손절(s)·익절(t)·비상 청산(x) ID. 첫 시도는 예전 그대로 <tag><n>,
+    같은 신호 재시도(try ≥ 2)는 <tag><try>-<n>(앞 시도의 <tag><n>·기준 <tag><try>-와 다르다)."""
+    t = pos.get("try", 1)
+    return _cid(pos["bar"], f"{tag}{n}" if t == 1 else f"{tag}{t}-{n}")
+
+
 def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None, why: str) -> None:
     sign = 1 if pos["side"] == "long" else -1
     pct = (exit_px / pos["entry"] - 1) * sign * 100 if exit_px else None
@@ -841,7 +848,7 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
     open_ids = {a.get("clientAlgoId") for a in open_algos(ctx.client)}
     if pos["stop_id"] not in open_ids:
         n = pos.get("stop_n", 0) + 1
-        cid = f"{PREFIX}{pos['bar'] // 60000}-s{n}"
+        cid = _pos_cid(pos, "s", n)
         try:
             r = place_stop(ctx.client, pos["side"], Decimal(str(pos["stop"])), cid)
             pos.update(stop_id=cid, stop_n=n)
@@ -860,7 +867,7 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
         ctx.say(f"🛡 손절 주문이 없어 다시 걸었어요: {pos['stop']:,.1f} ({WORKING_TYPE})")
     if with_tp and pos.get("tp") and pos.get("tp_id") not in open_ids:
         n = pos.get("tp_n", 0) + 1
-        cid = f"{PREFIX}{pos['bar'] // 60000}-t{n}"
+        cid = _pos_cid(pos, "t", n)
         try:
             place_stop(ctx.client, pos["side"], Decimal(str(pos["tp"])), cid, TP_KIND)
             pos.update(tp_id=cid, tp_n=n)
@@ -881,7 +888,7 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
     n = pos.get("x_n", 0) + 1
     pos["x_n"] = n
     _save(DIR / "state.json", state)
-    cid = f"{PREFIX}{pos['bar'] // 60000}-x{n}"
+    cid = _pos_cid(pos, "x", n)
     try:
         amt = position_amt(ctx.client)
         if amt:
@@ -889,9 +896,19 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
         if position_amt(ctx.client) != 0:
             raise RuntimeError("청산 뒤에도 포지션이 남음")
     except (Rejected, NetworkError, RuntimeError) as e:
-        ctx.say(f"🆘 손절 없는 포지션을 닫지 못했어요: {e}\n지금 바이낸스 앱에서 직접 확인하세요!")
-        ctx.event(event="unprotected", error=str(e))
-        return
+        # 응답을 잃고 다시 보낸 reduceOnly는 이미 닫힌 뒤라 '포지션 없음'(-2022)으로 거부될 수 있다.
+        # 포지션을 남기면 다음 실행이 '수동 청산'으로 보고 거짓 정지를 건다
+        try:
+            gone = position_amt(ctx.client) == 0
+        except (Rejected, NetworkError):
+            gone = False
+        if not gone:
+            ctx.say(
+                f"🆘 손절 없는 포지션을 닫지 못했어요: {e}\n지금 바이낸스 앱에서 직접 확인하세요!"
+            )
+            ctx.event(event="unprotected", error=str(e))
+            return
+        ctx.event(event="protect_close_error_but_flat", error=str(e))
     # 닫힌 것은 확인됐다: 뒤 조회가 실패해도 포지션을 남기지 않는다
     # (남기면 다음 실행이 '수동 청산'으로 보고 거짓 정지를 건다)
     state["position"] = None
@@ -904,6 +921,9 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
         px, pnl = _close_result(ctx.client, pos, close_side)
     except (Rejected, NetworkError):
         px = pnl = None
+    # 같은 실행에서 새로 들어가면 이 청산 체결이 새 포지션 손익에 섞이지 않게(close_position과 같게)
+    state["closed_through_ms"] = pos.get("closed_ms") or int(time.time() * 1000) - 2000
+    _save(DIR / "state.json", state)
     _record_close(ctx, pos, px, pnl, why)
 
 
@@ -919,10 +939,17 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         row = position_row(c)
         sign = 1 if pending["side"] == "long" else -1
         if row["amt"] and (row["amt"] > 0) == (sign > 0):
+            # 손익 창은 진입을 시작한 실행 시각부터(open_position과 같게). 지금부터 세면 진입
+            # 체결(수수료)이 빠진다. 같은 실행의 앞 청산은 closed_through_ms → after_ms가 뺀다
+            try:
+                at = datetime.strptime(pending["at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
+                started = int(at.timestamp() * 1000) - 1000
+            except (KeyError, TypeError, ValueError):
+                started = int(time.time() * 1000)
             o = {
                 "executedQty": str(abs(row["amt"])),
                 "avgPrice": str(row["entry"]),
-                "updateTime": int(time.time() * 1000),
+                "updateTime": started,
             }
             pos = _adopt(state, pending, o)
             ctx.event(event="adopt_pending", cid=pending["open"], amt=row["amt"])
@@ -973,6 +1000,8 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
                 why = "tp"
         state["position"] = None
         state.pop("pending", None)
+        # 실행 시작 뒤에 체결된 손절·익절이 같은 실행의 새 포지션 손익에 섞이지 않게
+        state["closed_through_ms"] = pos.get("closed_ms") or int(time.time() * 1000) - 2000
         cancel_engine_stops(c)  # 손절·익절 중 남은 쪽을 취소 (OCO처럼)
         _save(DIR / "state.json", state)
         _record_close(ctx, pos, px, pnl, why)
@@ -1020,6 +1049,8 @@ def _adopt(state: dict, pending: dict, order: dict) -> dict:
         "opened_at": pending.get("at"),
         "mode": "live",
     }
+    if pending.get("try", 1) > 1:
+        pos["try"] = pending["try"]  # 다시 거는 손절·익절·비상 청산 ID도 앞 시도와 겹치지 않게
     if state.get("closed_through_ms"):
         pos["after_ms"] = state.pop("closed_through_ms")
     state["position"] = pos
@@ -1640,10 +1671,21 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
         return
     if not ensure_leverage(ctx):
         return
+    # 같은 신호를 다시 시도하면 진입·손절·익절 ID를 새로 쓴다. 같은 ID면 _send가 앞 시도의 옛
+    # 주문(취소·만료·체결)을 찾아 돌려주고 새 주문을 내지 않는다: 옛 손절이 이미 체결됐으면
+    # '손절 실패'로 보고 새 포지션을 닫는다. 두 번째부터 o<n>-·s<n>-·t<n>-
+    # (첫 시도 ID·_pos_cid의 s1… 과 겹치지 않음)
+    tries = state.get("entry_tries") or {}
+    n = tries.get("n", 0) + 1 if tries.get("bar") == sig["bar"] else 1
+    state["entry_tries"] = {"bar": sig["bar"], "n": n}
+    if n > 1:
+        oid, sid = _cid(sig["bar"], f"o{n}-"), _cid(sig["bar"], f"s{n}-")
+        tid = _cid(sig["bar"], f"t{n}-") if tid else None
     state["pending"] = {
         "open": oid,
         "stop": sid,
         "tp": tid,
+        "try": n,
         "side": side,
         "bar": sig["bar"],
         "ref": price,
@@ -1678,6 +1720,15 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
         if fill and fill["qty"] > 0:
             ctx.say("🆘 체결을 셌는데 포지션이 아직 0으로 보여요 → 다음 실행에서 다시 대사해요")
             return  # pending을 남긴다
+        if err:
+            # 응답을 잃은 시장가 진입은 체결됐어도 포지션이 늦게 보일 수 있다. pending을 버리면
+            # 다음 실행이 그 포지션을 '엔진 밖'으로 보고 손절 없이 정지한다. 남겨 두면 다음 대사가
+            # 이어 받는다(그때도 0이면 pending을 버리고 같은 신호를 새 ID로 다시 본다)
+            ctx.say(
+                f"⚠️ {SIDE_KO[side]} 진입 중 오류({why}), 포지션은 아직 0 → "
+                "다음 실행에서 다시 대사해요"
+            )
+            return  # pending을 남긴다
         state.pop("pending", None)
         ctx.say(f"⏭ {SIDE_KO[side]} 진입 안 됨: {fill_text(fill) if fill else why}")
         return
@@ -1694,6 +1745,9 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     pos["opened_at"] = _now_iso(ctx.now)
     pos["fill"] = fill["path"] if fill else "recovered"
     state.pop("pending", None)
+    # 포지션과 함께 신호도 처리한 것으로 저장한다: 이 뒤에 죽으면 다음 실행이 같은 신호로 다시
+    # 들어가지 않는다(run() 끝에서도 같은 값을 쓴다)
+    state["last_bar"] = sig["bar"]
     _save(DIR / "state.json", state)
     done = False
     try:

@@ -1708,3 +1708,205 @@ def test_entry_skipped_if_stale_stop_cannot_be_cancelled(env, monkeypatch):
     run(env, ex)
     assert ex.amt == 0 and state().get("position") is None
     assert any("남은 엔진 손절을 취소하지 못함" in m for m in env["sent"])
+
+
+# ---------------------------------------------------------------- 엔진 버그 수정(2026-11-11)
+
+
+def test_stop_fill_seen_in_reconcile_not_counted_in_new_position(env, monkeypatch):
+    """실행 시작 직후 체결된 손절이 같은 실행의 새 포지션 손익에 섞였다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    ex.trigger_stop(pos["stop_id"], 97_000.0)  # 체결 시각이 이번 실행 시작(NOW) 뒤
+    ex.t += 6000  # 이후 체결은 손절보다 늦다
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    short = state()["position"]
+    assert short["side"] == "short" and short.get("after_ms")
+    ex.trigger_stop(short["stop_id"], 103_000.0)
+    ex.trades[-1]["realizedPnl"] = "10"
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    last = jsonl("closed.jsonl")[-1]
+    assert last["side"] == "short" and last["why"] == "stop"
+    assert last["pnl"] == pytest.approx(10 - 0.05 - 0.004, abs=0.02)  # 앞 롱 손절 −30 안 섞임
+
+
+def test_protect_close_marks_close_time_for_next_entry(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    st = state()
+    ctx = bt.Ctx(ex, FakeMarket(ex.price), env["send"], NOW, True)
+    bt.protect_close(ctx, st, "protect")
+    assert st["position"] is None
+    assert st["closed_through_ms"] == max(t["time"] for t in ex.trades if t["side"] == "SELL")
+
+
+def test_adopted_entry_keeps_entry_fee_in_pnl_window(env, monkeypatch):
+    """이어 받은 진입의 손익 창이 이어 받은 시각부터라 진입 체결(수수료)이 빠졌다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["partial:0.012"]
+
+    def boom(*a, **k):
+        raise KeyboardInterrupt
+
+    real_cancel = bt.LiveVenue.cancel
+    monkeypatch.setattr(bt.LiveVenue, "cancel", boom)
+    with_signal(monkeypatch, "long")
+    with pytest.raises(KeyboardInterrupt):
+        run(env, ex)
+    monkeypatch.setattr(bt.LiveVenue, "cancel", real_cancel)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    entry_fill = next(t for t in ex.trades if t["side"] == "BUY")
+    assert pos["entry_ms"] < entry_fill["time"]
+    ex.trigger_stop(pos["stop_id"], 97_000.0)
+    ex.trades[-1]["realizedPnl"] = "-10"
+    run(env, ex)
+    last = jsonl("closed.jsonl")[-1]
+    assert last["why"] == "stop"
+    assert last["pnl"] == pytest.approx(-10 - 0.05 - 0.004, abs=1e-6)  # 진입 수수료 포함
+
+
+def test_protect_close_lost_response_then_reduce_only_reject_is_closed(env, monkeypatch):
+    """비상 청산 응답을 잃고 다시 보낸 reduceOnly가 '포지션 없음'으로 거부돼도 닫힌 것은 닫힌 것."""
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    st = state()
+    ctx = bt.Ctx(ex, FakeMarket(ex.price), env["send"], NOW, True)
+    ex.lose_response = {"POST /fapi/v1/order"}
+    real_query, real_handle = bt._query, ex._handle
+
+    def lagging(client, path, key, cid):
+        if cid.endswith("-x1"):
+            return None  # 체결된 주문이 아직 조회에 안 보인다
+        return real_query(client, path, key, cid)
+
+    def handle(method, path, p):
+        if method == "POST" and p.get("reduceOnly") == "true" and ex.amt == 0:
+            raise bt.Rejected(-2022, "ReduceOnly Order is rejected.")
+        return real_handle(method, path, p)
+
+    monkeypatch.setattr(bt, "_query", lagging)
+    monkeypatch.setattr(ex, "_handle", handle)
+    bt.protect_close(ctx, st, "protect")
+    assert ex.amt == 0 and st["position"] is None
+    assert jsonl("closed.jsonl")[-1]["why"] == "protect"
+    assert not [m for m in env["sent"] if "닫지 못했어요" in m]
+
+
+def test_retried_signal_uses_fresh_entry_ids(env, monkeypatch):
+    """pending이 버려진 뒤 같은 신호를 다시 시도하면 옛 진입 주문을 찾아 쓰지 않고 새 ID로 낸다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["none"]
+
+    def boom(*a, **k):
+        raise KeyboardInterrupt
+
+    real_cancel = bt.LiveVenue.cancel
+    monkeypatch.setattr(bt.LiveVenue, "cancel", boom)
+    with_signal(monkeypatch, "long")
+    with pytest.raises(KeyboardInterrupt):
+        run(env, ex)
+    first = set(ex.limits)
+    assert state()["pending"]
+    monkeypatch.setattr(bt.LiveVenue, "cancel", real_cancel)
+    ex.limit_script = ["fill"]
+    run(env, ex)  # 대사가 옛 지정가를 취소하고 pending을 버린 뒤 같은 신호로 다시 들어간다
+    second = set(ex.limits) - first
+    assert second and all(c.startswith(f"mnv-{BAR // 60000}-o2-") for c in second)
+    pos = state()["position"]
+    assert pos["side"] == "long" and pos["qty"] == pytest.approx(0.029)
+    assert all(ex.limits[c]["status"] == "CANCELED" for c in first)
+
+
+def test_retried_signal_uses_fresh_stop_and_tp_ids(env, monkeypatch):
+    """앞 시도의 손절이 이미 체결된 뒤 같은 신호로 다시 들어가면, 옛 손절 ID를 찾아 '손절 실패'로
+    새 포지션을 바로 닫았다(레드팀 2026-11-11)."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    AI_ANSWER["text"] = '{"stop_pct": 3.0, "tp_pct": 2.0, "reason": "익절 있음"}'
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    first = state()["position"]
+    assert first["stop_id"] == f"mnv-{BAR // 60000}-s"
+    st = state()
+    st["last_bar"] = BAR - bt.BAR_MS  # last_bar를 적기 전에 실행이 죽은 것과 같다
+    bt._save(bt.DIR / "state.json", st)
+    ex.trigger_stop(first["stop_id"], 97_000.0)
+    ex.t += 6000
+    run(env, ex)  # 손절을 대사하고 같은 신호로 다시 들어간다(2번째 시도)
+    pos = state()["position"]
+    m = BAR // 60000
+    assert pos and pos["side"] == "long" and ex.amt > 0
+    assert pos["stop_id"] == f"mnv-{m}-s2-" and pos["tp_id"] == f"mnv-{m}-t2-"
+    assert ex.algos[pos["stop_id"]]["algoStatus"] == "NEW"
+    assert ex.algos[pos["tp_id"]]["algoStatus"] == "NEW"
+    assert "protect" not in [c["why"] for c in jsonl("closed.jsonl")]
+    # 다시 걸 때도 앞 시도의 s1·t1과 겹치지 않는다
+    ex.algos[pos["stop_id"]]["algoStatus"] = "CANCELED"
+    ex.algos[pos["tp_id"]]["algoStatus"] = "CANCELED"
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["stop_id"] == f"mnv-{m}-s2-1" and pos["tp_id"] == f"mnv-{m}-t2-1"
+
+
+def test_last_bar_saved_with_new_position(env, monkeypatch):
+    """포지션을 저장할 때 신호도 처리한 것으로 적는다(그 뒤에 죽어도 같은 신호로 다시 안 들어감)."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+
+    def crash(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bt, "place_stop", crash)
+    with_signal(monkeypatch, "long")
+    with pytest.raises(KeyboardInterrupt):
+        run(env, ex)
+    st = state()
+    assert st["position"]["side"] == "long" and st["last_bar"] == BAR
+
+
+def test_lost_market_entry_keeps_pending_until_position_shows(env, monkeypatch):
+    """시장가 진입 응답을 잃고 포지션도 아직 0으로 보이면 pending을 남겨, 다음 대사가 엔진 밖
+    포지션으로 보지 않고 이어 받아 손절을 건다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    monkeypatch.setattr(bt, "fast_market", lambda *a: "급변동")
+    ex.lose_response = {"POST /fapi/v1/order"}
+    real_query, real_row = bt._query, bt.position_row
+    lag = {"on": True}
+
+    def lagging_query(client, path, key, cid):
+        if cid.endswith("-of") and lag["on"]:
+            return None
+        return real_query(client, path, key, cid)
+
+    def lagging_row(client):
+        return {"amt": 0.0, "entry": 0.0} if lag["on"] else real_row(client)
+
+    monkeypatch.setattr(bt, "_query", lagging_query)
+    monkeypatch.setattr(bt, "position_row", lagging_row)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert ex.amt > 0 and state()["pending"]["open"].endswith("-o")
+    assert state().get("last_bar") != BAR
+    lag["on"] = False
+    run(env, ex)
+    pos = state()["position"]
+    assert pos and pos["side"] == "long" and not bt.entries_blocked()
+    assert any(a["algoStatus"] == "NEW" and a["type"] == "STOP_MARKET" for a in ex.algos.values())
+    assert len([w for w in ex.writes if w[1] == "/fapi/v1/order"]) == 1  # 진입은 한 번만

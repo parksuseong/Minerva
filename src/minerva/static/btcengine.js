@@ -11,6 +11,11 @@
   const pct = (v, d = 2) => (v == null ? "-"
     : `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${num(v, d)}%</span>`);
   const SIDE = { long: "롱", short: "숏" };
+  // 엔진은 BTC·ETH·SOXL·NVDA 중 한 종목만 든다(2026-11-11). 옛 기록에 symbol이 없으면 BTC.
+  const symOf = (x) => (x && x.symbol) || "BTCUSDT";
+  const short = (sym) => esc(String(sym || "BTCUSDT").replace(/USDT$/, ""));
+  const isBtc = (x) => symOf(x) === "BTCUSDT";
+  const who = (x, side) => `${short(symOf(x))} ${SIDE[side] || "-"}`;
   const WHY = { signal: "반대 신호", stop: "손절", tp: "익절", manual: "수동·강제", protect: "손절 실패 정리" };
   // 차트 시각은 KST 벽시계를 UTC 자리에 둔 초(U.kst). 엔진 기록 "YYYY-MM-DD HH:MM:SS"(KST)도 같은 방식으로 바꾼다.
   const wall = (s) => {
@@ -36,17 +41,19 @@
 
   const posHtml = (p) => {
     if (!p) return "포지션 없음 (다음 신호를 기다려요)";
-    const c = lastClose();
+    // 이 화면의 봉은 BTC라 다른 종목은 평가손익을 계산하지 않는다
+    const c = isBtc(p) ? lastClose() : null;
     const sign = p.side === "long" ? 1 : -1;
     const u = c ? (c / p.entry - 1) * 100 * sign : null;
-    const tp = p.tp ? ` · 익절 <b>${num(p.tp)}</b> (+${num(p.tp_pct, 2)}%)` : " · 익절 없음";
-    return `<span class="chip ${p.side === "long" ? "good" : "warn"}">${SIDE[p.side]}</span> ${num(p.qty, 3)} BTC @ <b>${num(p.entry)}</b>
-      · 지금 ${pct(u)} (× ${lev()}배 ${pct(u == null ? null : u * lev())})<br>
-      <span class="mini">손절 <b>${num(p.stop)}</b> (−${num(p.stop_pct ?? 3, 2)}%)${tp} · ${esc(p.opened_at || "")} 진입${p.mode === "dry" ? " · 드라이런 가상" : ""}</span>`;
+    const d = p.entry < 1000 ? 2 : 1;
+    const tp = p.tp ? ` · 익절 <b>${num(p.tp, d)}</b> (+${num(p.tp_pct, 2)}%)` : " · 익절 없음";
+    const now = isBtc(p) ? ` · 지금 ${pct(u)} (× ${lev()}배 ${pct(u == null ? null : u * lev())})` : "";
+    return `<span class="chip ${p.side === "long" ? "good" : "warn"}">${who(p, p.side)}</span> ${num(p.qty, 3)} ${short(symOf(p))} @ <b>${num(p.entry, d)}</b>${now}<br>
+      <span class="mini">손절 <b>${num(p.stop, d)}</b> (−${num(p.stop_pct ?? 3, 2)}%)${tp} · ${esc(p.opened_at || "")} 진입${p.mode === "dry" ? " · 드라이런 가상" : ""}</span>`;
   };
 
   const sigHtml = (s) => !s ? "아직 신호 없음"
-    : `${esc(s.bar)} 봉 <span class="chip ${s.signal === "long" ? "good" : "warn"}">${SIDE[s.signal]} 신호</span>
+    : `${esc(s.bar)} 봉 <span class="chip ${s.signal === "long" ? "good" : "warn"}">${who(s, s.signal)} 신호</span>
        종가 ${num(s.close)} → <b>${esc(s.decision)}</b>`;
 
   const gaugeHtml = (g) => {
@@ -72,7 +79,7 @@
     const runAt = run ? `마지막 확인 ${esc(run.at)} KST (15분마다, 봉 마감 20초 뒤)` : "아직 실행 기록 없음";
     const halt = d.no_entry ? `<div class="detail up">정지 사유: ${esc(d.no_entry)}</div>` : "";
     $("bte-status").innerHTML = `<div class="regime">${modeChip(d)}
-        <span class="chip">SCR ① 15분</span><span class="chip">${lev()}배</span><span class="chip">AI 손절 ${d.params.ai_stop_range.join("~")}% · 익절 ${d.params.ai_tp_range.join("~")}%/없음</span></div>
+        <span class="chip">BTC·ETH·SOXL·NVDA 중 하나</span><span class="chip">SCR ① 15분</span><span class="chip">${lev()}배</span><span class="chip">AI 손절 ${d.params.ai_stop_range.join("~")}% · 익절 ${d.params.ai_tp_range.join("~")}%/없음</span></div>
       ${halt}
       <h3 style="margin:10px 0 4px;font-size:14px">포지션</h3><div>${posHtml(d.position)}</div>
       <h3 style="margin:10px 0 4px;font-size:14px">마지막 신호</h3><div>${sigHtml(d.last_signal)}</div>
@@ -90,8 +97,8 @@
   const renderAi = () => {
     if (!$("bte-ai")) return;
     const list = eng.ai_recent || [];
-    $("bte-ai").innerHTML = list.length ? `<table class="acct"><thead><tr><th>시각</th><th>방향</th><th>손절</th><th>익절</th><th>이유</th></tr></thead><tbody>
-      ${list.map((a) => `<tr><td>${esc((a.at || "").slice(5, 16))}</td><td>${SIDE[a.side] || "-"}</td>
+    $("bte-ai").innerHTML = list.length ? `<table class="acct"><thead><tr><th>시각</th><th>종목·방향</th><th>손절</th><th>익절</th><th>이유</th></tr></thead><tbody>
+      ${list.map((a) => `<tr><td>${esc((a.at || "").slice(5, 16))}</td><td>${who(a, a.side)}</td>
         <td>−${num(a.used && a.used.stop_pct, 2)}%</td><td>${a.used && a.used.tp_pct ? `+${num(a.used.tp_pct, 2)}%` : "없음"}</td>
         <td>${a.fallback ? "⚙️ " : "🤖 "}${esc(a.used && a.used.reason)} <span class="mini">${num(a.secs, 1)}초</span></td></tr>`).join("")}</tbody></table>`
       : '<p class="placeholder">아직 진입이 없어 AI에게 물은 적이 없어요</p>';
@@ -100,10 +107,10 @@
   };
 
   const tradeRows = (rows) => rows.map((r) => `<tr><td>${esc((r.at || "").slice(5, 16))}</td>
-      <td><span class="chip ${r.side === "long" ? "good" : "warn"}">${SIDE[r.side]}</span></td>
+      <td><span class="chip ${r.side === "long" ? "good" : "warn"}">${who(r, r.side)}</span></td>
       <td>${num(r.entry)} → ${num(r.exit)}</td><td>${pct(r.pct)} <span class="mini">×${lev()} ${pct(r.pct == null ? null : r.pct * lev())}</span></td>
       <td>${r.pnl == null ? "-" : `${r.pnl > 0 ? "+" : ""}${num(r.pnl, 2)}`}</td><td>${esc(WHY[r.why] || r.why)}</td></tr>`).join("");
-  const TRADE_HEAD = "<thead><tr><th>청산</th><th>방향</th><th>진입 → 청산</th><th>가격 변화</th><th>손익 USDT</th><th>이유</th></tr></thead>";
+  const TRADE_HEAD = "<thead><tr><th>청산</th><th>종목·방향</th><th>진입 → 청산</th><th>가격 변화</th><th>손익 USDT</th><th>이유</th></tr></thead>";
 
   const renderTrades = () => {
     if (!$("bte-trades")) return;
@@ -114,8 +121,8 @@
       : '<p class="placeholder">끝난 거래가 아직 없어요</p>';
     if (dry && (eng.dry_orders || []).length) {
       html += `<h3 style="margin:10px 0 4px;font-size:14px">드라이런 주문 기록 (냈을 주문)</h3><div style="overflow-x:auto"><table class="acct">
-        <thead><tr><th>시각</th><th>동작</th><th>방향</th><th>수량</th><th>가격</th><th>손절/익절</th></tr></thead><tbody>
-        ${eng.dry_orders.map((o) => `<tr><td>${esc((o.at || "").slice(5, 16))}</td><td>${esc(o.action)}</td><td>${SIDE[o.side] || "-"}</td>
+        <thead><tr><th>시각</th><th>동작</th><th>종목·방향</th><th>수량</th><th>가격</th><th>손절/익절</th></tr></thead><tbody>
+        ${eng.dry_orders.map((o) => `<tr><td>${esc((o.at || "").slice(5, 16))}</td><td>${esc(o.action)}</td><td>${o.side ? who(o, o.side) : short(symOf(o))}</td>
           <td>${num(o.qty, 3)}</td><td>${num(o.price)}</td><td>${o.stop ? num(o.stop) : "-"}${o.tp ? ` / ${num(o.tp)}` : ""}</td></tr>`).join("")}
         </tbody></table></div>`;
     }
@@ -178,12 +185,13 @@
       out.push({ time: t, position: green ? "belowBar" : "aboveBar", color: green ? GREEN : RED,
         shape: side === "long" ? "circle" : (open ? "arrowDown" : "arrowUp"), text, size: 2 });
     };
-    (eng && eng.trades || []).forEach((r) => {
+    // 차트는 BTC 봉이라 BTC 거래만 표시한다
+    (eng && eng.trades || []).filter(isBtc).forEach((r) => {
       add(wall(r.opened_at), r.side, true, `${SIDE[r.side]} 진입`);
       add(wall(r.at), r.side, false, `${SIDE[r.side]} ${WHY[r.why] || "청산"}`);
     });
     const p = eng && eng.position;
-    if (p) add(wall(p.opened_at), p.side, true, `${SIDE[p.side]} 진입`);
+    if (p && isBtc(p)) add(wall(p.opened_at), p.side, true, `${SIDE[p.side]} 진입`);
     return out;
   };
 
@@ -192,7 +200,7 @@
     const { times, guide } = U.scrFill(series, bars, from, res, p, GREEN, RED);
     const first = times[0];
     const pos = eng && eng.position;
-    if (pos) {
+    if (pos && isBtc(pos)) {
       guide(series.candle, pos.entry, css("--muted") || "#888", "진입", 1);
       if (pos.stop) guide(series.candle, pos.stop, RED, "손절", 0);
       if (pos.tp) guide(series.candle, pos.tp, GREEN, "익절", 0);

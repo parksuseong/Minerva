@@ -135,7 +135,7 @@
     d.positions);
     $("bn-orders").innerHTML = table([["time", "시각"], ["symbol", "종목"], ["side", "구분"],
       ["type", "유형"], ["qty", "수량"], ["price", "가격"], ["status", "상태"]], d.orders);
-    $("bn-trades").innerHTML = table([["time", "시각"], ["side", "구분"], ["qty", "수량"],
+    $("bn-trades").innerHTML = table([["time", "시각"], ["symbol", "종목", (v) => esc(String(v || "").replace(/USDT$/, ""))], ["side", "구분"], ["qty", "수량"],
       ["price", "체결가"], ["realized", "실현손익", (v) => signed(v, num(v))], ["fee", "수수료"]], d.trades);
   }
 

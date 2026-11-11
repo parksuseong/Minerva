@@ -39,6 +39,8 @@ BASE = "https://fapi.binance.com"
 ENV_FILE = Path(os.environ.get("MINERVA_BINANCE_ENV", "~/.minerva/binance.env")).expanduser()
 STATE_DIR = Path(os.environ.get("MINERVA_ACCOUNT_DIR", "~/.minerva/account")).expanduser()
 SYMBOL = "BTCUSDT"
+# 엔진이 매매하는 종목(btc_trade.SYMBOLS와 같게). 체결 내역은 이 네 종목을 합쳐 보여준다
+TRADE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
 TRADES = 30
 SERIES_STEP = 300  # 자산 차트 점 간격(초). 1분마다 돌지만 5분에 한 점만 남긴다.
 KST_SHIFT = 9 * 3600  # 차트 라이브러리는 UTC로 그려서 KST 시각으로 옮겨 저장한다
@@ -195,7 +197,14 @@ def snapshot(cfg: dict, now: datetime, capital: dict | None = None) -> dict:
         data["trades"] = []
         return data
     since = _since_ms(capital)
-    trades = _get(cfg, "/fapi/v1/userTrades", symbol=SYMBOL, limit=100)
+    trades = list(_get(cfg, "/fapi/v1/userTrades", symbol=SYMBOL, limit=100))
+    for sym in TRADE_SYMBOLS:
+        if sym == SYMBOL:
+            continue
+        try:
+            trades += _get(cfg, "/fapi/v1/userTrades", symbol=sym, limit=100)
+        except BinanceError as e:  # 한 종목(TradFi 약관 미동의 등) 실패로 화면을 멈추지 않는다
+            log.warning("userTrades %s failed: %s", sym, e)
     # 시드 전 거래는 시드 금액에 이미 들어가 있으니 보여주지 않는다 (사용자 요청 2026-11-07)
     data["trades"] = parse_trades([t for t in trades if since is None or t["time"] >= since])
     if since is not None:

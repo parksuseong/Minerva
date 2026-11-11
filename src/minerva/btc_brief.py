@@ -67,17 +67,21 @@ def brief_text(v: dict, now: datetime, price: float | None, ways: dict, since: s
     if p:
         sign = 1 if p["side"] == "long" else -1
         u = (price / p["entry"] - 1) * 100 * sign if price else None
-        tp = f" · 익절 {p['tp']:,.1f} (+{p.get('tp_pct', 0):g}%)" if p.get("tp") else " · 익절 없음"
+        tp = (
+            f" · 익절 {bt._px(p['tp'])} (+{p.get('tp_pct', 0):g}%)"
+            if p.get("tp")
+            else " · 익절 없음"
+        )
         prm = v.get("params") or {}
         lev = prm.get("leverage", 3)
-        now_px = (
-            f" · 지금 {price:,.1f} ({_pct(u)}, {lev}배 {_pct(u * lev if u is not None else None)})"
-            if price
-            else ""
+        ux = u * lev if u is not None else None
+        now_px = f" · 지금 {bt._px(price)} ({_pct(u)}, {lev}배 {_pct(ux)})" if price else ""
+        name = bt._name(bt.pos_symbol(p))
+        lines.append(
+            f"포지션: {name} {SIDE[p['side']]} {p['qty']} {name} @ {bt._px(p['entry'])}{now_px}"
         )
-        lines.append(f"포지션: {SIDE[p['side']]} {p['qty']} BTC @ {p['entry']:,.1f}{now_px}")
         stop_pct = p.get("stop_pct", prm.get("default_stop_pct", 3))
-        lines.append(f"  손절 {p['stop']:,.1f} (−{stop_pct:g}%){tp}")
+        lines.append(f"  손절 {bt._px(p['stop'])} (−{stop_pct:g}%){tp}")
     else:
         lines.append("포지션: 없음 (다음 신호 대기)")
 
@@ -85,7 +89,7 @@ def brief_text(v: dict, now: datetime, price: float | None, ways: dict, since: s
     if night:
         total = sum(t.get("pnl") or 0 for t in night)
         parts = [
-            f"{SIDE.get(t['side'], t['side'])} {_pct(t.get('pct'))} "
+            f"{bt._name(bt.pos_symbol(t))} {SIDE.get(t['side'], t['side'])} {_pct(t.get('pct'))} "
             f"({WHY.get(t.get('why'), t.get('why'))})"
             for t in reversed(night)
         ]
@@ -117,7 +121,8 @@ def brief_text(v: dict, now: datetime, price: float | None, ways: dict, since: s
     s = v.get("last_signal")
     if s:
         lines.append(
-            f"마지막 신호: {s.get('bar')} 봉 {SIDE.get(s.get('signal'), '-')} → {s.get('decision')}"
+            f"마지막 신호: {s.get('bar')} 봉 {bt._name(s.get('symbol') or bt.SYMBOL)} "
+            f"{SIDE.get(s.get('signal'), '-')} → {s.get('decision')}"
         )
     else:
         lines.append("마지막 신호: 아직 없음")
@@ -147,11 +152,14 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.now(KST)
     last = json.loads(_brief_file().read_text()) if _brief_file().exists() else {}
     since = last.get("last_at") or (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    view = btc_view.engine_view(now)
+    # 포지션 평가는 그 종목 가격으로(엔진은 BTC·ETH·SOXL·NVDA 중 하나를 든다)
+    sym = bt.pos_symbol(view.get("position")) if view.get("position") else bt.SYMBOL
     try:
-        price = btc.fetch_price()
-    except (OSError, ValueError, KeyError):
+        price = bt.Market(sym).price()
+    except (bt.NetworkError, OSError, ValueError, KeyError):
         price = None
-    text = brief_text(btc_view.engine_view(now), now, price, directions(now), since)
+    text = brief_text(view, now, price, directions(now), since)
     print(text)
     if args.dry:
         return 0

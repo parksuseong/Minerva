@@ -1,4 +1,5 @@
-"""SOXL 탭의 「원문 방식」 카드 (사용자 요청 2026-11-11). 원문 규칙, 미검증, 보기만.
+"""SOXL 탭의 「SOXX 일봉 지표 분석」 카드 (사용자 요청 2026-11-11). 미검증, 보기만.
+화면에는 "원문"이라고 쓰지 않는다(사용자 요청).
 
 원문은 SOXX 일봉(1배)으로 반도체를 읽고, 숏(SOXS)은 SOXX 차트를 뒤집어 본다.
 - 지표: Stoch fast %K 5(%D 3), CCI 20(시그널 10), RSI 14(시그널 6) — `tm_states`와 같은 설정.
@@ -158,6 +159,6 @@ def build(soxx: Sequence[Bar], soxl_close: float | None) -> dict:
         },
         "weekly": _frame_scr(resample(soxx, "W")),
         "monthly": _frame_scr(resample(soxx, "M")),
-        "note": "원문 규칙, 미검증. SOXX 일봉(1배) 기준이고 SOXL 값은 하루 3배 어림이에요"
+        "note": "검증 안 된 판독 규칙이에요. SOXX 일봉(1배) 기준이고 SOXL 값은 하루 3배 어림이에요"
         "(며칠 넘게 가면 3배 상품의 녹아내림 때문에 어긋나요).",
     }

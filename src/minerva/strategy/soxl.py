@@ -73,7 +73,7 @@ def build(now: datetime | None = None) -> dict:
         same = [b.close for b in days if b.day == soxx[-1].day]
         classic = soxl_classic.build(soxx, same[0] if same else None)
     except (OSError, ValueError, KeyError) as exc:
-        classic = {"error": f"SOXX 원문 방식 계산 실패 ({type(exc).__name__})"}
+        classic = {"error": f"SOXX 일봉 지표 분석 계산 실패 ({type(exc).__name__})"}
     return {
         "status": "ok",
         "generated_at": now.isoformat(timespec="seconds"),

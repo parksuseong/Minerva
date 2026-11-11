@@ -38,7 +38,7 @@
     series.marks.setMarkers(marks.sort((a, b) => a.time - b.time));
   };
 
-  // ---- 원문 방식(SOXX 일봉, /api/soxl의 classic) ----
+  // ---- SOXX 일봉 지표 분석(/api/soxl의 classic) ----
   const n2 = (v) => U.num(v, 2);
   const sgn = (v) => (v == null ? "" : `${v > 0 ? "+" : ""}${n2(v)}%`);
   const ok = (b, yes, no) => (b ? `<span class="chip good">✓ ${yes}</span>` : `<span class="chip">✗ ${no}</span>`);
@@ -51,17 +51,17 @@
     const L = c.long_setup, S = c.short_setup, i = c.ind;
     const prof = (c.profile || []).map((b) => `${n2(b.lo)}~${n2(b.hi)} (${U.num(b.pct, 1)}%)`).join(" · ") || "-";
     return `<div class="mini">SOXX 일봉 ${U.esc(c.day)} 종가 ${n2(c.close)} · SOXL 같은 날 종가 ${n2(c.soxl_close)} · Stoch ${U.num(i.stoch, 1)} (%D ${U.num(i.stoch_d, 1)}) · CCI ${U.num(i.cci, 1)} · RSI ${U.num(i.rsi, 1)} · 롱 ${i.long_level}단 / 숏 ${i.short_level}단</div>
-      <h3 style="margin:10px 0 4px;font-size:14px">롱 타점 (SOXX, 단타 데드캣) ${L.ok ? '<span class="chip good">원문 타점 조건 충족</span>' : ""}</h3>
+      <h3 style="margin:10px 0 4px;font-size:14px">롱 타점 (SOXX, 단타 데드캣) ${L.ok ? '<span class="chip good">타점 조건 충족</span>' : ""}</h3>
       <div>${ok(L.bb_touch, `볼밴 하단 터치 (${U.esc(L.bb_touch_day)})`, "최근 5봉 볼밴 하단 터치 없음")} ${ok(L.scr_level === 3, "SCR 3단 돌파", `SCR ${L.scr_level}단`)}</div>
-      <div class="detail">목표(원문): 10·20일선까지 반등 뒤 다시 하락 → ${L.targets.map((t) => `${U.esc(t.name)} ${n2(t.soxx)} (SOXL ≈ ${n2(t.soxl)})`).join(", ")}</div>
-      <h3 style="margin:10px 0 4px;font-size:14px">숏 타점 (뒤집은 차트 = SOXS 눌림) ${S.ok ? '<span class="chip warn">원문 타점 조건 충족</span>' : ""}</h3>
+      <div class="detail">목표: 10·20일선까지 반등 뒤 다시 하락 → ${L.targets.map((t) => `${U.esc(t.name)} ${n2(t.soxx)} (SOXL ≈ ${n2(t.soxl)})`).join(", ")}</div>
+      <h3 style="margin:10px 0 4px;font-size:14px">숏 타점 (뒤집은 차트 = SOXS 눌림) ${S.ok ? '<span class="chip warn">타점 조건 충족</span>' : ""}</h3>
       <div>${ok(S.near_ma20, "20일선 근처", "20일선에서 멂")} ${ok(S.stoch_hot, "스토캐 과매수(뒤집으면 과매도)", "스토캐 80 아래")} ${ok(S.stoch_turn, `스토캐 80 아래로 꺾여 마감 (${U.esc(S.turn_day)})`, "최근 2봉 꺾임 마감 없음")}</div>
       <div class="detail">20일선 ${n2(S.ma20.soxx)} (SOXL ≈ ${n2(S.ma20.soxl)})에서 스토캐가 과매수에서 꺾이면 숏 추세 유지 → 볼밴 하단 ${n2(S.target.soxx)} (SOXL ≈ ${n2(S.target.soxl)}) 쪽.
         20일선 위 마감이면 숏 단기 위험, 50일선 ${n2(S.trend_break.soxx)} (SOXL ≈ ${n2(S.trend_break.soxl)}) 위면 숏 추세 이탈. 추세 쪽은 CCI·RSI가 극단을 안 만들어 스토캐만 봐요.</div>
       <div style="overflow-x:auto;margin-top:8px"><table class="acct"><thead><tr><th>선</th><th>SOXX</th><th>SOXL 환산</th></tr></thead>
         <tbody>${c.lines.map(lvRow).join("")}</tbody></table></div>
       <div class="detail">매물대(최근 60일 거래량 많은 두 칸): ${prof}</div>
-      <div class="detail">장투(원문: 주·월봉 SCR 돌파 보고 진입) · 주봉 ${scrTxt(c.weekly)} · 월봉 ${scrTxt(c.monthly)}</div>
+      <div class="detail">장투(주·월봉 SCR 돌파 보고 진입) · 주봉 ${scrTxt(c.weekly)} · 월봉 ${scrTxt(c.monthly)}</div>
       <p class="mini">${U.esc(c.note)}</p>`;
   };
 

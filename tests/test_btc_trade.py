@@ -280,6 +280,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(bt, "_TAGS", {})
     # 다른 흐름 시험은 ETH·SOXL로도 들어간다. 승률 바닥은 따로 시험한다
     monkeypatch.setattr(bt, "MIN_ENTRY_WINRATE", 0.0)
+    monkeypatch.setattr(bt, "AI_EXITS", True)  # AI 손절·익절 흐름 시험. 고정 규칙은 따로 시험
     monkeypatch.setattr(bt, "DIR", tmp_path / "btc_trade")
     monkeypatch.setattr(bt, "CAPITAL_FILE", tmp_path / "binance_capital.json")
     clock = {"t": 0.0}
@@ -983,6 +984,25 @@ def test_ai_exits_used_for_live_orders(env, monkeypatch):
     ev = [e for e in jsonl("events.jsonl") if e.get("event") == "ai_exits"][-1]
     assert ev["parsed"]["stop_pct"] == 2.0 and ev["fallback"] is None and ev["ai_raw"]
     assert "atr14_pct" in env["asked"][0] and "direction_tm" in env["asked"][0]
+
+
+def test_fixed_exits_skip_ai_and_use_3pct_no_tp(env, monkeypatch):
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    AI_ANSWER["text"] = '{"stop_pct": 1.0, "tp_pct": 1.0, "reason": "좁게"}'
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert env["asked"] == []  # AI에 묻지 않는다
+    algos = [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
+    assert [(a["type"], a["triggerPrice"]) for a in algos] == [("STOP_MARKET", "97000.0")]
+    pos = state()["position"]
+    assert pos["stop"] == 97000.0 and pos["stop_pct"] == 3.0 and pos["tp"] is None
+    assert not any("기본값 사용" in m for m in env["sent"])
+    assert any("⚙️ 고정 규칙" in m for m in env["sent"])
+    ev = [e for e in jsonl("events.jsonl") if e.get("event") == "ai_exits"][-1]
+    assert ev["fixed"] is True and ev["used"]["tp_pct"] is None
 
 
 def test_ai_out_of_range_falls_back_and_is_logged(env, monkeypatch):

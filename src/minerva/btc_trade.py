@@ -112,6 +112,10 @@ INTERVAL = "15m"
 BAR_MS = 15 * 60_000
 LEVERAGE = 3
 STOP_PCT = 0.03
+# AI가 손절·익절 폭을 고르나. 2026-11-12 사용자 승인으로 끔:
+# 손절 3% 고정·익절 없음(백테스트와 같은 규칙).
+# 근거: 10종목 1년 백테스트에서 AI가 고른 손절 1%·익절 1%는 10종목 모두 손실, 3% 고정은 승률 53%.
+AI_EXITS = False
 # 마크 가격: 체결가(CONTRACT_PRICE)는 한 번의 꼬리·허수 체결로도 손절이 걸린다. 마크 가격은 여러
 # 거래소 지수로 만들어 순간 튐에 덜 걸리고 청산 기준과도 같다.
 # 대신 급락 때 체결가보다 늦게 걸릴 수 있다.
@@ -1579,6 +1583,21 @@ def market_kind(flt: dict) -> str | None:
 
 def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
     """Claude에게 손절·익절 폭을 묻는다. 무엇이 잘못돼도 기본값(3%, 익절 없음)."""
+    if not AI_EXITS:
+        reason = "고정 규칙(손절 3%·익절 없음)"
+        used = {"stop_pct": STOP_PCT * 100, "tp_pct": None, "reason": reason}
+        # 화면의 손절·익절 결정 목록이 옛 AI 답만 보이지 않게 고정 규칙도 같은 이벤트로 남긴다
+        ctx.event(
+            event="ai_exits",
+            symbol=ctx.symbol,
+            side=side,
+            bar=sig.get("bar_txt"),
+            used=used,
+            fallback=None,
+            fixed=True,
+            secs=0.0,
+        )
+        return {"raw": "", "parsed": None, "used": used, "fallback": None, "secs": 0.0}
     try:
         funding = ctx.market.funding()
     except (OSError, ValueError, KeyError, AttributeError):
@@ -2044,7 +2063,7 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     oid, sid = _cid(sig["bar"], "o", sym), _cid(sig["bar"], "s", sym)
     tid = _cid(sig["bar"], "t", sym) if used["tp_pct"] else None
     icon = "🟢" if side == "long" else "🔴"
-    ai_line = ("🤖 " if not plan["fallback"] else "⚙️ ") + used["reason"]
+    ai_line = ("🤖 " if plan.get("parsed") else "⚙️ ") + used["reason"]
 
     def exits_text(stop: float, tp: float | None) -> str:
         t = f"손절 {_px(stop)} (−{used['stop_pct']:g}%)"

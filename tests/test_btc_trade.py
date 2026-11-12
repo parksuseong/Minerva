@@ -1000,6 +1000,9 @@ def test_fixed_exits_skip_ai_and_use_3pct_no_tp(env, monkeypatch):
     pos = state()["position"]
     assert pos["stop"] == 97000.0 and pos["stop_pct"] == 3.0 and pos["tp"] is None
     assert not any("기본값 사용" in m for m in env["sent"])
+    assert any("⚙️ 고정 규칙" in m for m in env["sent"])
+    ev = [e for e in jsonl("events.jsonl") if e.get("event") == "ai_exits"][-1]
+    assert ev["fixed"] is True and ev["used"]["tp_pct"] is None
 
 
 def test_ai_out_of_range_falls_back_and_is_logged(env, monkeypatch):

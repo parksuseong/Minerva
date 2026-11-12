@@ -128,6 +128,7 @@ FIXED_TP_PCT = 10.0
 # - 엔진 포지션을 손으로 닫았으면 기록만 하고 매매를 멈추지 않는다.
 # - 엔진이 이미 한 종목을 들고 있을 때 다른 종목 수동 포지션은 손절·익절 주문만 걸어 지킨다(guards).
 MANUAL_ADOPT = True
+WOULD_TRIGGER = -2021  # "Order would immediately trigger": 이미 손절가를 지났다
 # 마크 가격: 체결가(CONTRACT_PRICE)는 한 번의 꼬리·허수 체결로도 손절이 걸린다. 마크 가격은 여러
 # 거래소 지수로 만들어 순간 튐에 덜 걸리고 청산 기준과도 같다.
 # 대신 급락 때 체결가보다 늦게 걸릴 수 있다.
@@ -1187,6 +1188,7 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
     if pos["stop_id"] not in open_ids:
         n = pos.get("stop_n", 0) + 1
         cid = _pos_cid(pos, "s", n)
+        trigger = False
         try:
             r = place_stop(ctx.client, pos["side"], Decimal(str(pos["stop"])), cid)
             pos.update(stop_id=cid, stop_n=n)
@@ -1195,6 +1197,14 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
             why = "" if ok else f"상태 {r.get('algoStatus')}"
         except (Rejected, NetworkError) as e:
             ok, why = False, str(e)
+            trigger = isinstance(e, Rejected) and e.code == WOULD_TRIGGER
+        if not ok and pos.get("manual") and not trigger:
+            # 손으로 연 포지션: 이미 손절가를 지난 경우(-2021)만 닫고, 다른 실패는 알리기만
+            ctx.say(
+                f"🆘 {_name(ctx.symbol)} 수동 포지션 손절을 걸지 못했어요({why}) → 닫지 않고 "
+                "다음 실행에서 다시 걸어요. 바이낸스 앱도 확인하세요!"
+            )
+            return False
         if not ok:
             if not with_tp:  # 수동 개입 포지션은 닫지 않는다: 크게 알리기만
                 ctx.say(f"🆘 손절을 다시 걸지 못했어요({why}). 바이낸스 앱에서 직접 확인하세요!")
@@ -1283,9 +1293,26 @@ def _manual_levels(ctx: Ctx, side: str, entry: float) -> tuple[float, float | No
     return stop, tp
 
 
+def _next_manual_n(state: dict) -> int:
+    n = int(state.get("manual_n") or 0) + 1
+    state["manual_n"] = n
+    return n
+
+
+def _liquidated(ctx: Ctx, since_ms: int) -> bool:
+    """거래소 강제 청산(청산·ADL)이 있었나. 못 읽으면 True(예전처럼 멈추는 쪽으로)."""
+    try:
+        rows = _get(ctx.client, "/fapi/v1/forceOrders", symbol=ctx.symbol, startTime=since_ms)
+    except (Rejected, NetworkError):
+        return True
+    return bool(rows)
+
+
 def adopt_manual(ctx: Ctx, state: dict, row: dict, why: str) -> dict | None:
     """손으로 연(또는 바꾼) 포지션을 엔진 포지션으로 이어받는다. 손절·익절은 ensure_stop이 건다.
     틱을 못 읽으면 None(이번엔 못 함)."""
+    if not row.get("amt") or float(row.get("entry") or 0) <= 0:
+        return None  # 그 사이 닫혔거나 평균가를 못 읽었다: 다음 실행에서 다시
     side = "long" if row["amt"] > 0 else "short"
     entry = float(row["entry"])
     try:
@@ -1306,7 +1333,8 @@ def adopt_manual(ctx: Ctx, state: dict, row: dict, why: str) -> dict | None:
         "tp_pct": FIXED_TP_PCT or None,
         "ai_reason": "수동 포지션 이어받음",
         "bar": minute,
-        "try": 9,  # 손절·익절 ID가 신호 진입(시도 1~3)과 겹치지 않게
+        # 손절·익절 ID가 신호 진입(시도 1~3)·앞 이어받기와 겹치지 않게(같은 분에 다시 해도)
+        "try": 10 + _next_manual_n(state),
         "entry_ms": ctx.now_ms,
         "opened_at": _now_iso(ctx.now),
         "mode": "live",
@@ -1419,7 +1447,7 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         cancel_engine_stops(c)  # 손절·익절 중 남은 쪽을 취소 (OCO처럼)
         _save(DIR / "state.json", state)
         _record_close(ctx, pos, px, pnl, why)
-        if why == "manual" and MANUAL_ADOPT:
+        if why == "manual" and MANUAL_ADOPT and not _liquidated(ctx, int(pos["entry_ms"]) - 1000):
             # 사용자가 손으로 정리할 수 있다(2026-11-13): 기록만 하고 멈추지 않는다
             return True
         if why == "manual":
@@ -1427,24 +1455,31 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         return why != "manual"
     state.pop("pending", None)
     cancel_engine_entries(c)  # 남은 진입 지정가가 체결되면 수량이 어긋난다
-    if abs(amt - sign * pos["qty"]) > 1e-9 and MANUAL_ADOPT:
+    if (
+        abs(amt - sign * pos["qty"]) > 1e-9
+        and MANUAL_ADOPT
+        and not _liquidated(ctx, int(pos["entry_ms"]) - 1000)
+    ):
         flipped = (amt > 0) != (sign > 0)
+        row = position_row(c)
+        if not row.get("amt") or float(row.get("entry") or 0) <= 0:
+            return ensure_stop(ctx, state, with_tp=False)  # 그 사이 바뀜: 다음 실행에서 다시
         if flipped:
             # 손으로 반대로 뒤집었다: 앞 포지션은 수동 청산으로 남기고 새 포지션을 이어받는다
             _record_close(ctx, pos, None, None, "manual")
-        cancel_engine_stops(c)
         old = dict(pos)
+        cancel_engine_stops(c)
+        (state.get("guards") or {}).pop(ctx.symbol, None)
         state["position"] = None
-        if adopt_manual(
-            ctx,
-            state,
-            position_row(c),
-            "수동 반대 포지션" if flipped else "수동으로 수량이 바뀐 포지션",
-        ):
+        label = "수동 반대 포지션" if flipped else "수동으로 수량이 바뀐 포지션"
+        if adopt_manual(ctx, state, row, label):
             return ensure_stop(ctx, state)
-        state["position"] = old  # 틱을 못 읽었다: 다음 실행에서 다시
-        state["position"]["stop_id"] = None  # 취소했으니 ensure_stop이 다시 건다
-        ensure_stop(ctx, state, with_tp=False)
+        if not flipped:
+            # 틱을 못 읽었다: 옛 값으로 손절만 다시 걸고 다음 실행에서 다시
+            state["position"] = old
+            state["position"]["stop_id"] = None
+            ensure_stop(ctx, state, with_tp=False)
+        _save(DIR / "state.json", state)
         return False
     if abs(amt - sign * pos["qty"]) > 1e-9:
         key = f"{amt}/{pos['qty']}"
@@ -2773,6 +2808,11 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
         mark_bar(state, sym, g["bar"])
         notes.append(f"{_who(sym, g['dir'])} 신호, TradFi 약관 미동의로 쉬는 중")
         ctx.event(event="skip_unavailable", symbol=sym, side=g["dir"])
+    for sym in [s for s in dirs if s != a_sym and s in (state.get("guards") or {})]:
+        # 손으로 연 포지션을 지키는 중인 종목: 엔진 주문이 섞이지 않게 들어가지 않는다
+        g = dirs.pop(sym)
+        mark_bar(state, sym, g["bar"])
+        notes.append(f"{_who(sym, g['dir'])} 신호, 수동 포지션 지키는 중이라 진입 안 함")
     opp = dirs.pop(a_sym, None) if a_sym else None
     others = dirs
     if not opp and not others:
@@ -2925,6 +2965,8 @@ def check_strays(ctx: Ctx, state: dict, held: str) -> bool:
     stray = {s: a for s, a in amts.items() if s != held and s != mine and a}
     guards = state.setdefault("guards", {})
     if MANUAL_ADOPT:
+        for sym in [s for s in guards if s == mine]:
+            guards.pop(sym, None)  # 엔진이 이어받은 종목: 주문은 엔진 것이니 거두지 않는다
         for sym in [s for s in guards if s not in stray]:
             gctx = ctx.at(sym)
             try:
@@ -3024,26 +3066,27 @@ def guard_stray(ctx: Ctx, state: dict) -> None:
     open_ids = {a.get("clientAlgoId") for a in open_algos(c)}
     minute = ctx.now_ms - ctx.now_ms % 60_000
     if g.get("stop_id") not in open_ids:
-        g["n"] += 1
+        g["n"] = _next_manual_n(state)
         cid = _cid(minute, f"g{g['n']}", sym)
         try:
             r = place_stop(c, side, Decimal(str(g["stop"])), cid)
-            ok = stop_placed(c, r, cid)
-        except Rejected:
-            ok = False
-        if not ok:
+        except Rejected as e:
+            if e.code != WOULD_TRIGGER:
+                _save(DIR / "state.json", state)
+                raise  # 닫지 않고 알리기만(check_strays가 🆘)
             close_side = "SELL" if side == "long" else "BUY"
-            market(
-                c, close_side, _close_qty(row["amt"]), _cid(minute, f"gx{g['n']}", sym), reduce=True
-            )
+            xid = _cid(minute, f"gx{g['n']}", sym)
+            market(c, close_side, _close_qty(row["amt"]), xid, reduce=True)
             guards.pop(sym, None)
             _save(DIR / "state.json", state)
             ctx.say(f"✂️ {_who(sym, side)} 수동 포지션이 이미 손절가를 지나 시장가로 닫았어요")
             return
         g["stop_id"] = cid
         _save(DIR / "state.json", state)
+        if not stop_placed(c, r, cid):
+            ctx.say(f"⚠️ {_name(sym)} 수동 포지션 손절 확인이 안 돼요 → 다음 실행에서 다시 봐요")
     if g.get("tp") and g.get("tp_id") not in open_ids:
-        g["n"] += 1
+        g["n"] = _next_manual_n(state)
         cid = _cid(minute, f"h{g['n']}", sym)
         try:
             place_stop(c, side, Decimal(str(g["tp"])), cid, TP_KIND)

@@ -93,6 +93,8 @@ class FakeExchange:
             return [t for t in self.trades if p["startTime"] <= t["time"] <= end]
         if path == "/fapi/v1/exchangeInfo":
             return {"symbols": []}
+        if path == "/fapi/v1/forceOrders":
+            return list(getattr(self, "force_orders", []))
         if path == "/fapi/v1/allOrders":
             return [
                 {"clientOrderId": o["clientOrderId"], "executedQty": o.get("executedQty", "0")}
@@ -3193,3 +3195,52 @@ def test_manual_other_symbol_adopted_when_flat(env, multi, monkeypatch):
     assert pos["symbol"] == "SOXLUSDT" and pos["side"] == "short" and pos["qty"] == 3.0
     assert pos["stop"] == 30.9 and pos["tp"] == 27.0
     assert not bt.entries_blocked()
+
+
+def test_liquidation_still_halts_with_manual_adopt(env, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.amt = 0.0
+    ex.force_orders = [{"orderId": 1, "status": "FILLED"}]  # 강제 청산
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert bt.entries_blocked()
+
+
+def test_manual_stop_failure_other_than_trigger_does_not_close(env, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.amt = 0.02
+    ex.entry_px = 100_000.0
+    real = ex._handle
+
+    def handle(method, path, p):
+        if path == "/fapi/v1/algoOrder" and method == "POST":
+            raise bt.Rejected(-4045, "Reach max stop order limit.")
+        return real(method, path, p)
+
+    monkeypatch.setattr(ex, "_handle", handle)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.amt == 0.02 and state()["position"]["manual"]  # 닫지 않는다
+    assert any("손절을 걸지 못했어요" in m for m in env["sent"])
+
+
+def test_guarded_symbol_signal_not_entered(env, multi, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    ex.amts["ETHUSDT"] = 0.5
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    assert "ETHUSDT" in state()["guards"]
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    ai_answers(monkeypatch, '{"choice": "switch:ETHUSDT", "reason": "x"}')
+    s = mrun(env, ex, multi)
+    assert state()["position"]["symbol"] == "BTCUSDT" and ex.amts["ETHUSDT"] == 0.5
+    assert "지키는 중" in s["decision"]

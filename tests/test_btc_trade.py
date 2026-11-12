@@ -278,7 +278,7 @@ def env(tmp_path, monkeypatch):
     for name in ("SYMBOLS", "SYMBOL_WINRATE", "PRIORITY", "UNIVERSE"):
         monkeypatch.setattr(bt, name, getattr(bt, name))
     monkeypatch.setattr(bt, "_TAGS", {})
-    # 다른 흐름 시험은 ETH·SOXL로도 들어간다. 승률 50% 바닥은 따로 시험한다
+    # 다른 흐름 시험은 ETH·SOXL로도 들어간다. 승률 바닥은 따로 시험한다
     monkeypatch.setattr(bt, "MIN_ENTRY_WINRATE", 0.0)
     monkeypatch.setattr(bt, "DIR", tmp_path / "btc_trade")
     monkeypatch.setattr(bt, "CAPITAL_FILE", tmp_path / "binance_capital.json")
@@ -2877,21 +2877,22 @@ def test_prepare_attempts_are_capped(env, multi, monkeypatch):
     assert all(state()["last_bars"][s] == BAR for s in bt.SYMBOLS)
 
 
-def test_tradable_set_needs_winrate_50_and_profit():
+def test_tradable_set_needs_winrate_45_and_profit():
     stats = {
         "BNBUSDT": {"winrate": 56.9, "ret": 99.4, "trades": 123, "days": 365},
-        "XRPUSDT": {"winrate": 43.7, "ret": 82.4, "trades": 151, "days": 365},  # 50% 미만
+        "XRPUSDT": {"winrate": 43.7, "ret": 82.4, "trades": 151, "days": 365},  # 45% 미만
         "XAUUSDT": {"winrate": 57.9, "ret": -21.0, "trades": 95, "days": 332},  # 손실
         "NEWUSDT": {"winrate": 70.0, "ret": 50.0, "trades": 5, "days": 30},  # 표본 작음
-        # 네 종목: NVDA는 손실이어도 되지만 ETH처럼 50% 미만은 안 된다
+        # 네 종목: NVDA는 손실이어도 되지만 ETH처럼 45% 미만은 안 된다
         "NVDAUSDT": {"winrate": 54.9, "ret": -27.7, "trades": 91, "days": 227},
         "ETHUSDT": {"winrate": 43.3, "ret": 89.6, "trades": 104, "days": 365},
         "SOXLUSDT": {"winrate": 16.0, "ret": -99.3, "trades": 131, "days": 177},
+        "BZUSDT": {"winrate": 48.5, "ret": -17.7, "trades": 97, "days": 365},  # 45% 이상이지만 손실
     }
-    assert bt.MIN_ENTRY_WINRATE == 50.0
+    assert bt.MIN_ENTRY_WINRATE == 45.0
     assert bt.tradable_set(list(stats), stats) == {"BNBUSDT", "NVDAUSDT"}
-    # universe.json이 없을 때(네 종목): 승률 50% 이상만 → BTC
-    assert bt._default_tradable() == {"BTCUSDT"}
+    # universe.json이 없을 때(네 종목): 승률 45% 이상만 → BTC(54)·NVDA(49)
+    assert bt._default_tradable() == {"BTCUSDT", "NVDAUSDT"}
 
 
 

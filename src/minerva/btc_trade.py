@@ -92,7 +92,8 @@ UNIVERSE: dict = {"source": "default", "stats": {}}
 CID_TAG = {"BTCUSDT": "", "ETHUSDT": "E", "SOXLUSDT": "S", "NVDAUSDT": "N"}
 # 보유 중 다른 종목으로 바꾸려면 그 종목 승률이 이만큼(%p) 높아야 한다(AI 호출을 드물게)
 SWITCH_EDGE_PP = 5.0
-MIN_ENTRY_WINRATE = 50.0  # 사용자 2026-11-12 "승률 50프로 미만은 들어가지마"
+# 사용자 2026-11-12 "승률 50프로 미만은 들어가지마" → 같은 날 "50이 아니라 45로"
+MIN_ENTRY_WINRATE = 45.0
 CHOOSE_FLAT_MAX = 5  # 빈손 동시 신호: AI에 우선순위 위 이만큼만
 CHOOSE_SWITCH_MAX = 3  # 보유 중 바꾸기 선택지 최대
 # 한 실행에서 진입 점검(시세·거래소 조회)을 하는 다른 종목 수 한도(신호가 몰려도 실행이 늘지 않게)
@@ -237,8 +238,9 @@ def universe(now_ms: int | None = None) -> dict:
 
 def tradable_set(syms, stats: dict) -> frozenset:
     """새로 들어갈 수 있는 종목. 백테스트 승률 ≥ MIN_ENTRY_WINRATE(사용자 2026-11-12 "승률 50프로
-    미만은 들어가지마", 네 종목도 예외 없음)이고, 수익 > 0이고 표본이 충분한 종목. 사용자가 고른 네
-    종목은 수익 조건만 면제. 나머지는 신호·화면만(1년 백테스트 −90% 안팎이 대부분)."""
+    미만은 들어가지마" → 같은 날 45로 낮춤, 네 종목도 예외 없음)이고, 수익 > 0이고 표본이 충분한
+    종목. 사용자가 고른 네 종목은 수익 조건만 면제.
+    나머지는 신호·화면만(1년 백테스트 −90% 안팎이 대부분)."""
     ok = set()
     for s in syms:
         st = stats.get(s) or {}
@@ -2336,7 +2338,7 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
     elif sym not in SYMBOLS:
         out["skip"] = "종목 범위(거래량 상위)에서 빠져 새로 들어가지 않음(보유분 정리만)"
     elif not tradable(sym):
-        out["skip"] = "승률 50% 미만이거나 백테스트 손실이라 새로 들어가지 않음(보유분 정리만)"
+        out["skip"] = "승률 45% 미만이거나 백테스트 손실이라 새로 들어가지 않음(보유분 정리만)"
     elif _clock() - t_start > MAX_RUN_SECS:
         out["skip"] = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
     elif c.market is None:
@@ -2563,7 +2565,7 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
     for sym, g in others.items():
         rate = float(SYMBOL_WINRATE.get(sym) or 0)
         if not tradable(sym):
-            passed[sym] = "승률 50% 미만이거나 백테스트 손실(신호 표시만, 진입 안 함)"
+            passed[sym] = "승률 45% 미만이거나 백테스트 손실(신호 표시만, 진입 안 함)"
         elif pos and rate < a_rate + SWITCH_EDGE_PP:
             passed[sym] = (
                 f"승률 {rate:g}%가 보유 {_name(a_sym)} {a_rate:g}% + {SWITCH_EDGE_PP:g}%p보다 낮음"

@@ -116,6 +116,10 @@ STOP_PCT = 0.03
 # 손절 3% 고정·익절 없음(백테스트와 같은 규칙).
 # 근거: 10종목 1년 백테스트에서 AI가 고른 손절 1%·익절 1%는 10종목 모두 손실, 3% 고정은 승률 53%.
 AI_EXITS = False
+# 고정 익절(가격 %). 사용자 2026-11-13 "디폴트로 30프로 이상되면 강제익절, 1배짜리가 10프로
+# 오르면 30프로": 3배라 가격 +10% = 증거금 +30%. 백테스트(10종목 1년)는 익절 없음과 거의 같았다.
+# 이 값이 생기기 전에 연 포지션에도 다음 실행에서 한 번 걸어 준다(_backfill_tp).
+FIXED_TP_PCT = 10.0
 # 마크 가격: 체결가(CONTRACT_PRICE)는 한 번의 꼬리·허수 체결로도 손절이 걸린다. 마크 가격은 여러
 # 거래소 지수로 만들어 순간 튐에 덜 걸리고 청산 기준과도 같다.
 # 대신 급락 때 체결가보다 늦게 걸릴 수 있다.
@@ -602,10 +606,11 @@ def stop_price(side: str, entry: float, tick: str, pct: float = STOP_PCT) -> Dec
 
 
 def tp_price(side: str, entry: float, tick: str, pct: float) -> Decimal:
-    """익절가. 정한 폭보다 가까워지지 않게 롱은 올림, 숏은 내림."""
+    """익절가. 정한 폭보다 가까워지지 않게 롱은 올림, 숏은 내림. 부동소수 끝자리
+    (100000 × 1.1 = 110000.00000000001)로 한 틱 밀리지 않게 먼저 10자리로 반올림한다."""
     if side == "long":
-        return _round(entry * (1 + pct), tick, ROUND_CEILING)
-    return _round(entry * (1 - pct), tick, ROUND_FLOOR)
+        return _round(round(entry * (1 + pct), 10), tick, ROUND_CEILING)
+    return _round(round(entry * (1 - pct), 10), tick, ROUND_FLOOR)
 
 
 def position_amt(client) -> float:
@@ -1201,8 +1206,16 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
             pos.update(tp_id=cid, tp_n=n)
             ctx.say(f"🎯 {_name(ctx.symbol)} 익절 주문이 없어 다시 걸었어요: {_px(pos['tp'])}")
         except (Rejected, NetworkError) as e:
-            ctx.say(f"⚠️ 익절 재설정 실패({e}) → 익절 없이 손절·반대 신호로만 관리해요")
-            pos.update(tp=None, tp_id=None)
+            # 응답만 잃었을 수 있다: 걸려 있으면 그대로 쓴다(지우면 그 익절 체결을 '수동'으로 봄)
+            try:
+                live_tp = isinstance(e, NetworkError) and stop_is_open(ctx.client, cid)
+            except (Rejected, NetworkError):
+                live_tp = False
+            if live_tp:
+                pos.update(tp_id=cid, tp_n=n)
+            else:
+                ctx.say(f"⚠️ 익절 재설정 실패({e}) → 익절 없이 손절·반대 신호로만 관리해요")
+                pos.update(tp=None, tp_id=None)
         _save(DIR / "state.json", state)
     return True
 
@@ -1352,7 +1365,27 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             ensure_stop(ctx, state, with_tp=False)
         return False
     state.pop("foreign_key", None)
+    _backfill_tp(ctx, state)
     return ensure_stop(ctx, state)
+
+
+def _backfill_tp(ctx: Ctx, state: dict) -> None:
+    """고정 익절이 생기기 전에 연 엔진 포지션에 익절가를 한 번 정해 둔다(ensure_stop이 건다).
+    실패해 지워져도 다시 하지 않는다(tp_backfilled)."""
+    pos = state["position"]
+    if AI_EXITS or not FIXED_TP_PCT or pos.get("tp") or pos.get("tp_backfilled"):
+        return
+    try:
+        tick = filters(ctx.client)["tick"]
+    except (Rejected, NetworkError, OSError, ValueError, KeyError):
+        return  # 다음 실행에서 다시
+    tp = float(tp_price(pos["side"], float(pos["entry"]), tick, FIXED_TP_PCT / 100))
+    pos.update(tp=tp, tp_id=None, tp_pct=FIXED_TP_PCT, tp_backfilled=True)
+    _save(DIR / "state.json", state)
+    ctx.say(
+        f"🎯 {_name(ctx.symbol)} 보유 포지션에 기본 익절 +{FIXED_TP_PCT:g}%"
+        f"(증거금 약 +{FIXED_TP_PCT * LEVERAGE:g}%)을 걸어요: {_px(tp)}"
+    )
 
 
 def _adopt(state: dict, pending: dict, order: dict) -> dict:
@@ -1596,8 +1629,13 @@ def market_kind(flt: dict) -> str | None:
 def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
     """Claude에게 손절·익절 폭을 묻는다. 무엇이 잘못돼도 기본값(3%, 익절 없음)."""
     if not AI_EXITS:
-        reason = "고정 규칙(손절 3%·익절 없음)"
-        used = {"stop_pct": STOP_PCT * 100, "tp_pct": None, "reason": reason}
+        tp_pct = FIXED_TP_PCT or None
+        reason = (
+            f"고정 규칙(손절 3%·익절 +{tp_pct:g}%, 증거금 약 +{tp_pct * LEVERAGE:g}%)"
+            if tp_pct
+            else "고정 규칙(손절 3%·익절 없음)"
+        )
+        used = {"stop_pct": STOP_PCT * 100, "tp_pct": tp_pct, "reason": reason}
         # 화면의 손절·익절 결정 목록이 옛 AI 답만 보이지 않게 고정 규칙도 같은 이벤트로 남긴다
         ctx.event(
             event="ai_exits",

@@ -994,7 +994,7 @@ def test_ai_exits_used_for_live_orders(env, monkeypatch):
     assert "atr14_pct" in env["asked"][0] and "direction_tm" in env["asked"][0]
 
 
-def test_fixed_exits_skip_ai_and_use_3pct_no_tp(env, monkeypatch):
+def test_fixed_exits_skip_ai_and_use_3pct_tp10(env, monkeypatch):
     monkeypatch.setattr(bt, "AI_EXITS", False)
     live(env)
     AI_ANSWER["text"] = '{"stop_pct": 1.0, "tp_pct": 1.0, "reason": "좁게"}'
@@ -1004,13 +1004,40 @@ def test_fixed_exits_skip_ai_and_use_3pct_no_tp(env, monkeypatch):
     run(env, ex)
     assert env["asked"] == []  # AI에 묻지 않는다
     algos = [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
-    assert [(a["type"], a["triggerPrice"]) for a in algos] == [("STOP_MARKET", "97000.0")]
+    assert [(a["type"], a["triggerPrice"]) for a in algos] == [
+        ("STOP_MARKET", "97000.0"),
+        ("TAKE_PROFIT_MARKET", "110000.0"),
+    ]
     pos = state()["position"]
-    assert pos["stop"] == 97000.0 and pos["stop_pct"] == 3.0 and pos["tp"] is None
+    assert pos["stop"] == 97000.0 and pos["stop_pct"] == 3.0
+    assert pos["tp"] == 110000.0 and pos["tp_pct"] == 10.0
     assert not any("기본값 사용" in m for m in env["sent"])
-    assert any("⚙️ 고정 규칙" in m for m in env["sent"])
+    assert any("⚙️ 고정 규칙(손절 3%·익절 +10%, 증거금 약 +30%)" in m for m in env["sent"])
     ev = [e for e in jsonl("events.jsonl") if e.get("event") == "ai_exits"][-1]
-    assert ev["fixed"] is True and ev["used"]["tp_pct"] is None
+    assert ev["fixed"] is True and ev["used"]["tp_pct"] == 10.0
+
+
+def test_fixed_tp_backfilled_once_on_open_position(env, monkeypatch):
+    """고정 익절 전에 연 포지션(익절 없음)에 다음 실행에서 +10% 익절을 한 번 건다."""
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["tp"] == 110000.0 and pos["tp_backfilled"] and pos["tp_id"].endswith("-t1")
+    assert ex.algos[pos["tp_id"]]["type"] == "TAKE_PROFIT_MARKET"
+    assert any("기본 익절 +10%" in m for m in env["sent"])
+    # 익절이 실패해 지워져도 다시 하지 않는다
+    ex.algos.pop(pos["tp_id"])
+    s = state()
+    s["position"].update(tp=None, tp_id=None)
+    bt._save(bt.DIR / "state.json", s)
+    n = len(ex.algos)
+    run(env, ex)
+    assert state()["position"]["tp"] is None and len(ex.algos) == n
 
 
 def test_ai_out_of_range_falls_back_and_is_logged(env, monkeypatch):

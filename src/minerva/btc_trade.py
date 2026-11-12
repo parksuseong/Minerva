@@ -128,6 +128,7 @@ FIXED_TP_PCT = 10.0
 # - 엔진 포지션을 손으로 닫았으면 기록만 하고 매매를 멈추지 않는다.
 # - 엔진이 이미 한 종목을 들고 있을 때 다른 종목 수동 포지션은 손절·익절 주문만 걸어 지킨다(guards).
 MANUAL_ADOPT = True
+USER_CLOSE_STOP = -4130  # 같은 방향 closePosition 조건부 주문이 이미 있음(사용자 것)
 WOULD_TRIGGER = -2021  # "Order would immediately trigger": 이미 손절가를 지났다
 # 마크 가격: 체결가(CONTRACT_PRICE)는 한 번의 꼬리·허수 체결로도 손절이 걸린다. 마크 가격은 여러
 # 거래소 지수로 만들어 순간 튐에 덜 걸리고 청산 기준과도 같다.
@@ -1198,6 +1199,11 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
         except (Rejected, NetworkError) as e:
             ok, why = False, str(e)
             trigger = isinstance(e, Rejected) and e.code == WOULD_TRIGGER
+            if pos.get("manual") and isinstance(e, Rejected) and e.code == USER_CLOSE_STOP:
+                # 사용자가 이미 closePosition 손절을 걸어 두었다: 그걸로 지켜진 것으로 본다
+                pos["stop_id"] = "user"
+                _save(DIR / "state.json", state)
+                ok, why = True, ""
         if not ok and pos.get("manual") and not trigger:
             # 손으로 연 포지션: 이미 손절가를 지난 경우(-2021)만 닫고, 다른 실패는 알리기만
             ctx.say(
@@ -1212,10 +1218,11 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
             ctx.say(f"❌ 손절 재설정 실패({why}) → 시장가로 닫아요")
             protect_close(ctx, state, "protect")
             return state.get("position") is None
-        ctx.say(
-            f"🛡 {_name(ctx.symbol)} 손절 주문이 없어 다시 걸었어요: {_px(pos['stop'])} "
-            f"({WORKING_TYPE})"
-        )
+        if pos["stop_id"] != "user":
+            ctx.say(
+                f"🛡 {_name(ctx.symbol)} 손절 주문이 없어 다시 걸었어요: {_px(pos['stop'])} "
+                f"({WORKING_TYPE})"
+            )
     if with_tp and pos.get("tp") and pos.get("tp_id") not in open_ids:
         n = pos.get("tp_n", 0) + 1
         cid = _pos_cid(pos, "t", n)
@@ -1301,6 +1308,7 @@ def _next_manual_n(state: dict) -> int:
 
 def _liquidated(ctx: Ctx, since_ms: int) -> bool:
     """거래소 강제 청산(청산·ADL)이 있었나. 못 읽으면 True(예전처럼 멈추는 쪽으로)."""
+    since_ms = max(since_ms, ctx.now_ms - 7 * 86_400_000 + 60_000)  # 거래소 조회 창은 7일
     try:
         rows = _get(ctx.client, "/fapi/v1/forceOrders", symbol=ctx.symbol, startTime=since_ms)
     except (Rejected, NetworkError):
@@ -1474,7 +1482,12 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         label = "수동 반대 포지션" if flipped else "수동으로 수량이 바뀐 포지션"
         if adopt_manual(ctx, state, row, label):
             return ensure_stop(ctx, state)
-        if not flipped:
+        if flipped:
+            ctx.say(
+                f"🆘 {_name(ctx.symbol)} 손으로 뒤집은 포지션을 이어받지 못했어요(종목 정보 조회 "
+                "실패) → 손절 없이 열려 있어요. 다음 실행에서 다시 걸어요. 앱에서 확인하세요!"
+            )
+        else:
             # 틱을 못 읽었다: 옛 값으로 손절만 다시 걸고 다음 실행에서 다시
             state["position"] = old
             state["position"]["stop_id"] = None
@@ -3071,6 +3084,10 @@ def guard_stray(ctx: Ctx, state: dict) -> None:
         try:
             r = place_stop(c, side, Decimal(str(g["stop"])), cid)
         except Rejected as e:
+            if e.code == USER_CLOSE_STOP:
+                g["stop_id"] = "user"  # 사용자 손절이 이미 있다
+                _save(DIR / "state.json", state)
+                return
             if e.code != WOULD_TRIGGER:
                 _save(DIR / "state.json", state)
                 raise  # 닫지 않고 알리기만(check_strays가 🆘)

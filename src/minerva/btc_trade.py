@@ -143,6 +143,16 @@ SCR_PARAMS: dict = {
 # 2026-11-12 23:45 NVDA 진입이 1%로 -2019(Margin is insufficient) 거부: 지정가(매수 호가)가 마크
 # 가격보다 위면 그 차이(미실현 손실)도 증거금에 잡힌다. TradFi는 장 시작 무렵 차이가 커서 3%로 늘림.
 FEE_BUFFER = 0.03
+# 진입 주문 실패 뒤 다시 시도(사용자 2026-11-12 "거래실패시 백오프 기능넣어"). 포지션이 0이고 남은
+# 진입 주문을 취소한 뒤에만, 새 주문 ID로 이 간격(초)만큼 쉬고 다시 낸다. 증거금 부족(-2019)이면
+# 수량을 ENTRY_SHRINK씩 줄인다. 실행 시간 한도를 넘기면 멈춘다.
+ENTRY_BACKOFF_S = (2.0, 5.0, 10.0)
+ENTRY_SHRINK = 0.95
+MARGIN_CODE = -2019
+# 다시 해도 되는 거부: 거래소가 주문을 받지 않았다고 분명히 말한 것만(증거금 부족, 서버 과부하).
+# 응답을 잃은 통신 오류·-1001·-1007(처리 여부 모름)은 다시 내지 않는다: 이미 체결됐을 수 있어
+# 두 번 들어가게 된다(대사가 이어 받는다).
+ENTRY_RETRY_CODES = frozenset({MARGIN_CODE, -1008})
 TAKER_FEE = 0.0005  # 드라이런 손익 추정용 편도 테이커 수수료
 EQUITY_FLOOR = 0.80
 WINRATE_MIN = 0.50
@@ -1984,6 +1994,38 @@ def position_row(client) -> dict:
     return {"amt": float(row["positionAmt"]), "entry": float(row.get("entryPrice") or 0)}
 
 
+def _entry_filled(ctx: Ctx, oid: str, since_ms: int) -> bool:
+    """이 신호의 진입 주문(ID가 oid로 시작) 중 조금이라도 체결된 게 있나. 못 읽으면 True(다시 내지
+    않는 쪽으로)."""
+    try:
+        rows = _get(ctx.client, "/fapi/v1/allOrders", symbol=ctx.symbol, startTime=since_ms)
+    except (Rejected, NetworkError):
+        return True
+    return any(
+        str(o.get("clientOrderId", "")).startswith(oid) and float(o.get("executedQty") or 0) > 0
+        for o in rows
+    )
+
+
+def _margin_diag(ctx: Ctx, qty: Decimal) -> dict:
+    """증거금 부족(-2019) 원인을 보려고 호가·마크 가격·가용 잔고를 남긴다(실패해도 그냥 넘어감)."""
+    out: dict = {"qty": float(qty), "leverage": LEVERAGE}
+    try:
+        out["bid"], out["ask"] = LiveVenue(ctx).book()
+    except Exception:  # noqa: BLE001 — 진단만
+        pass
+    try:
+        url = f"{BASE}/fapi/v1/premiumIndex?symbol={ctx.symbol}"
+        out["mark"] = float(_public(url)["markPrice"])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out["available"] = float(_get(ctx.client, "/fapi/v2/account")["availableBalance"])
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def _settle_entry(ctx: Ctx, want: float | None, tries: int = 5) -> dict | None:
     """진입 마무리: 엔진 진입 지정가를 취소하고 포지션을 읽는다. 센 수량(want)만큼 보일 때까지
     0.5초 간격으로 다시 읽는다. 끝내 못 읽으면 None(0과 구별한다)."""
@@ -2175,11 +2217,45 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     }
     _save(DIR / "state.json", state)
     fill, err = None, None
-    try:
-        fill = _enter(ctx, LiveVenue(ctx), side, qty, sig, gate, flt, oid)
-    except Exception as e:  # noqa: BLE001 — 무엇이 깨져도 아래에서 취소·포지션 확인·손절로 마무리
-        err = e
-        ctx.event(event="enter_error", error=f"{type(e).__name__}: {e}")
+    base = oid
+    t_try = _ms_now() - 60_000
+    for attempt in range(len(ENTRY_BACKOFF_S) + 1):
+        try:
+            fill = _enter(ctx, LiveVenue(ctx), side, qty, sig, gate, flt, base)
+            err = None
+            break
+        except Exception as e:  # noqa: BLE001 — 무엇이 깨져도 아래에서 취소·포지션 확인·손절로 마무리
+            err = e
+            ev = {"event": "enter_error", "error": f"{type(e).__name__}: {e}", "try": attempt + 1}
+            if isinstance(e, Rejected) and e.code == MARGIN_CODE:
+                ev["diag"] = _margin_diag(ctx, qty)
+            ctx.event(**ev)
+        retryable = isinstance(err, Rejected) and err.code in ENTRY_RETRY_CODES
+        if not retryable or attempt >= len(ENTRY_BACKOFF_S):
+            break
+        wait = ENTRY_BACKOFF_S[attempt]
+        if _clock() + wait > ctx.deadline:
+            break
+        # 다시 내기 전에: 남은 진입 주문 취소, 포지션이 정말 0인지 확인. 조금이라도 들어갔거나
+        # 확인을 못 하면 다시 내지 않고 아래 대사(손절 걸기)로 넘긴다
+        row0 = _settle_entry(ctx, None)
+        if row0 is None or row0["amt"] or _entry_filled(ctx, oid, t_try):
+            break
+        _sleep(wait)
+        if isinstance(err, Rejected) and err.code == MARGIN_CODE:
+            qty = _round(float(qty) * ENTRY_SHRINK, flt["step"])
+            if float(qty) < flt["min_qty"] or float(qty) * price < flt["min_notional"]:
+                break
+        try:
+            now_px = ctx.market.price()
+        except Exception:  # noqa: BLE001 — 가격을 못 보면 다시 내지 않는다
+            break
+        if not chase_ok(side, now_px, sig["close"], gate["pct"]):
+            why_px = _chase_text(side, now_px, sig, gate)
+            ctx.say(f"⏭ {who} 다시 시도 안 함(쉬는 사이 추격 한도 밖): {why_px}")
+            break
+        base = f"{oid}r{attempt + 1}-"
+        ctx.say(f"🔁 {who} 진입 실패({type(err).__name__}: {err}) → {wait:g}초 뒤 다시 시도")
     # 남은 진입 지정가를 취소하고 거래소 포지션을 진실로 삼는다(체결 직후 늦게 보일 수 있어 몇 번)
     row = _settle_entry(ctx, fill["qty"] if fill else None)
     why = f"{type(err).__name__}: {err}" if err else ""

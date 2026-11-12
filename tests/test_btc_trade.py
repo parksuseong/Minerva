@@ -92,6 +92,11 @@ class FakeExchange:
             return [t for t in self.trades if p["startTime"] <= t["time"] <= end]
         if path == "/fapi/v1/exchangeInfo":
             return {"symbols": []}
+        if path == "/fapi/v1/allOrders":
+            return [
+                {"clientOrderId": o["clientOrderId"], "executedQty": o.get("executedQty", "0")}
+                for o in list(self.limits.values()) + list(self.orders.values())
+            ]
         if path == "/fapi/v1/order" and method == "GET":
             cid = p["origClientOrderId"]
             if cid in self.limits:
@@ -105,6 +110,8 @@ class FakeExchange:
             how = self.limit_script.pop(0) if self.limit_script else "fill"
             if how == "gtx":
                 raise bt.Rejected(-5022, "Post Only order will be rejected")
+            if how == "margin":
+                raise bt.Rejected(-2019, "Margin is insufficient.")
             o = {
                 "clientOrderId": p["newClientOrderId"],
                 "status": "NEW",
@@ -2989,3 +2996,53 @@ def test_fee_buffer_leaves_3pct_margin_headroom():
     qty, why = bt.size_qty(767.01, 190.0, 1.0, flt)
     # 767.01 × 0.97 × 3 / 190 = 11.747… → 11.74 (증거금 약 743.6, 가용의 97%)
     assert why == "" and str(qty) == "11.74"
+
+
+def test_entry_margin_reject_backs_off_and_retries_smaller(env, monkeypatch):
+    """사용자 2026-11-12 "거래실패시 백오프": 증거금 부족(-2019)이면 포지션 0·체결 없음을 확인하고
+    쉬었다가 새 ID·작은 수량으로 다시 낸다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["margin", "fill"]
+    slept = []
+    real_sleep = bt._sleep
+    monkeypatch.setattr(bt, "_sleep", lambda s: (slept.append(s), real_sleep(s)))
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    pos = state()["position"]
+    assert pos and pos["side"] == "long" and ex.amt > 0
+    posts = [p for m, path, p in ex.writes if path == "/fapi/v1/order" and m == "POST"]
+    assert len(posts) == 2  # 첫 주문 거부(-2019), 두 번째(새 ID) 체결
+    assert posts[1]["newClientOrderId"].endswith("-or1-1")
+    # 1000 × 0.99 × 3 / 100000 = 0.029 → 5% 줄여 0.027
+    assert posts[0]["quantity"] == "0.029" and posts[1]["quantity"] == "0.027"
+    assert bt.ENTRY_BACKOFF_S[0] in slept
+    errs = [e for e in jsonl("events.jsonl") if e.get("event") == "enter_error"]
+    assert errs and "diag" in errs[0] and errs[0]["try"] == 1
+    assert any("다시 시도" in m for m in env["sent"])
+    assert any(a["type"] == "STOP_MARKET" and a["algoStatus"] == "NEW" for a in ex.algos.values())
+
+
+def test_entry_margin_reject_gives_up_after_backoffs(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["margin"] * 10
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert ex.amt == 0 and state().get("position") is None
+    errs = [e for e in jsonl("events.jsonl") if e.get("event") == "enter_error"]
+    assert len(errs) == len(bt.ENTRY_BACKOFF_S) + 1
+
+
+def test_entry_other_reject_not_retried(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["margin"]
+    monkeypatch.setattr(bt, "ENTRY_RETRY_CODES", frozenset())
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    errs = [e for e in jsonl("events.jsonl") if e.get("event") == "enter_error"]
+    assert len(errs) == 1 and ex.amt == 0

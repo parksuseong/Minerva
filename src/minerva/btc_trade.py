@@ -1206,8 +1206,16 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
             pos.update(tp_id=cid, tp_n=n)
             ctx.say(f"🎯 {_name(ctx.symbol)} 익절 주문이 없어 다시 걸었어요: {_px(pos['tp'])}")
         except (Rejected, NetworkError) as e:
-            ctx.say(f"⚠️ 익절 재설정 실패({e}) → 익절 없이 손절·반대 신호로만 관리해요")
-            pos.update(tp=None, tp_id=None)
+            # 응답만 잃었을 수 있다: 걸려 있으면 그대로 쓴다(지우면 그 익절 체결을 '수동'으로 봄)
+            try:
+                live_tp = isinstance(e, NetworkError) and stop_is_open(ctx.client, cid)
+            except (Rejected, NetworkError):
+                live_tp = False
+            if live_tp:
+                pos.update(tp_id=cid, tp_n=n)
+            else:
+                ctx.say(f"⚠️ 익절 재설정 실패({e}) → 익절 없이 손절·반대 신호로만 관리해요")
+                pos.update(tp=None, tp_id=None)
         _save(DIR / "state.json", state)
     return True
 

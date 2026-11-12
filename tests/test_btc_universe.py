@@ -108,6 +108,9 @@ def test_select_top_filters_contract_status_quote():
     assert [r["symbol"] for r in top] == ["NVDAUSDT", "BTCUSDT"]
     assert top[0]["contract"] == "TRADIFI_PERPETUAL" and top[0]["underlying"] == "EQUITY"
     assert len(bu.select_top(info, tickers, 1)) == 1
+    # 상위 밖 extra 종목은 뒤에 붙고, 거래 불가 종목은 extra여도 안 붙는다
+    one = bu.select_top(info, tickers, 1, extra=("BTCUSDT", "OLDUSDT"))
+    assert [r["symbol"] for r in one] == ["NVDAUSDT", "BTCUSDT"]
 
 
 def test_refresh_writes_stats_one_symbol_at_a_time(tmp_path, monkeypatch):

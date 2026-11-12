@@ -280,6 +280,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(bt, "_TAGS", {})
     # 다른 흐름 시험은 ETH·SOXL로도 들어간다. 승률 바닥은 따로 시험한다
     monkeypatch.setattr(bt, "MIN_ENTRY_WINRATE", 0.0)
+    monkeypatch.setattr(bt, "FEE_BUFFER", 0.01)  # 기존 수량 계산 시험값. 3%는 따로 시험
     monkeypatch.setattr(bt, "AI_EXITS", True)  # AI 손절·익절 흐름 시험. 고정 규칙은 따로 시험
     monkeypatch.setattr(bt, "DIR", tmp_path / "btc_trade")
     monkeypatch.setattr(bt, "CAPITAL_FILE", tmp_path / "binance_capital.json")
@@ -352,8 +353,8 @@ def engine_long(ex: FakeExchange, qty=0.029, entry=100_000.0) -> dict:
 
 def test_qty_rounds_down_to_step():
     qty, why = bt.size_qty(1000.0, 76_041.4, 1.0, FLT)
-    # 1000 × 0.99 × 3 / 76041.4 = 0.03905… → 0.039
-    assert qty == Decimal("0.039") and why == ""
+    # 1000 × 0.97 × 3 / 76041.4 = 0.03826… → 0.038
+    assert qty == Decimal("0.038") and why == ""
     half, _ = bt.size_qty(1000.0, 76_041.4, 0.5, FLT)
     assert half == Decimal("0.019")
 
@@ -2980,3 +2981,11 @@ def test_held_symbol_below_winrate_50_closes_without_flip(env, multi, monkeypatc
     bt.run(now=NOW.replace(minute=45), client=ex, market_=multi, send=env["send"])
     assert ex.amts["BTCUSDT"] == 0 and state().get("position") is None
     assert jsonl("closed.jsonl")[-1]["symbol"] == "BTCUSDT"
+
+
+def test_fee_buffer_leaves_3pct_margin_headroom():
+    assert bt.FEE_BUFFER == 0.03
+    flt = {"step": "0.01", "max_qty": 1e9, "min_qty": 0.01, "min_notional": 5.0}
+    qty, why = bt.size_qty(767.01, 190.0, 1.0, flt)
+    # 767.01 × 0.97 × 3 / 190 = 11.747… → 11.74 (증거금 약 743.6, 가용의 97%)
+    assert why == "" and str(qty) == "11.74"

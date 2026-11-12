@@ -65,7 +65,8 @@ class FakeExchange:
 
     def _handle(self, method, path, p):
         if path == "/fapi/v2/positionRisk":
-            return [{"symbol": "BTCUSDT", "positionAmt": str(self.amt)}]
+            entry = getattr(self, "entry_px", self.price)
+            return [{"symbol": "BTCUSDT", "positionAmt": str(self.amt), "entryPrice": str(entry)}]
         if path == "/fapi/v1/openAlgoOrders":
             return [a for a in self.algos.values() if a["algoStatus"] == "NEW"] + [
                 o for o in self.foreign_open if "clientAlgoId" in o
@@ -287,6 +288,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(bt, "_TAGS", {})
     # 다른 흐름 시험은 ETH·SOXL로도 들어간다. 승률 바닥은 따로 시험한다
     monkeypatch.setattr(bt, "MIN_ENTRY_WINRATE", 0.0)
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", False)  # 옛 "수동 개입이면 멈춤" 시험. 이어받기는 따로
     monkeypatch.setattr(bt, "FEE_BUFFER", 0.01)  # 기존 수량 계산 시험값. 3%는 따로 시험
     monkeypatch.setattr(bt, "AI_EXITS", True)  # AI 손절·익절 흐름 시험. 고정 규칙은 따로 시험
     monkeypatch.setattr(bt, "DIR", tmp_path / "btc_trade")
@@ -2010,7 +2012,7 @@ class MultiExchange(FakeExchange):
         self.price = PRICES[self._cur]
         if path == "/fapi/v2/positionRisk":
             return [
-                {"symbol": s, "positionAmt": str(a)}
+                {"symbol": s, "positionAmt": str(a), "entryPrice": str(PRICES.get(s, 0.0))}
                 for s, a in self.amts.items()
                 if sym is None or s == sym
             ]
@@ -3091,3 +3093,103 @@ def test_entry_retry_skipped_when_price_ran_past_chase_limit(env, monkeypatch):
     run(env, ex)
     assert ex.amt == 0 and state().get("position") is None
     assert any("추격 한도 밖" in m for m in env["sent"])
+
+
+
+# ------------------------------------------ 수동 포지션 이어받기 (사용자 2026-11-13)
+
+
+def test_manual_open_is_adopted_with_stop_and_tp(env, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.amt = 0.02  # 사용자가 앱에서 산 롱
+    ex.entry_px = 100_000.0
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["manual"] and pos["side"] == "long" and pos["qty"] == 0.02
+    assert pos["stop"] == 97000.0 and pos["tp"] == 110000.0
+    kinds = {a["type"]: a["triggerPrice"] for a in ex.algos.values() if a["algoStatus"] == "NEW"}
+    assert kinds == {"STOP_MARKET": "97000.0", "TAKE_PROFIT_MARKET": "110000.0"}
+    assert not bt.entries_blocked()
+    assert any("이어받아 관리" in m for m in env["sent"])
+    n = len(ex.algos)
+    run(env, ex)  # 다음 실행: 그대로 둔다(다시 걸지 않음)
+    assert len(ex.algos) == n
+
+
+def test_manual_open_past_stop_is_closed(env, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.amt = 0.02
+    ex.entry_px = 100_000.0
+    ex.reject_stop = True  # 이미 손절가 아래라 걸면 바로 체결될 주문 → 거부
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.amt == 0 and state().get("position") is None
+
+
+def test_manual_close_of_engine_position_does_not_halt(env, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.amt = 0.0
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert jsonl("closed.jsonl")[-1]["why"] == "manual"
+    assert not bt.entries_blocked() and state().get("position") is None
+
+
+def test_manual_add_to_engine_position_is_readopted(env, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex, qty=0.029)
+    ex.amt = 0.05  # 사용자가 더 샀다
+    ex.entry_px = 99_000.0
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["qty"] == 0.05 and pos["entry"] == 99000.0 and pos["stop"] == 96030.0
+    live_stops = [a for a in ex.algos.values() if a["algoStatus"] == "NEW"]
+    assert sorted(a["type"] for a in live_stops) == ["STOP_MARKET", "TAKE_PROFIT_MARKET"]
+    assert not bt.entries_blocked()
+
+
+def test_manual_other_symbol_guarded_while_engine_holds(env, multi, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    ex.amts["ETHUSDT"] = 0.5  # 사용자가 손으로 산 ETH (엔진은 BTC 보유)
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    g = state()["guards"]["ETHUSDT"]
+    assert g["stop"] == 2910.0 and g["tp"] == 3300.0
+    eth = [a for a in ex.algos.values() if a["clientAlgoId"] in (g["stop_id"], g["tp_id"])]
+    assert sorted(a["type"] for a in eth) == ["STOP_MARKET", "TAKE_PROFIT_MARKET"]
+    assert state()["position"]["symbol"] == "BTCUSDT" and not bt.entries_blocked()
+    # 손으로 정리하면 지킴 주문을 거둔다
+    ex.amts["ETHUSDT"] = 0.0
+    mrun(env, ex, multi)
+    assert "ETHUSDT" not in state()["guards"]
+    assert all(ex.algos[i]["algoStatus"] != "NEW" for i in (g["stop_id"], g["tp_id"]))
+
+
+def test_manual_other_symbol_adopted_when_flat(env, multi, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = MultiExchange()
+    ex.amts["SOXLUSDT"] = -3.0  # 빈손인데 손으로 판 SOXL 숏
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    pos = state()["position"]
+    assert pos["symbol"] == "SOXLUSDT" and pos["side"] == "short" and pos["qty"] == 3.0
+    assert pos["stop"] == 30.9 and pos["tp"] == 27.0
+    assert not bt.entries_blocked()

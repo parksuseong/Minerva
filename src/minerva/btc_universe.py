@@ -39,6 +39,8 @@ log = logging.getLogger(__name__)
 
 BASE = "https://fapi.binance.com"
 TOP_N = 50
+# 거래량 상위 50 밖이어도 늘 넣는 종목(사용자 요청). 승률 바닥은 똑같이 적용된다.
+EXTRA_SYMBOLS = ("AAPLUSDT",)  # 2026-11-12 "응 넣어봐"(1년 승률 62.7%)
 CONTRACTS = ("PERPETUAL", "TRADIFI_PERPETUAL")
 FRESH_DAYS = 14
 MIN_TRADES = 20
@@ -280,9 +282,11 @@ def fetch_15m(symbol: str, start_ms: int, end_ms: int, get=get_json) -> list[lis
     return rows
 
 
-def select_top(info: dict, tickers: list[dict], n: int = TOP_N) -> list[dict]:
+def select_top(
+    info: dict, tickers: list[dict], n: int = TOP_N, extra: tuple = ()
+) -> list[dict]:
     """거래 가능한 USDT 무기한 중 24시간 거래대금 상위 n. [{symbol, quote_volume, contract,
-    underlying, onboard}] 거래대금 순."""
+    underlying, onboard}] 거래대금 순. extra 종목은 상위 n 밖이면 뒤에 붙인다(거래 가능할 때만)."""
     ok = {
         s["symbol"]: s
         for s in info.get("symbols", [])
@@ -309,7 +313,10 @@ def select_top(info: dict, tickers: list[dict], n: int = TOP_N) -> list[dict]:
             }
         )
     rows.sort(key=lambda r: -r["quote_volume"])
-    return rows[:n]
+    top = rows[:n]
+    have = {r["symbol"] for r in top}
+    top += [r for r in rows[n:] if r["symbol"] in extra and r["symbol"] not in have]
+    return top
 
 
 def refresh(
@@ -324,7 +331,7 @@ def refresh(
     now_ms = now_ms or int(time.time() * 1000)
     info = get("/fapi/v1/exchangeInfo")
     tickers = get("/fapi/v1/ticker/24hr")
-    top = select_top(info, tickers)
+    top = select_top(info, tickers, extra=EXTRA_SYMBOLS)
     end = now_ms - now_ms % BAR_MS  # 진행 중인 봉은 뺀다
     from_ms = end - WINDOW_DAYS * 86_400_000
     stats: dict[str, dict] = {}

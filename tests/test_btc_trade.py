@@ -2877,29 +2877,29 @@ def test_prepare_attempts_are_capped(env, multi, monkeypatch):
     assert all(state()["last_bars"][s] == BAR for s in bt.SYMBOLS)
 
 
-def test_tradable_set_needs_winrate_45_and_profit():
+def test_tradable_set_needs_winrate_45_and_sample():
     stats = {
         "BNBUSDT": {"winrate": 56.9, "ret": 99.4, "trades": 123, "days": 365},
         "XRPUSDT": {"winrate": 43.7, "ret": 82.4, "trades": 151, "days": 365},  # 45% 미만
-        "XAUUSDT": {"winrate": 57.9, "ret": -21.0, "trades": 95, "days": 332},  # 손실
+        "XAUUSDT": {"winrate": 57.9, "ret": -21.0, "trades": 95, "days": 332},  # 손실도 진입
         "NEWUSDT": {"winrate": 70.0, "ret": 50.0, "trades": 5, "days": 30},  # 표본 작음
-        # 네 종목: NVDA는 손실이어도 되지만 ETH처럼 45% 미만은 안 된다
+        # 네 종목도 ETH처럼 45% 미만은 안 된다
         "NVDAUSDT": {"winrate": 54.9, "ret": -27.7, "trades": 91, "days": 227},
         "ETHUSDT": {"winrate": 43.3, "ret": 89.6, "trades": 104, "days": 365},
         "SOXLUSDT": {"winrate": 16.0, "ret": -99.3, "trades": 131, "days": 177},
-        "BZUSDT": {"winrate": 48.5, "ret": -17.7, "trades": 97, "days": 365},  # 45% 이상이지만 손실
+        "BZUSDT": {"winrate": 48.5, "ret": -17.7, "trades": 97, "days": 365},  # 손실도 진입
     }
     assert bt.MIN_ENTRY_WINRATE == 45.0
-    assert bt.tradable_set(list(stats), stats) == {"BNBUSDT", "NVDAUSDT"}
+    assert bt.tradable_set(list(stats), stats) == {"BNBUSDT", "NVDAUSDT", "XAUUSDT", "BZUSDT"}
     # universe.json이 없을 때(네 종목): 승률 45% 이상만 → BTC(54)·NVDA(49)
     assert bt._default_tradable() == {"BTCUSDT", "NVDAUSDT"}
 
 
 
-def test_flat_losing_symbol_signal_not_entered(env, multi, monkeypatch):
+def test_flat_low_sample_symbol_signal_not_entered(env, multi, monkeypatch):
     ex = MultiExchange()  # 드라이런
     rates = {"BTCUSDT": 54, "ETHUSDT": 44, "SOXLUSDT": 17, "NVDAUSDT": 49, "AAAUSDT": 60}
-    grow(monkeypatch, ex, rates, extra={"AAAUSDT": {"ret": -90.0}})
+    grow(monkeypatch, ex, rates, extra={"AAAUSDT": {"trades": 5, "days": 30}})
     sig_all(monkeypatch, multi, {"AAAUSDT": "long"}, rates)
     asked = ai_answers(monkeypatch, "모르겠어요")
     mrun(env, ex, multi)

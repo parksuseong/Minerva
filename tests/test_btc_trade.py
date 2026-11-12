@@ -3046,3 +3046,21 @@ def test_entry_other_reject_not_retried(env, monkeypatch):
     run(env, ex)
     errs = [e for e in jsonl("events.jsonl") if e.get("event") == "enter_error"]
     assert len(errs) == 1 and ex.amt == 0
+
+
+def test_entry_retry_skipped_when_price_ran_past_chase_limit(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["margin", "fill"]
+    # 첫 거부(-2019) 뒤에는 가격이 달아났다고 본다
+    def gone(side, px, close, pct):
+        return not (bt.DIR / "events.jsonl").exists() or "enter_error" not in (
+            bt.DIR / "events.jsonl"
+        ).read_text()
+
+    monkeypatch.setattr(bt, "chase_ok", gone)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert ex.amt == 0 and state().get("position") is None
+    assert any("추격 한도 밖" in m for m in env["sent"])

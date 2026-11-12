@@ -2246,6 +2246,14 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
             qty = _round(float(qty) * ENTRY_SHRINK, flt["step"])
             if float(qty) < flt["min_qty"] or float(qty) * price < flt["min_notional"]:
                 break
+        try:
+            now_px = ctx.market.price()
+        except Exception:  # noqa: BLE001 — 가격을 못 보면 다시 내지 않는다
+            break
+        if not chase_ok(side, now_px, sig["close"], gate["pct"]):
+            why_px = _chase_text(side, now_px, sig, gate)
+            ctx.say(f"⏭ {who} 다시 시도 안 함(쉬는 사이 추격 한도 밖): {why_px}")
+            break
         base = f"{oid}r{attempt + 1}-"
         ctx.say(f"🔁 {who} 진입 실패({type(err).__name__}: {err}) → {wait:g}초 뒤 다시 시도")
     # 남은 진입 지정가를 취소하고 거래소 포지션을 진실로 삼는다(체결 직후 늦게 보일 수 있어 몇 번)

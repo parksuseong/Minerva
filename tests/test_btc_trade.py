@@ -290,6 +290,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(bt, "_TAGS", {})
     # 다른 흐름 시험은 ETH·SOXL로도 들어간다. 승률 바닥은 따로 시험한다
     monkeypatch.setattr(bt, "MIN_ENTRY_WINRATE", 0.0)
+    # 수익 조건도 따로 시험한다
+    monkeypatch.setattr(bt, "DEFAULT_RET", dict.fromkeys(bt.DEFAULT_SYMBOLS, 1.0))
     monkeypatch.setattr(bt, "MANUAL_ADOPT", False)  # 옛 "수동 개입이면 멈춤" 시험. 이어받기는 따로
     monkeypatch.setattr(bt, "FEE_BUFFER", 0.01)  # 기존 수량 계산 시험값. 3%는 따로 시험
     monkeypatch.setattr(bt, "AI_EXITS", True)  # AI 손절·익절 흐름 시험. 고정 규칙은 따로 시험
@@ -2936,22 +2938,23 @@ def test_prepare_attempts_are_capped(env, multi, monkeypatch):
     assert all(state()["last_bars"][s] == BAR for s in bt.SYMBOLS)
 
 
-def test_tradable_set_needs_winrate_45_and_sample():
+def test_tradable_set_needs_winrate_45_profit_and_sample():
     stats = {
         "BNBUSDT": {"winrate": 56.9, "ret": 99.4, "trades": 123, "days": 365},
         "XRPUSDT": {"winrate": 43.7, "ret": 82.4, "trades": 151, "days": 365},  # 45% 미만
-        "XAUUSDT": {"winrate": 57.9, "ret": -21.0, "trades": 95, "days": 332},  # 손실도 진입
+        "XAUUSDT": {"winrate": 57.9, "ret": -21.0, "trades": 95, "days": 332},  # 손실
         "NEWUSDT": {"winrate": 70.0, "ret": 50.0, "trades": 5, "days": 30},  # 표본 작음
         # 네 종목도 ETH처럼 45% 미만은 안 된다
         "NVDAUSDT": {"winrate": 54.9, "ret": -27.7, "trades": 91, "days": 227},
         "ETHUSDT": {"winrate": 43.3, "ret": 89.6, "trades": 104, "days": 365},
         "SOXLUSDT": {"winrate": 16.0, "ret": -99.3, "trades": 131, "days": 177},
-        "BZUSDT": {"winrate": 48.5, "ret": -17.7, "trades": 97, "days": 365},  # 손실도 진입
+        "BZUSDT": {"winrate": 48.5, "ret": -17.7, "trades": 97, "days": 365},  # 손실
     }
     assert bt.MIN_ENTRY_WINRATE == 45.0
-    assert bt.tradable_set(list(stats), stats) == {"BNBUSDT", "NVDAUSDT", "XAUUSDT", "BZUSDT"}
+    # 사용자 2026-11-13 "수익률이 +인것만": 네 종목(NVDA)도 손실이면 안 된다
+    assert bt.tradable_set(list(stats), stats) == {"BNBUSDT"}
     # universe.json이 없을 때(네 종목): 승률 45% 이상만 → BTC(54)·NVDA(49)
-    assert bt._default_tradable() == {"BTCUSDT", "NVDAUSDT"}
+    assert bt._default_tradable() == {"BTCUSDT"}
 
 
 

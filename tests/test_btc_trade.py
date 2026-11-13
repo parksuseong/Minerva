@@ -2539,7 +2539,7 @@ def universe_file(rates: dict, at: datetime = NOW, extra: dict | None = None) ->
     (bt.DIR / "universe.json").write_text(json.dumps(data))
 
 
-# 보유 BTC(40%)보다 5%p 이상 높은 종목이 바꾸기 후보가 되는 승률
+# 보유 BTC(40%)보다 SWITCH_EDGE_PP(1%p) 이상 높은 종목이 바꾸기 후보가 되는 승률
 HELD_RATES = {"BTCUSDT": 40, "ETHUSDT": 50, "SOXLUSDT": 46, "NVDAUSDT": 49}
 
 
@@ -3010,7 +3010,7 @@ def test_holding_other_signal_below_edge_no_ai_call(env, multi, monkeypatch):
     live(env)
     ex = MultiExchange()
     held_btc_long(ex)  # BTC 40%
-    grow(monkeypatch, ex, {**HELD_RATES, "ETHUSDT": 44.9})
+    grow(monkeypatch, ex, {**HELD_RATES, "ETHUSDT": 40.9})
     signals(monkeypatch, multi, {"ETHUSDT": "long"})
     asked = ai_answers(monkeypatch, '{"choice": "switch:ETHUSDT", "reason": "x"}')
     s = mrun(env, ex, multi)
@@ -3019,20 +3019,37 @@ def test_holding_other_signal_below_edge_no_ai_call(env, multi, monkeypatch):
     assert state()["last_bars"]["ETHUSDT"] == BAR
     assert "후보 아님" in s["decision"]
     ev = [e for e in jsonl("events.jsonl") if e.get("event") == "signal_passed"]
-    assert ev and "5%p" in ev[0]["why"]
+    assert ev and "1%p" in ev[0]["why"]
 
 
 def test_holding_opposite_with_no_eligible_switch_flips_without_ai(env, multi, monkeypatch):
     live(env)
     ex = MultiExchange()
     held_btc_long(ex)
-    grow(monkeypatch, ex, {**HELD_RATES, "ETHUSDT": 41})
+    grow(monkeypatch, ex, {**HELD_RATES, "ETHUSDT": 40.9})
     signals(monkeypatch, multi, {"BTCUSDT": "short", "ETHUSDT": "long"})
     asked = ai_answers(monkeypatch, '{"choice": "switch:ETHUSDT", "reason": "x"}')
     mrun(env, ex, multi)
     assert not asked["choose"]
     pos = state()["position"]
     assert pos["symbol"] == "BTCUSDT" and pos["side"] == "short"
+
+
+def test_switch_edge_is_one_point():
+    # 사용자 2026-11-14: 보유 종목보다 1%p 이상 높으면 바꾸기 후보
+    assert bt.SWITCH_EDGE_PP == 1.0
+
+
+def test_holding_other_signal_exactly_one_point_higher_asks_ai(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)  # BTC 40%
+    grow(monkeypatch, ex, {**HELD_RATES, "ETHUSDT": 41})
+    signals(monkeypatch, multi, {"ETHUSDT": "long"})
+    asked = ai_answers(monkeypatch, '{"choice": "keep", "reason": "x"}')
+    mrun(env, ex, multi)
+    assert asked["choose"]
+    assert state()["position"]["symbol"] == "BTCUSDT"
 
 
 def test_holding_switch_options_capped_at_three(env, multi, monkeypatch):

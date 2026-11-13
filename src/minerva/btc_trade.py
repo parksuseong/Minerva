@@ -3166,7 +3166,14 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
             "손절을 걸어요"
         )
     real = abs(row["amt"])
-    entry = fill["avg"] if fill and fill["avg"] and abs(real - fill["qty"]) < 1e-9 else row["entry"]
+    # 진입가는 거래소 평균가(손절·익절 기준, 사용자 2026-11-14 "3번"). 진입 직전 포지션이 0이라
+    # 거래소 평균가 = 이번 체결 평균가다. 엔진이 센 값은 응답에 평균가가 없으면 주문 가격으로
+    # 채워져 어긋날 수 있다(2026-11-12 NVDA 161.5 vs 거래소 160.98). 평균가가 0이면 센 값,
+    # 그것도 없으면 _adopt가 주문 기준가(pending ref)를 쓴다(손절 없는 틈을 만들지 않는다)
+    counted = fill["avg"] if fill and fill["avg"] and abs(real - fill["qty"]) < 1e-9 else 0.0
+    entry = float(row["entry"] or 0) or counted
+    if counted and entry and abs(entry / counted - 1) > 1e-6:
+        ctx.event(event="entry_from_exchange", counted=counted, exchange=entry)
     if fill and abs(real - fill["qty"]) > 1e-9:
         # 취소·체결 경합 등으로 셈이 달라지면 거래소 포지션을 믿는다
         ctx.event(event="fill_mismatch", counted=fill["qty"], position=real, entry=row["entry"])

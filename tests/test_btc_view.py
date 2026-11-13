@@ -235,3 +235,16 @@ def test_analysis_picker_is_stock_and_binance_only():
     for gone in ('id="an-sx"', 'id="an-nv"', 'id="an-et"'):
         assert gone not in page
     assert 'id="bn-sym"' in page and 'id="bn-btc"' in page and 'id="bn-other"' in page
+
+
+def test_near_and_traded_survive_corrupt_state_and_odd_rows(files):
+    # 레드팀 2026-11-13: 깨진 state.json·이상한 종목 값이어도 500이 아니다
+    _universe(bt.DIR)
+    (bt.DIR / "state.json").write_text("{깨짐")
+    rows = _near_rows(["BTCUSDT"]) + [{"symbol": ["x"], "side": "long"}]
+    near = {"updated_at": "x", "source": "universe", "w": 3, "rows": rows}
+    (bt.DIR / "near.json").write_text(json.dumps(near))
+    client = TestClient(app)
+    assert client.get("/api/btc/traded").status_code == 200
+    v = client.get("/api/btc/near").json()
+    assert v["status"] == "ok" and {r["symbol"] for r in v["rows"]} == {"BTCUSDT"}

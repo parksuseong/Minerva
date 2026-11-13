@@ -399,3 +399,11 @@ def test_klines_whitelist_stays_four_symbols(fake_binance, monkeypatch, tmp_path
     client = TestClient(app)
     assert client.get("/api/btc/klines?symbol=DOGEUSDT").status_code == 400
     assert client.get("/api/btc/klines?symbol=ETHUSDT").status_code == 200
+
+
+def test_klines_traded_symbol_days_capped(fake_binance, monkeypatch):
+    # 고정 네 종목 밖(매매 종목)은 최근 14일까지만(같은 IP 무게, 레드팀 2026-11-13)
+    monkeypatch.setattr(routes, "kline_symbols", lambda: {"BTCUSDT", "BNBUSDT"})
+    d = TestClient(app).get("/api/btc/klines?symbol=BNBUSDT&interval=15m&days=365").json()
+    assert d["capped"] is True
+    assert d["bars"][-1][0] - d["show_from"] <= 14 * 86_400_000

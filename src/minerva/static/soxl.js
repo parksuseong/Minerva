@@ -146,7 +146,7 @@
   if (!pane || !row || !btcBox || !other || !U || !V) return;
   const KEY = "minerva-bn-sym";
   const views = {};
-  let list = null, cur = "BTCUSDT", want = null, sig = "";
+  let list = null, cur = null, want = null, sig = "";
   const paneVisible = () => !pane.hidden && $("tab-analysis") && !$("tab-analysis").hidden;
   const saved = () => { try { return localStorage.getItem(KEY); } catch (e) { return null; } };
   const has = (s) => !!s && !!list && list.some((r) => r.symbol === s);

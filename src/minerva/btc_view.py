@@ -63,7 +63,10 @@ _SYMBOL = re.compile(r"^[A-Z0-9]{1,20}USDT$")
 
 def held_symbol() -> str | None:
     """엔진이 지금 든 종목(state.json, 읽기만). 옛 기록에 symbol이 없으면 BTCUSDT."""
-    state = bt._load(bt.DIR / "state.json", {})
+    try:
+        state = bt._load(bt.DIR / "state.json", {})
+    except (OSError, ValueError, TypeError):
+        return None  # 깨진 상태 파일이어도 화면은 열린다
     pos = state.get("position") if isinstance(state, dict) else None
     if not isinstance(pos, dict):
         return None
@@ -132,7 +135,7 @@ def near_view(now: datetime | None = None) -> dict:
     rows = [
         {**r, "held": r.get("symbol") == held}
         for r in rows
-        if isinstance(r, dict) and r.get("symbol") in want
+        if isinstance(r, dict) and isinstance(r.get("symbol"), str) and r["symbol"] in want
     ]
     return {
         **data,

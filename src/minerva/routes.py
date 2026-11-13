@@ -112,6 +112,7 @@ KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
 # 봉을 내줄 수 있는 선물 종목(공개 시세). SOXL은 종목 분석 > SOXL 탭(보기만, 2026-11-11).
 KLINE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
 KLINE_TRADED_MAX = 16  # 엔진 범위 파일이 이상해도 더 열리는 종목 수의 상한
+KLINE_TRADED_DAYS = 14  # 고정 네 종목 밖은 최근 14일까지만(레드팀 2026-11-13, 같은 IP 무게)
 
 
 def kline_symbols() -> set[str]:
@@ -228,6 +229,8 @@ def btc_klines(
         raise HTTPException(status_code=400, detail="봉은 5m·15m·30m·1h·4h·1d 중 하나예요")
     want = max(1, int(days))
     days = min(want, LAB_MAX_DAYS, LAB_DAY_CAP.get(interval, LAB_MAX_DAYS))
+    if symbol not in KLINE_SYMBOLS:
+        days = min(days, KLINE_TRADED_DAYS)  # 화면은 7일만 쓴다: 넓힌 종목은 무게 큰 요청을 막는다
     try:
         data = lab_klines(interval, days, _now_ms(), symbol)
     except (OSError, ValueError) as exc:

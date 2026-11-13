@@ -166,15 +166,12 @@
 
   <div class="panel" id="tab-analysis" hidden>
     <section class="card">
-      <h2>🎯 신호 가까운 순 <span class="mini">자동매매 종목(거래량 상위 50) · SCR ① 15분 · 엔진이 15분마다 계산</span></h2>
+      <h2>🎯 신호 가까운 순 <span class="mini">지금 매매하는 종목 · SCR ① 15분 · 엔진이 15분마다 계산</span></h2>
       <div id="near-list" class="placeholder">불러오는 중…</div>
     </section>
-    <div class="filters" data-pick="an" role="group" aria-label="주식/비트코인 선택">
+    <div class="filters" data-pick="an" role="group" aria-label="주식/바이낸스 선택">
       <button type="button" data-show="an-kr" class="on" aria-pressed="true">📈 주식</button>
-      <button type="button" data-show="an-bn" aria-pressed="false">₿ 비트코인</button>
-      <button type="button" data-show="an-et" aria-pressed="false">⟠ ETH</button>
-      <button type="button" data-show="an-sx" aria-pressed="false">🔧 SOXL</button>
-      <button type="button" data-show="an-nv" aria-pressed="false">🟢 NVDA</button>
+      <button type="button" data-show="an-bn" aria-pressed="false">🟡 바이낸스</button>
     </div>
     <div id="an-kr">
     <section class="card">
@@ -192,16 +189,21 @@
     </section>
     </div>
     <div id="an-bn" hidden>
+    <div class="filters" id="bn-sym" role="group" aria-label="바이낸스 종목">
+      <span class="mini">지금 매매하는 종목</span>
+      <button type="button" data-sym="BTCUSDT" class="on" aria-pressed="true">BTC</button>
+    </div>
     <section class="card">
-      <h2>🧭 큰 그림 <span class="mini">4시간·일·주·월봉 · 마감 봉 기준 · 15분마다 갱신</span></h2>
+      <h2>🤖 자동매매 상태 <span class="mini">바이낸스 선물 · SCR ① 15분 · 롱↔숏 · 매매 종목 중 하나만</span></h2>
+      <div id="bte-status" class="placeholder">불러오는 중…</div>
+    </section>
+    <div id="bn-btc">
+    <section class="card">
+      <h2>🧭 큰 그림 <span class="mini">BTC · 4시간·일·주·월봉 · 마감 봉 기준 · 15분마다 갱신</span></h2>
       <div id="bte-outlook" class="placeholder">불러오는 중…</div>
     </section>
     <section class="card">
-      <h2>🤖 자동매매 상태 <span class="mini">BTCUSDT 선물 · SCR ① 15분 · 롱↔숏 · 3배 · 손절·익절은 진입 때 AI</span></h2>
-      <div id="bte-status" class="placeholder">불러오는 중…</div>
-    </section>
-    <section class="card">
-      <h2>차트 <span class="mini">15분봉 7일 · 위: 캔들(KST) · 아래: Stoch 9 · CCI 20 · RSI 21</span></h2>
+      <h2>차트 <span class="mini">BTCUSDT 15분봉 7일 · 위: 캔들(KST) · 아래: Stoch 9 · CCI 20 · RSI 21</span></h2>
       <div class="mini">작은 ● 초록 = 롱 신호, ▼ 빨강 = 숏 신호. 큰 표시 = 엔진 진입·청산(롱 동그라미, 숏 삼각형 · 롱 진입·숏 청산 초록, 롱 청산·숏 진입 빨강). 가로선 = 지금 포지션의 진입·손절·익절.</div>
       <div id="bte-chart" style="height:640px;margin-top:6px"></div>
     </section>
@@ -213,6 +215,8 @@
       <h2>추격 한도</h2>
       <div id="bte-gate" class="placeholder">-</div>
     </section>
+    </div>
+    <div id="bn-other"></div>
     <section class="card">
       <h2>AI 손절·익절 결정</h2>
       <div id="bte-ai" class="placeholder">-</div>
@@ -222,9 +226,6 @@
       <div id="bte-trades" class="placeholder">-</div>
     </section>
     </div>
-    <div id="an-sx" hidden></div>
-    <div id="an-nv" hidden></div>
-    <div id="an-et" hidden></div>
   </div>
 
   <div class="panel" id="tab-account" hidden>
@@ -390,7 +391,7 @@
     })();
   </script>
   <script>
-    // 종목 분석의 주식/비트코인 선택. 고른 쪽은 이 기기에 기억한다.
+    // 종목 분석의 주식/바이낸스 선택. 고른 쪽은 이 기기에 기억한다(없어진 칸이 기억돼 있으면 주식).
     (() => {
       const pick = (name, show) => {
         const group = document.querySelector(`[data-pick="${name}"]`);
@@ -421,6 +422,7 @@
       const show = (name) => {
         if (name === "btc") {
           window.minervaPick && window.minervaPick("an", "an-bn");
+          window.minervaBnSym && window.minervaBnSym("BTCUSDT");
           name = "analysis";
         }
         if (!document.getElementById(`tab-${name}`)) name = "today";
@@ -438,9 +440,9 @@
   <script src="/static/scrlab_core.js?v=20261110b"></script>
   <script src="/static/scrlab.js?v=20261112a"></script>
   <script src="/static/scrview.js?v=20261111a"></script>
-  <script src="/static/btcengine.js?v=20261112c"></script>
-  <script src="/static/soxl.js?v=20261112c"></script>
-  <script src="/static/scrnear.js?v=20261112c"></script>
+  <script src="/static/btcengine.js?v=20261113a"></script>
+  <script src="/static/soxl.js?v=20261113a"></script>
+  <script src="/static/scrnear.js?v=20261113a"></script>
   <script src="/static/account.js?v=20261112a"></script>
   <script src="/static/trade.js?v=20261111a"></script>
   <script src="/static/office.js?v=20261111a"></script>

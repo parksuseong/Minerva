@@ -1,6 +1,7 @@
-// ₿ 비트코인: 실전 전략(SCR ① 15분 롱↔숏, 3배, 진입 때 AI 손절·익절) 하나만 보여준다.
+// 종목 분석 > 🟡 바이낸스: 자동매매 상태·AI 결정·엔진 거래(엔진 전체)와 BTC 큰 그림·차트·지표·추격 한도(BTC 고를 때).
 // 엔진 상태는 /api/btc/engine(엔진 파일을 읽기만 함), 봉은 /api/btc/klines, 추격 한도는 /api/btc.
-// 종목 분석 > 비트코인, 오늘 할 일 > 비트코인, 계좌 > 비트코인이 모두 같은 엔진 상태를 본다. 주문 없음.
+// 종목 분석 > 바이낸스, 오늘 할 일, 계좌 > 바이낸스가 모두 같은 엔진 상태를 본다. 주문 없음.
+// BTC 말고 다른 매매 종목의 차트·지표는 soxl.js(window.SymView)가 그린다.
 (() => {
   const $ = (id) => document.getElementById(id);
   const core = window.ScrLab;
@@ -11,7 +12,7 @@
   const pct = (v, d = 2) => (v == null ? "-"
     : `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${num(v, d)}%</span>`);
   const SIDE = { long: "롱", short: "숏" };
-  // 엔진은 BTC·ETH·SOXL·NVDA 중 한 종목만 든다(2026-11-11). 옛 기록에 symbol이 없으면 BTC.
+  // 엔진은 매매 종목 중 한 종목만 든다. 옛 기록에 symbol이 없으면 BTC.
   const symOf = (x) => (x && x.symbol) || "BTCUSDT";
   const short = (sym) => esc(String(sym || "BTCUSDT").replace(/USDT$/, ""));
   const isBtc = (x) => symOf(x) === "BTCUSDT";
@@ -79,7 +80,7 @@
     const runAt = run ? `마지막 확인 ${esc(run.at)} KST (15분마다, 봉 마감 20초 뒤)` : "아직 실행 기록 없음";
     const halt = d.no_entry ? `<div class="detail up">정지 사유: ${esc(d.no_entry)}</div>` : "";
     $("bte-status").innerHTML = `<div class="regime">${modeChip(d)}
-        <span class="chip">BTC·ETH·SOXL·NVDA 중 하나</span><span class="chip">SCR ① 15분</span><span class="chip">${lev()}배</span><span class="chip">AI 손절 ${d.params.ai_stop_range.join("~")}% · 익절 ${d.params.ai_tp_range.join("~")}%/없음</span></div>
+        <span class="chip">매매 종목 중 하나</span><span class="chip">SCR ① 15분</span><span class="chip">${lev()}배</span><span class="chip">AI 손절 ${d.params.ai_stop_range.join("~")}% · 익절 ${d.params.ai_tp_range.join("~")}%/없음</span></div>
       ${halt}
       <h3 style="margin:10px 0 4px;font-size:14px">포지션</h3><div>${posHtml(d.position)}</div>
       <h3 style="margin:10px 0 4px;font-size:14px">마지막 신호</h3><div>${sigHtml(d.last_signal)}</div>
@@ -89,7 +90,7 @@
       $("bte-today").innerHTML = `<div class="regime">${modeChip(d)}</div>
         <div><b>포지션</b>: ${posHtml(d.position)}</div>
         <div style="margin-top:6px"><b>마지막 신호</b>: ${sigHtml(d.last_signal)}</div>
-        <div class="mini" style="margin-top:6px">${runAt} · 자세한 내용은 📈 종목 분석 > ₿ 비트코인</div>`;
+        <div class="mini" style="margin-top:6px">${runAt} · 자세한 내용은 📈 종목 분석 > 🟡 바이낸스</div>`;
     }
     renderAi(); renderTrades(); renderAcct();
   };
@@ -225,7 +226,7 @@
     let from = bars.findIndex((b) => b[0] >= (bars.showFrom || 0));
     if (from < 0) from = 0;
     renderInd(res, p);
-    if (!$("an-bn").hidden && !$("tab-analysis").hidden) renderChart(res, p, from);
+    if (!$("an-bn").hidden && !$("bn-btc").hidden && !$("tab-analysis").hidden) renderChart(res, p, from);
   };
 
   const get = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
@@ -242,6 +243,7 @@
 
   window.addEventListener("hashchange", () => setTimeout(recompute, 50));
   document.querySelectorAll('[data-pick="an"] button').forEach((b) => b.addEventListener("click", () => setTimeout(recompute, 50)));
+  window.addEventListener("minerva:bnsym", () => setTimeout(recompute, 50));
   load();
   setInterval(load, 60000);
 })();

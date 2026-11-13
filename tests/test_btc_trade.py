@@ -70,7 +70,9 @@ class FakeExchange:
 
     def _handle(self, method, path, p):
         if path == "/fapi/v2/positionRisk":
-            entry = getattr(self, "entry_px", self.price)
+            entry = getattr(self, "entry_px", None) or self.__dict__.get("avgs", {}).get(
+                "BTCUSDT", self.price
+            )
             return [{"symbol": "BTCUSDT", "positionAmt": str(self.amt), "entryPrice": str(entry)}]
         if path == "/fapi/v1/openAlgoOrders":
             return [a for a in self.algos.values() if a["algoStatus"] == "NEW"] + [
@@ -125,7 +127,7 @@ class FakeExchange:
             assert p["newClientOrderId"].endswith("m"), p["newClientOrderId"]
             qty = float(p["quantity"])
             sign = 1 if p["side"] == "BUY" else -1
-            self.amt = round(self.amt + sign * qty, 6)
+            self._book(sign, qty, self.price)
             self.t += 1000
             o = {
                 "clientOrderId": p["newClientOrderId"],
@@ -239,6 +241,20 @@ class FakeExchange:
         self._oid += 1
         return self._oid
 
+    def _book(self, sign: int, q: float, px: float) -> None:
+        """체결을 포지션에 더하고 거래소처럼 평균 진입가를 갱신한다."""
+        sym = getattr(self, "_cur", "BTCUSDT")
+        avgs = self.__dict__.setdefault("avgs", {})
+        old = self.amt
+        new = round(old + sign * q, 6)
+        if new == 0:
+            avgs.pop(sym, None)
+        elif old == 0 or (old > 0) != (new > 0):
+            avgs[sym] = px  # 새로 열었거나 뒤집혔다: 남은 수량은 이번 가격
+        elif abs(new) > abs(old):
+            avgs[sym] = (abs(old) * avgs.get(sym, px) + q * px) / abs(new)
+        self.amt = new
+
     def _fill(self, o: dict, q: float) -> None:
         done = float(o["executedQty"])
         q = min(q, float(o["origQty"]) - done)
@@ -248,7 +264,7 @@ class FakeExchange:
             return
         px = float(o["price"])
         sign = 1 if o["side"] == "BUY" else -1
-        self.amt = round(self.amt + sign * q, 6)
+        self._book(sign, q, px)
         self.t += 1000
         self.trades.append(
             {
@@ -592,6 +608,21 @@ def test_flat_long_signal_opens_long_with_stop(env, monkeypatch):
     pos = state()["position"]
     assert pos["side"] == "long" and pos["qty"] == 0.029 and pos["stop"] == 97000.0
     assert s["decision"] == "BTC 롱 진입" and ex.leverage == 3
+
+
+def test_entry_price_is_exchange_average(env, monkeypatch):
+    # 사용자 2026-11-14 "3번": 엔진이 센 값이 아니라 거래소 평균가로 손절·익절을 잡는다
+    live(env)
+    ex = FakeExchange()
+    ex.entry_px = 99_900.0  # 거래소가 알려 주는 평균가(엔진이 센 체결가 100,000과 다름)
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["entry"] == 99_900.0 and pos["stop"] == 96_903.0  # 99,900 × 0.97
+    stop = [w[2] for w in ex.writes if w[1] == "/fapi/v1/algoOrder"][0]
+    assert stop["triggerPrice"] == "96903.0"
+    ev = [e for e in jsonl("events.jsonl") if e.get("event") == "entry_from_exchange"]
+    assert ev and ev[0]["exchange"] == 99_900.0
 
 
 def test_reverse_sequence_long_to_short(env, monkeypatch):
@@ -2304,7 +2335,11 @@ class MultiExchange(FakeExchange):
         self.price = PRICES[self._cur]
         if path == "/fapi/v2/positionRisk":
             return [
-                {"symbol": s, "positionAmt": str(a), "entryPrice": str(PRICES.get(s, 0.0))}
+                {
+                    "symbol": s,
+                    "positionAmt": str(a),
+                    "entryPrice": str(self.__dict__.get("avgs", {}).get(s) or PRICES.get(s, 0.0)),
+                }
                 for s, a in self.amts.items()
                 if sym is None or s == sym
             ]

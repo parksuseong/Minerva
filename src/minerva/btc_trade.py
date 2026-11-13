@@ -121,10 +121,13 @@ AI_EXITS = False
 # 고정 익절(가격 %). 사용자 2026-11-13 "디폴트로 30프로 이상되면 강제익절, 1배짜리가 10프로
 # 오르면 30프로": 3배라 가격 +10% = 증거금 +30%. 백테스트(10종목 1년)는 익절 없음과 거의 같았다.
 # 이 값이 생기기 전에 연 포지션에도 다음 실행에서 한 번 걸어 준다(_backfill_tp).
-FIXED_TP_PCT = 10.0
+# 2026-11-13 19:50 사용자 "익절도 손절과 동일하게 하자, 10프로(3배니까 30프로)는 너무 과하다" → 3%.
+# 지금 매매 7종목 백테스트: 최근 6개월 중간값 +69%(10%) → +21%(3%), 1년 평균은 +17% → +16%로 비슷.
+FIXED_TP_PCT = 3.0
 # 수동 포지션 이어받기(사용자 2026-11-13 "수동으로 포지션 정리하거나 사면 주기적으로
 # 확인해. 수동으로 샀어도 알아서 손절과 익절해야 해"). 실행마다(15분) 계좌 전체를 본다.
-# - 엔진이 빈손인데 포지션이 보이면 이어받아 손절 3%·익절 +10%를 걸고 엔진 포지션처럼 관리한다
+# - 엔진이 빈손인데 포지션이 보이면 이어받아 손절 3%·익절(FIXED_TP_PCT)을 걸고
+#   엔진 포지션처럼 관리한다
 #   (거래소 평균 진입가 기준. 이미 손절가를 지났으면 손절을 걸 수 없어 시장가로 닫는다).
 # - 엔진 포지션 수량·방향을 손으로 바꿨으면 새 수량·평균가로 다시 이어받는다.
 # - 엔진 포지션을 손으로 닫았으면 기록만 하고 매매를 멈추지 않는다.
@@ -1240,6 +1243,15 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
             pos.update(tp_id=cid, tp_n=n)
             ctx.say(f"🎯 {_name(ctx.symbol)} 익절 주문이 없어 다시 걸었어요: {_px(pos['tp'])}")
         except (Rejected, NetworkError) as e:
+            if isinstance(e, Rejected) and e.code == WOULD_TRIGGER:
+                # 이미 익절가를 지났다(익절 값을 낮췄을 때 등): 기다리지 않고 시장가로 익절한다
+                _save(DIR / "state.json", state)
+                ctx.say(
+                    f"🎯 {_name(ctx.symbol)} 이미 익절가 {_px(pos['tp'])}를 지났어요 "
+                    "→ 시장가로 익절"
+                )
+                protect_close(ctx, state, "tp")
+                return state.get("position") is None
             # 응답만 잃었을 수 있다: 걸려 있으면 그대로 쓴다(지우면 그 익절 체결을 '수동'으로 봄)
             try:
                 live_tp = isinstance(e, NetworkError) and stop_is_open(ctx.client, cid)
@@ -1518,6 +1530,7 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         return False
     state.pop("foreign_key", None)
     _backfill_tp(ctx, state)
+    _retarget_tp(ctx, state)
     return ensure_stop(ctx, state)
 
 
@@ -1537,6 +1550,43 @@ def _backfill_tp(ctx: Ctx, state: dict) -> None:
     ctx.say(
         f"🎯 {_name(ctx.symbol)} 보유 포지션에 기본 익절 +{FIXED_TP_PCT:g}%"
         f"(증거금 약 +{FIXED_TP_PCT * LEVERAGE:g}%)을 걸어요: {_px(tp)}"
+    )
+
+
+def _retarget_tp(ctx: Ctx, state: dict) -> None:
+    """고정 익절 값이 바뀌면 보유 포지션 익절도 새 값으로 다시 건다(사용자 2026-11-13 "익절도
+    손절과 동일하게" 10%→3%, 보유 엔비디아에도 적용 "1번으로"). 옛 익절 주문을 취소하고 새
+    익절가를 적어 두면 ensure_stop이 건다. 새 익절가를 이미 지났으면 거래소가 -2021로 거부하고
+    ensure_stop이 시장가로 익절한다. 취소가 통신 실패면 다음 실행에서 다시 한다."""
+    pos = state["position"]
+    old = pos.get("tp_pct")
+    if AI_EXITS or not FIXED_TP_PCT or not pos.get("tp") or old is None:
+        return
+    if float(old) == FIXED_TP_PCT:
+        return
+    try:
+        tick = filters(ctx.client)["tick"]
+    except (Rejected, NetworkError, OSError, ValueError, KeyError):
+        return  # 다음 실행에서 다시
+    if pos.get("tp_id"):
+        try:
+            _delete(ctx.client, "/fapi/v1/algoOrder", {"clientAlgoId": pos["tp_id"]})
+        except Rejected as e:
+            if e.code not in NOT_FOUND:  # 이미 걸렸거나 없는 건 괜찮다
+                ctx.event(event="tp_retarget_cancel_failed", error=str(e))
+                return
+        except NetworkError as e:
+            ctx.event(event="tp_retarget_cancel_failed", error=str(e))
+            return
+        _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel": pos["tp_id"]})
+    tp = float(tp_price(pos["side"], float(pos["entry"]), tick, FIXED_TP_PCT / 100))
+    was = pos["tp"]
+    pos.update(tp=tp, tp_id=None, tp_pct=FIXED_TP_PCT)
+    _save(DIR / "state.json", state)
+    ctx.event(event="tp_retarget", old_pct=old, new_pct=FIXED_TP_PCT, old_tp=was, tp=tp)
+    ctx.say(
+        f"🎯 {_name(ctx.symbol)} 익절을 +{float(old):g}% {_px(was)} → +{FIXED_TP_PCT:g}% "
+        f"{_px(tp)}로 바꿔요(증거금 약 +{FIXED_TP_PCT * LEVERAGE:g}%)"
     )
 
 
@@ -3049,7 +3099,8 @@ def _mark_or_zero(ctx: Ctx, sym: str) -> float:
 
 
 def guard_stray(ctx: Ctx, state: dict) -> None:
-    """엔진이 다른 종목을 들고 있을 때 손으로 연 포지션: 손절 3%·익절 +10% 주문만 걸어 지킨다
+    """엔진이 다른 종목을 들고 있을 때 손으로 연 포지션: 손절 3%·익절(FIXED_TP_PCT) 주문만
+    걸어 지킨다
     (신호로 관리하지는 않는다). 수량·평균가가 바뀌면 다시 건다. 손절가를 이미 지났으면
     시장가로 닫는다."""
     c = ctx.client

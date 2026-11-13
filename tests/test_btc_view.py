@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from minerva import btc_trade as bt
-from minerva import btc_view
+from minerva import btc_view, routes
 from minerva.kis import KST
 from minerva.main import app
 
@@ -26,6 +26,7 @@ def files(tmp_path, monkeypatch):
     monkeypatch.setenv("MINERVA_ACCOUNT_OUT", str(tmp_path / "account" / "latest.json"))
     monkeypatch.delenv("MINERVA_ACCOUNT_TOKEN", raising=False)
     monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(tmp_path / "missing.token"))
+    monkeypatch.setattr(btc_view, "WATCH_SYMBOLS", ())  # 관심 종목은 따로 시험
     return tmp_path
 
 
@@ -248,3 +249,24 @@ def test_near_and_traded_survive_corrupt_state_and_odd_rows(files):
     assert client.get("/api/btc/traded").status_code == 200
     v = client.get("/api/btc/near").json()
     assert v["status"] == "ok" and {r["symbol"] for r in v["rows"]} == {"BTCUSDT"}
+
+
+def test_watch_symbol_always_listed_but_not_traded(files, monkeypatch):
+    # 사용자 2026-11-13 "앤트로픽 차트는 꼭 넣어놓자 매매를 하던 안하던"
+    monkeypatch.setattr(btc_view, "WATCH_SYMBOLS", ("ANTHROPICUSDT",))
+    _universe(bt.DIR)
+    v = TestClient(app).get("/api/btc/traded").json()
+    last = v["symbols"][-1]
+    assert last["symbol"] == "ANTHROPICUSDT" and last["watch"] and not last["tradable"]
+    assert not any(r.get("watch") for r in v["symbols"][:-1])
+    near = {
+        "updated_at": "x",
+        "source": "universe",
+        "w": 3,
+        "rows": _near_rows(["BTCUSDT", "ANTHROPICUSDT"]),
+    }
+    (bt.DIR / "near.json").write_text(json.dumps(near))
+    n = TestClient(app).get("/api/btc/near").json()
+    assert "ANTHROPICUSDT" not in n["traded"]
+    assert {r["symbol"] for r in n["rows"]} == {"BTCUSDT"}
+    assert "ANTHROPICUSDT" in routes.kline_symbols()

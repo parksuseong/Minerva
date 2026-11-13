@@ -53,6 +53,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import threading
@@ -3728,6 +3729,43 @@ def _mark_or_zero(ctx: Ctx, sym: str) -> float:
         return 1.0
 
 
+def _reuse_guard_order(
+    ctx: Ctx, algos: list[dict], letter: str, kind: str, trigger: float, qty: float
+) -> str | None:
+    """이 종목에 이미 걸린 지킴 주문(ID 끝 -g<n> 손절·-h<n> 익절)이 지금 값(종류·가격·수량)과
+    같으면 그 ID. 응답을 잃었거나 확인이 늦어 g에 적지 못한 주문 위에 또 쌓지 않는다(사용자
+    2026-11-14 "2번", 엔진 포지션의 _reuse_open_stop과 같은 뜻). 같은 것이 여럿이면 하나만 둔다."""
+    tag = re.compile(rf"-{letter}\d+$")
+    want = "STOP_MARKET" if kind == STOP_KIND and STOP_ORDER == "market" else kind
+
+    def fits(a: dict) -> bool:
+        cid = str(a.get("clientAlgoId", ""))
+        if not cid.startswith(PREFIX) or not tag.search(cid):
+            return False
+        if (a.get("algoStatus") or "NEW") != "NEW" or a.get("symbol", ctx.symbol) != ctx.symbol:
+            return False
+        try:
+            same_px = abs(float(a.get("triggerPrice") or 0) - float(trigger)) < 1e-9
+            same_q = want == "STOP_MARKET" or abs(float(a.get("quantity") or 0) - qty) < 1e-9
+        except (TypeError, ValueError):
+            return False
+        return a.get("type") == want and same_px and same_q
+
+    same = [a for a in algos if fits(a)]
+    if not same:
+        return None
+    keep = same[-1]["clientAlgoId"]
+    for a in same[:-1]:
+        cid = a["clientAlgoId"]
+        try:
+            _delete(ctx.client, "/fapi/v1/algoOrder", {"clientAlgoId": cid})
+            _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel": cid})
+        except (Rejected, NetworkError) as e:
+            ctx.event(event="extra_guard_cancel_failed", cid=cid, error=str(e))
+    ctx.event(event="reuse_guard", cid=keep, cancelled=[a["clientAlgoId"] for a in same[:-1]])
+    return keep
+
+
 def guard_stray(ctx: Ctx, state: dict) -> None:
     """엔진이 다른 종목을 들고 있을 때 손으로 연 포지션: 손절 3%·익절(FIXED_TP_PCT) 지정가 조건부
     주문(수량·reduceOnly)만 걸어 지킨다(신호로 관리하지는 않는다). 수량·평균가·익절 값·주문 방식이
@@ -3776,7 +3814,8 @@ def guard_stray(ctx: Ctx, state: dict) -> None:
             f"🛡 {_who(sym, side)} 수동 포지션 {g['qty']} @ {_px(row['entry'])}: 엔진이 다른 종목을 "
             f"들고 있어 손절 {_px(stop)}{tp_txt} 지정가 주문만 걸어 지켜요"
         )
-    open_ids = open_algo_ids(open_algos(c))
+    algos = open_algos(c)
+    open_ids = open_algo_ids(algos)
     for key, why in (("stop_id", "stop"), ("tp_id", "tp")):
         if g.get(key) and g[key] not in open_ids:
             st = _exit_triggered(c, g[key])
@@ -3793,6 +3832,19 @@ def guard_stray(ctx: Ctx, state: dict) -> None:
                 return
     minute = ctx.now_ms - ctx.now_ms % 60_000
     stop_ok = g.get("stop_id") in open_ids or g.get("stop_id") == "user"
+    if not stop_ok:
+        found = _reuse_guard_order(ctx, algos, "g", STOP_KIND, g["stop"], g["qty"])
+        if found:
+            g["stop_id"] = found
+            open_ids.add(found)
+            stop_ok = True
+            _save(DIR / "state.json", state)
+    if g.get("tp") and g.get("tp_id") not in open_ids:
+        found = _reuse_guard_order(ctx, algos, "h", TP_KIND, g["tp"], g["qty"])
+        if found:
+            g["tp_id"] = found
+            open_ids.add(found)
+            _save(DIR / "state.json", state)
     if not stop_ok:
         g["n"] = _next_manual_n(state)
         cid = _cid(minute, f"g{g['n']}", sym)

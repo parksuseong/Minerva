@@ -114,3 +114,124 @@ def test_account_tab_after_start_live(files, monkeypatch):
     assert series["seed"] == 815.53
     v = TestClient(app).get("/api/btc/engine").json()
     assert v["mode"] == "live" and v["live_since"] == since
+
+
+# ---- 지금 매매하는 종목(신호 가까운 순·바이낸스 종목 버튼·봉 허용 종목) ----
+
+
+def _universe(d, now: datetime | None = None):
+    """BNB·BTC는 들어갈 수 있고, DOGE는 승률 미달, NVDA는 수익 마이너스
+    (범위엔 있지만 매매 안 함)."""
+    now = now or datetime.now(KST)
+
+    def st(wr, ret, rank, kind="COIN"):
+        return {"winrate": wr, "ret": ret, "rank": rank, "trades": 40, "days": 182.0,
+                "underlying": kind}  # fmt: skip
+
+    stats = {
+        "BTCUSDT": st(59.6, 73.8, 1),
+        "DOGEUSDT": st(30.0, 10.0, 2),
+        "NVDAUSDT": st(55.2, -1.8, 3, "EQUITY"),
+        "BNBUSDT": st(66.7, 390.3, 4),
+    }
+    (d / "universe.json").write_text(
+        json.dumps({"updated_at": now.strftime("%Y-%m-%d %H:%M"), "symbols": list(stats),
+                    "stats": stats})
+    )  # fmt: skip
+
+
+def _near_rows(syms):
+    return [
+        {"symbol": s, "side": side, "held": False, "k": 0, "hit": [], "need": [], "bar": 1}
+        for s in syms
+        for side in ("long", "short")
+    ]
+
+
+def test_traded_view_lists_tradable_by_priority(files):
+    _universe(bt.DIR)
+    v = btc_view.traded_view()
+    assert [r["symbol"] for r in v["symbols"]] == ["BNBUSDT", "BTCUSDT"]
+    assert v["window_days"] == 182 and not any(r["held"] for r in v["symbols"])
+    assert v["symbols"][0]["name"] == "BNB" and v["symbols"][0]["ret"] == 390.3
+    assert v["symbols"][0]["analysis"] is None
+
+
+def test_traded_view_puts_held_symbol_first_even_if_not_tradable(files):
+    _universe(bt.DIR)
+    pos = {"symbol": "NVDAUSDT", "side": "long", "entry": 180.0}
+    (bt.DIR / "state.json").write_text(json.dumps({"position": pos}))
+    got = TestClient(app).get("/api/btc/traded").json()
+    rows = got["symbols"]
+    assert [r["symbol"] for r in rows] == ["NVDAUSDT", "BNBUSDT", "BTCUSDT"]
+    assert rows[0]["held"] and not rows[0]["tradable"] and rows[0]["underlying"] == "EQUITY"
+    assert rows[0]["analysis"]["stock"] == "NVDA"  # /api/soxl이 아는 종목
+
+
+def test_traded_view_old_position_without_symbol_is_btc(files):
+    _universe(bt.DIR)
+    (bt.DIR / "state.json").write_text(json.dumps({"position": {"side": "short"}}))
+    rows = btc_view.traded_view()["symbols"]
+    assert rows[0]["symbol"] == "BTCUSDT" and rows[0]["held"] and len(rows) == 2
+
+
+def test_traded_view_ignores_odd_held_symbol(files):
+    _universe(bt.DIR)
+    pos = {"symbol": "../etc", "side": "long"}
+    (bt.DIR / "state.json").write_text(json.dumps({"position": pos}))
+    assert [r["symbol"] for r in btc_view.traded_view()["symbols"]] == ["BNBUSDT", "BTCUSDT"]
+
+
+def test_near_view_keeps_only_traded_rows(files):
+    _universe(bt.DIR)
+    pos = {"symbol": "NVDAUSDT", "side": "long"}
+    (bt.DIR / "state.json").write_text(json.dumps({"position": pos}))
+    rows = _near_rows(["BTCUSDT", "DOGEUSDT", "NVDAUSDT", "BNBUSDT"]) + ["깨짐"]
+    near = {"updated_at": "x", "source": "universe", "w": 3, "rows": rows}
+    (bt.DIR / "near.json").write_text(json.dumps(near))
+    v = TestClient(app).get("/api/btc/near").json()
+    assert v["status"] == "ok" and v["window_days"] == 182
+    assert v["traded"] == ["NVDAUSDT", "BNBUSDT", "BTCUSDT"]
+    assert {r["symbol"] for r in v["rows"]} == {"BTCUSDT", "NVDAUSDT", "BNBUSDT"}
+    assert len(v["rows"]) == 6
+    assert all(r["held"] == (r["symbol"] == "NVDAUSDT") for r in v["rows"])
+
+
+def test_near_view_empty_when_nothing_traded(files):
+    (bt.DIR / "near.json").write_text(json.dumps({"rows": _near_rows(["ETHUSDT"])}))
+    # universe.json이 없으면 네 종목 기본값 중 BTC만 매매(ETH는 수익은 +지만 승률 미달)
+    v = btc_view.near_view()
+    assert v["traded"] == ["BTCUSDT"] and v["rows"] == []
+
+
+def test_kline_whitelist_adds_only_traded_symbols(files):
+    from minerva import routes
+
+    _universe(bt.DIR)
+    pos = {"symbol": "XAGUSDT", "side": "long"}  # 범위 밖이어도 든 종목은 연다
+    (bt.DIR / "state.json").write_text(json.dumps({"position": pos}))
+    got = routes.kline_symbols()
+    assert got == set(routes.KLINE_SYMBOLS) | {"BNBUSDT", "XAGUSDT"}
+    assert "DOGEUSDT" not in got  # 범위에 있어도 매매하지 않는 종목은 닫힌 채
+    client = TestClient(app)
+    assert client.get("/api/btc/klines?symbol=DOGEUSDT").status_code == 400
+
+
+def test_kline_whitelist_falls_back_to_four_when_view_fails(files, monkeypatch):
+    from minerva import routes
+
+    def boom(now=None):
+        raise ValueError("x")
+
+    monkeypatch.setattr(btc_view, "traded_symbols", boom)
+    assert routes.kline_symbols() == set(routes.KLINE_SYMBOLS)
+
+
+def test_analysis_picker_is_stock_and_binance_only():
+    page = TestClient(app).get("/").text
+    pick = page[page.index('data-pick="an"') : page.index('<div id="an-kr">')]
+    assert pick.count("data-show=") == 2
+    assert 'data-show="an-kr"' in pick and 'data-show="an-bn"' in pick and "바이낸스" in pick
+    for gone in ('id="an-sx"', 'id="an-nv"', 'id="an-et"'):
+        assert gone not in page
+    assert 'id="bn-sym"' in page and 'id="bn-btc"' in page and 'id="bn-other"' in page

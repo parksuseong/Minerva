@@ -1,11 +1,11 @@
 // 종목 분석 맨 위 "신호 가까운 순"(사용자 요청 2026-11-11 "누가 현재 신호 뜰 가능성이 높은지").
-// 자동매매 엔진이 15분마다 쓰는 /api/btc/near(엔진 종목 범위 = 거래량 상위 50, 없으면 네 종목)를 그린다:
+// 자동매매 엔진이 15분마다 쓰는 /api/btc/near를 그린다. 서버가 지금 매매하는 종목(새로 들어갈 수 있는 종목 +
+// 든 종목, 2026-11-13 사용자 "거래하는 것만")만 남겨 준다:
 // SCR ① 15분(엔진과 같은 값)에서 롱·숏 각각 몇 개 지표가 최근 W봉 안에 넘어왔고, 남은 지표가 넘어오려면
 // 다음 봉이 어디에 마감해야 하는지(어림값)로 줄 세운다. 확률이 아니라 거리 순서다. 화면 전용, 주문과 무관.
 (() => {
   const $ = (id) => document.getElementById(id);
   const U = window.MinervaUI;
-  const TOP = 15;
   const FAR = 50; // 기준선 반대편이라 한 번 넘어갔다 와야 하는 지표 하나의 벌점(%)
 
   const name = (s) => (s.endsWith("USDT") ? s.slice(0, -4) : s);
@@ -26,9 +26,8 @@
   const render = (data) => {
     const rows = (data.rows || []).map((r) => Object.assign({}, r, { score: score(r) }));
     rows.sort((a, b) => a.score - b.score || (b.winrate || 0) - (a.winrate || 0));
-    const shown = rows.slice(0, TOP);
     const syms = new Set(rows.map((r) => r.symbol)).size;
-    const body = shown.map((r, i) => {
+    const body = rows.map((r, i) => {
       const dir = r.side === "long" ? '<span class="up">롱</span>' : '<span class="down">숏</span>';
       const got = r.hit.join("·") || "없음";
       const state = r.fired ? '<span class="chip good">지금 신호</span>' : `${r.k}/3 <span class="mini">(${got})</span>`;
@@ -38,11 +37,14 @@
     }).join("");
     const bar = rows.length ? Math.max(...rows.map((r) => r.bar)) : null;
     const when = bar ? window.ScrView.fmt(U.kst(bar)) : "-";
-    const scope = data.source === "universe" ? `거래량 상위 ${syms}종목(${U.esc(data.universe_at || "")} 기준)` : `${syms}종목`;
+    const scope = `지금 매매하는 ${syms}종목${data.universe_at ? `(종목 범위 ${U.esc(data.universe_at)} 기준)` : ""}`;
+    const months = data.window_days ? Math.round(data.window_days / 30.4) : null;
+    const span = months ? `최근 ${months}개월` : "최근 기간";
     $("near-list").innerHTML = `<div style="overflow-x:auto"><table class="acct"><thead><tr><th>#</th><th>종목</th><th>방향</th><th>승률</th><th>충족</th><th>남은 지표 (다음 15분봉 마감 기준 어림값)</th></tr></thead>
       <tbody>${body}</tbody></table></div>
-      <p class="mini">엔진 ${scope} 중 위 ${Math.min(TOP, rows.length)}줄. 마지막 마감 봉 ${when} KST, 엔진 계산 ${U.esc(data.updated_at || "-")}. 순서 = 지금 신호 먼저, 충족 개수 많은 순, 같으면 남은 지표까지 가격 거리가 짧은 순. 확률이 아니라 거리예요.
-        신호는 세 지표가 모두 최근 ${data.w || 3}봉 안에 넘어와야 해서, 이미 넘어온 지표는 ${data.w || 3}봉이 지나면 빠져요. 승률은 종목별 백테스트(SCR ① 15분·3배·손절 3%, 최근 1년).
+      <p class="mini">엔진이 ${scope}, 롱·숏 ${rows.length}줄. 마지막 마감 봉 ${when} KST, 엔진 계산 ${U.esc(data.updated_at || "-")}. 순서 = 지금 신호 먼저, 충족 개수 많은 순, 같으면 남은 지표까지 가격 거리가 짧은 순. 확률이 아니라 거리예요.
+        <span class="chip">보유</span> = 엔진이 지금 든 종목(새로 들어가는 대상에서 빠졌어도 청산까지 관리해요).
+        신호는 세 지표가 모두 최근 ${data.w || 3}봉 안에 넘어와야 해서, 이미 넘어온 지표는 ${data.w || 3}봉이 지나면 빠져요. 승률은 종목별 백테스트(SCR ① 15분·3배·손절 3%, ${span}).
         같은 봉에 둘 이상 나면 엔진은 백테스트 승률 순 위 5개 중 AI가 하나를 골라요(실패 시 승률 1순위).</p>`;
   };
 
@@ -50,8 +52,14 @@
   const load = () => {
     if (!U || !window.ScrView || !visible()) return;
     fetch("/api/btc/near").then((r) => (r.ok ? r.json() : null)).catch(() => null).then((d) => {
-      if (!d || d.status !== "ok" || !(d.rows || []).length) {
+      if (!d || d.status !== "ok") {
         $("near-list").textContent = (d && d.message) || "신호 거리를 받지 못했어요. 잠시 뒤 다시 열어 주세요.";
+        return;
+      }
+      if (!(d.rows || []).length) {
+        $("near-list").textContent = (d.traded || []).length
+          ? "엔진이 아직 매매 종목의 신호 거리를 쓰지 않았어요. 15분 안에 다시 확인해요."
+          : "지금 매매하는 종목이 없어요(새로 들어갈 수 있는 종목도, 든 종목도 없음).";
         return;
       }
       try { render(d); } catch (err) { console.error(err); }

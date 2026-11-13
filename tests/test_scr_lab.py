@@ -390,8 +390,12 @@ def test_klines_other_symbol_is_whitelisted_and_cached_apart(fake_binance):
     assert any(len(k) == 2 for k in routes._kline_cache)
 
 
-def test_klines_whitelist_stays_four_symbols(fake_binance, monkeypatch):
-    # 범위 50종목을 열면 공개 주소로 큰 요청을 보낼 수 있어 네 종목만 연다(레드팀 2026-11-12)
+def test_klines_whitelist_stays_four_symbols(fake_binance, monkeypatch, tmp_path):
+    # 범위 50종목을 열면 공개 주소로 큰 요청을 보낼 수 있어 네 종목 + 매매 종목만 연다
+    # (레드팀 2026-11-12). 엔진 파일이 없으면 기본 네 종목 그대로.
+    from minerva import btc_trade as bt
+
+    monkeypatch.setattr(bt, "DIR", tmp_path / "none")
     client = TestClient(app)
     assert client.get("/api/btc/klines?symbol=DOGEUSDT").status_code == 400
     assert client.get("/api/btc/klines?symbol=ETHUSDT").status_code == 200

@@ -95,6 +95,12 @@ def btc_engine() -> dict:
     return btc_view.engine_view()
 
 
+@router.get("/api/btc/traded")
+def btc_traded() -> dict:
+    """엔진이 지금 매매하는 종목(새로 들어갈 수 있는 종목 + 든 종목). 읽기 전용."""
+    return btc_view.traded_view()
+
+
 @router.get("/api/btc/near")
 def btc_near() -> dict:
     """엔진 종목별 SCR ① 신호까지 거리(엔진이 15분마다 쓰는 near.json, 읽기 전용)."""
@@ -105,11 +111,20 @@ KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
 # SCR 실험실에서 고를 수 있는 봉(분 단위)
 # 봉을 내줄 수 있는 선물 종목(공개 시세). SOXL은 종목 분석 > SOXL 탭(보기만, 2026-11-11).
 KLINE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
+KLINE_TRADED_MAX = 16  # 엔진 범위 파일이 이상해도 더 열리는 종목 수의 상한
+
+
 def kline_symbols() -> set[str]:
-    """화면 봉 허용 종목: 고정 네 종목만. 범위 50종목을 열면 공개 주소 하나로 무게 큰 요청
-    (1년 15분봉 ≈ 250)을 종목마다 보낼 수 있어 같은 IP의 실전 엔진까지 차단될 수 있다
+    """화면 봉 허용 종목: 고정 네 종목 + 엔진이 지금 매매하는 종목
+    (새로 들어갈 수 있는 종목 + 든 종목, 보통 10개 안팎).
+    범위 50종목을 다 열면 공개 주소 하나로 무게 큰 요청(1년 15분봉 ≈ 250)을
+    종목마다 보낼 수 있어 같은 IP의 실전 엔진까지 차단될 수 있다
     (레드팀 2026-11-12). 신호 가까운 순은 엔진이 쓴 near.json만 읽는다."""
-    return set(KLINE_SYMBOLS)
+    try:
+        traded = btc_view.traded_symbols()
+    except (OSError, ValueError, KeyError, TypeError):
+        traded = []
+    return set(KLINE_SYMBOLS) | set(traded[:KLINE_TRADED_MAX])
 
 
 LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}

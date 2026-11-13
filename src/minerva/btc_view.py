@@ -7,11 +7,14 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
 from minerva import btc_trade as bt
+from minerva import btc_universe
 from minerva.kis import KST
+from minerva.strategy import soxl
 
 MAX_TRADES = 50
 
@@ -55,8 +58,65 @@ def universe_symbols(now: datetime | None = None) -> list[str]:
     return list(bt.universe(int(now.timestamp() * 1000))["symbols"])
 
 
-def near_view() -> dict:
-    """`near.json`(엔진이 매 실행 씀). 없거나 깨졌으면 pending."""
+_SYMBOL = re.compile(r"^[A-Z0-9]{1,20}USDT$")
+
+
+def held_symbol() -> str | None:
+    """엔진이 지금 든 종목(state.json, 읽기만). 옛 기록에 symbol이 없으면 BTCUSDT."""
+    state = bt._load(bt.DIR / "state.json", {})
+    pos = state.get("position") if isinstance(state, dict) else None
+    if not isinstance(pos, dict):
+        return None
+    sym = pos.get("symbol") or "BTCUSDT"
+    return sym if isinstance(sym, str) and _SYMBOL.match(sym) else None
+
+
+def traded_view(now: datetime | None = None) -> dict:
+    """엔진이 지금 매매하는 종목 = 새로 들어갈 수 있는 종목(tradable) + 들고 있는 종목.
+    든 종목을 맨 앞에, 나머지는 엔진 우선순위(백테스트 승률 순)."""
+    now = now or datetime.now(KST)
+    u = bt.universe(int(now.timestamp() * 1000))
+    tradable = set(u.get("tradable") or ())
+    order = [s for s in u.get("priority") or () if s in tradable]
+    order += sorted(tradable - set(order))
+    held = held_symbol()
+    if held:
+        order = [held] + [s for s in order if s != held]
+    stats = u.get("stats") or {}
+    rows = []
+    for s in order:
+        st = stats.get(s) or {}
+        wr = st.get("winrate", u.get("winrate", {}).get(s))
+        ret = st.get("ret", bt.DEFAULT_RET.get(s) if u.get("source") == "default" else None)
+        rows.append(
+            {
+                "symbol": s,
+                "name": s[:-4],
+                "winrate": wr,
+                "ret": ret,
+                "held": s == held,
+                "tradable": s in tradable,
+                # COIN·EQUITY·COMMODITY 등(바이낸스 분류). 범위 파일에 없으면 None
+                "underlying": st.get("underlying"),
+                # /api/soxl이 큰 그림·일봉 지표 분석을 내주는 종목이면 그 설명
+                "analysis": soxl.US.get(s),
+            }
+        )
+    return {
+        "status": "ok",
+        "source": u.get("source"),
+        "updated_at": u.get("updated_at"),
+        "window_days": btc_universe.WINDOW_DAYS,
+        "symbols": rows,
+    }
+
+
+def traded_symbols(now: datetime | None = None) -> list[str]:
+    return [r["symbol"] for r in traded_view(now)["symbols"]]
+
+
+def near_view(now: datetime | None = None) -> dict:
+    """`near.json`(엔진이 매 실행 씀) 중 지금 매매하는 종목 줄만. 없거나 깨졌으면 pending."""
     try:
         data = json.loads((bt.DIR / "near.json").read_text())
     except FileNotFoundError:
@@ -65,7 +125,22 @@ def near_view() -> dict:
         return {"status": "pending", "message": "신호 거리 파일을 읽지 못했어요"}
     if not isinstance(data, dict):
         return {"status": "pending", "message": "신호 거리 파일 모양이 달라요"}
-    return {"status": "ok", **data}
+    traded = traded_view(now)
+    want = {r["symbol"] for r in traded["symbols"]}
+    held = next((r["symbol"] for r in traded["symbols"] if r["held"]), None)
+    rows = data.get("rows") if isinstance(data.get("rows"), list) else []
+    rows = [
+        {**r, "held": r.get("symbol") == held}
+        for r in rows
+        if isinstance(r, dict) and r.get("symbol") in want
+    ]
+    return {
+        **data,
+        "status": "ok",
+        "rows": rows,
+        "traded": [r["symbol"] for r in traded["symbols"]],
+        "window_days": traded["window_days"],
+    }
 
 
 def engine_view(now: datetime | None = None) -> dict:

@@ -3925,27 +3925,78 @@ def _engine_long_with_tp(ex):
     return st["position"]
 
 
-def test_f4_triggered_tp_not_chased_below_entry(env, monkeypatch):
-    """익절이 걸렸는데(마크 가격) 호가가 진입가 아래면 쫓지 않고 익절가 지정가를 걸어 둔다.
-    호가가 진입가 위로 오면 다음 실행이 닫는다."""
+def test_f4_triggered_tp_below_entry_stays_normal_position(env, monkeypatch):
+    """익절이 걸렸는데 호가가 진입가보다 나쁘면 닫지 않는다: 남은 익절 주문을 지우고 평소
+    포지션으로 둔다(손절 그대로, 익절은 다시 걸고, 알림 한 번, 매매 멈추지 않음)."""
     monkeypatch.setattr(bt, "AI_EXITS", False)
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
     pos = _engine_long_with_tp(ex)
     child = ex.trigger_unfilled(pos["tp_id"])
-    ex.close_script = ["none"]  # 익절가 지정가는 아직 안 닿음
+    with_signal(monkeypatch, None)
+    s = run(env, ex, FakeMarket(99_000.0))
+    assert ex.limits[child]["status"] == "CANCELED" and not _closes(ex)
+    p = state()["position"]
+    assert ex.amt == pytest.approx(0.029) and "closing" not in state()
+    assert ex.algos[pos["stop_id"]]["algoStatus"] == "NEW"  # 손절은 그대로
+    assert p["tp_id"] != pos["tp_id"] and ex.algos[p["tp_id"]]["algoStatus"] == "NEW"
+    assert ex.algos[p["tp_id"]]["price"] == "103000.0"
+    assert sum("익절가에 닿았지만" in m for m in env["sent"]) == 1
+    assert "수동 개입" not in s["decision"]
+    # 다시 걸린 익절도 또 걸렸다: 알림은 한 번만
+    ex.trigger_unfilled(p["tp_id"])
+    run(env, ex, FakeMarket(99_000.0))
+    assert sum("익절가에 닿았지만" in m for m in env["sent"]) == 1 and ex.amt > 0
+
+
+def test_h1_tp_waiting_then_stop_gap_is_chased_as_stop(env, monkeypatch):
+    """익절이 진입가 아래라 기다리는 중에 손절이 걸리고 지정가가 안 채워지면 손절로 호가 추격."""
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = _engine_long_with_tp(ex)
+    ex.trigger_unfilled(pos["tp_id"])
     with_signal(monkeypatch, None)
     run(env, ex, FakeMarket(99_000.0))
+    assert ex.algos[pos["stop_id"]]["algoStatus"] == "NEW"
+    child = ex.trigger_unfilled(pos["stop_id"])
+    run(env, ex, FakeMarket(96_000.0))
     assert ex.limits[child]["status"] == "CANCELED"
-    c = _closes(ex)
-    assert len(c) == 1 and c[0]["price"] == "103000.0"  # 진입가 아래로 팔지 않는다
-    assert ex.amt == pytest.approx(0.029) and state()["closing"]["why"] == "tp"
-    assert any("진입가 아래로 쫓지 않고" in m for m in env["sent"])
-    run(env, ex, FakeMarket(101_000.0))
-    assert ex.limits[c[0]["newClientOrderId"]]["status"] == "CANCELED"
-    assert _closes(ex)[-1]["price"] == "101000.0"
-    assert ex.amt == 0 and jsonl("closed.jsonl")[-1]["why"] == "tp"
+    assert ex.amt == 0 and _closes(ex)[-1]["price"] == "96000.0"
+    assert jsonl("closed.jsonl")[-1]["why"] == "stop"
+
+
+def test_h1_tp_closing_switches_to_stop_when_stop_hits(env, monkeypatch):
+    """익절 청산을 쫓는 도중(이어서) 손절이 걸리면 손절로 바꿔 바닥 없이 쫓고 손절로 적는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = _engine_long_with_tp(ex)
+    child = ex.trigger_unfilled(pos["stop_id"])
+    st = state()
+    st["closing"] = {"symbol": "BTCUSDT", "why": "tp", "base": "mnv-x7", "k": 0, "cid": None}
+    bt._save(bt.DIR / "state.json", st)
+    with_signal(monkeypatch, None)
+    run(env, ex, FakeMarket(96_000.0))
+    assert ex.limits[child]["status"] == "CANCELED"
+    assert ex.amt == 0 and _closes(ex)[-1]["price"] == "96000.0"
+    assert jsonl("closed.jsonl")[-1]["why"] == "stop"
+
+
+def test_h2_tp_wait_does_not_freeze_opposite_signal(env, monkeypatch):
+    """익절이 진입가 아래로 걸려 기다리는 중에도 반대 신호 청산·진입은 평소대로 한다."""
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = _engine_long_with_tp(ex)
+    ex.trigger_unfilled(pos["tp_id"])
+    with_signal(monkeypatch, "short", close=99_000.0)
+    s = run(env, ex, FakeMarket(99_000.0))
+    assert jsonl("closed.jsonl")[-1]["why"] == "signal"
+    assert state()["position"]["side"] == "short" and s["decision"].startswith("BTC 숏 진입")
 
 
 def test_f4_triggered_stop_still_chased_below_entry(env, monkeypatch):

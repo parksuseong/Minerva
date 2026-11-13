@@ -5,7 +5,7 @@
 1. exchangeInfo에서 TRADING · USDT · 무기한(PERPETUAL, TRADIFI_PERPETUAL) 종목만 고르고
 2. 24시간 거래대금(`quoteVolume`) 상위 50개를 고른 뒤
 3. 종목마다 엔진과 같은 SCR ① 15분봉 신호로 롱↔숏 갈아타기(3배, 손절 3%, 수수료 편도 0.05%,
-   다음 봉 시가 진입)를 최근 365일(상장이 늦으면 상장 이후) 백테스트한다. 화면 실험실
+   다음 봉 시가 진입)를 최근 182일(약 6개월, 상장이 늦으면 상장 이후) 백테스트한다. 화면 실험실
    `switchSim`(static/scrlab_core.js)을 그대로 옮긴 `switch_sim`이다.
 4. `~/.minerva/btc_trade/universe.json`에 원자적으로 쓴다.
 
@@ -45,7 +45,7 @@ CONTRACTS = ("PERPETUAL", "TRADIFI_PERPETUAL")
 FRESH_DAYS = 14
 MIN_TRADES = 20
 MIN_DAYS = 60
-WINDOW_DAYS = 365
+WINDOW_DAYS = 182  # 사용자 2026-11-13 "최근 6개월만 하자 1년은 너무 길다"
 WARMUP = 300
 FEE = 0.0005
 LEVERAGE = 3
@@ -56,7 +56,7 @@ GAP_S = 0.4
 WEIGHT_SOFT = 1200
 RULE = (
     "SCR ① 15분봉(Stoch 9·CCI 20·RSI 21, W3, 3/3, 넘어옴) 롱↔숏 갈아타기 · 3배 · 손절 3% · "
-    "수수료 편도 0.05% · 다음 봉 시가 진입 · 최근 365일(상장이 늦으면 상장 이후)"
+    "수수료 편도 0.05% · 다음 봉 시가 진입 · 최근 182일(약 6개월, 상장이 늦으면 상장 이후)"
 )
 DIR = Path(os.environ.get("MINERVA_BTC_TRADE_DIR", "~/.minerva/btc_trade")).expanduser()
 

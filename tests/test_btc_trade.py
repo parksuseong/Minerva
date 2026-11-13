@@ -3498,6 +3498,29 @@ def test_manual_other_symbol_guarded_while_engine_holds(env, multi, monkeypatch)
     assert all(ex.algos[i]["algoStatus"] != "NEW" for i in (g["stop_id"], g["tp_id"]))
 
 
+def test_guard_reuses_open_orders_instead_of_stacking(env, multi, monkeypatch):
+    # 사용자 2026-11-14 "2번": 기록을 잃은 지킴 손절·익절 위에 또 걸지 않는다
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    ex.amts["ETHUSDT"] = 0.5
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    g = state()["guards"]["ETHUSDT"]
+    first = {g["stop_id"], g["tp_id"]}
+    st = state()  # 응답을 잃은 것처럼 ID를 지운다
+    st["guards"]["ETHUSDT"].update(stop_id=None, tp_id=None)
+    bt._save(bt.DIR / "state.json", st)
+    mrun(env, ex, multi)
+    g = state()["guards"]["ETHUSDT"]
+    assert {g["stop_id"], g["tp_id"]} == first
+    eth_new = [
+        a for a in ex.algos.values() if a["algoStatus"] == "NEW" and ex._sym_of(a) == "ETHUSDT"
+    ]
+    assert sorted(a["type"] for a in eth_new) == ["STOP", "TAKE_PROFIT"]
+
+
 def test_manual_other_symbol_adopted_when_flat(env, multi, monkeypatch):
     monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
     live(env)
@@ -3942,6 +3965,8 @@ def test_guard_old_market_orders_migrated_new_first(env, multi, monkeypatch):
     old = (g["stop_id"], g["tp_id"])
     g.pop("order_style")  # 옛 방식으로 건 지킴
     bt._save(bt.DIR / "state.json", st)
+    for cid, typ in zip(old, ("STOP_MARKET", "TAKE_PROFIT_MARKET")):
+        ex.algos[cid]["type"] = typ  # 거래소에도 옛 방식 주문(지금 방식과 달라 다시 쓰지 않는다)
     ex.calls.clear()
     mrun(env, ex, multi)
     g2 = state()["guards"]["ETHUSDT"]

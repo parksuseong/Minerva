@@ -38,6 +38,8 @@ class FakeExchange:
         self.leverage = 10
         self.dual = False
         self.reject_stop = False
+        self.reject_code = -2021
+        self.child_conflict = False  # 걸린 손절·익절이 남긴 주문이 새 reduceOnly를 막게(-2022)
         self.lose_response: set[str] = set()  # 실행은 됐는데 응답만 잃는 경로
         self.net_fail: dict[str, int] = {}  # 실행 전 통신 오류 횟수
         self.foreign_open: list[dict] = []
@@ -118,13 +120,44 @@ class FakeExchange:
                 raise bt.Rejected(-2013, "Order does not exist.")
             return o
         if path == "/fapi/v1/order" and method == "POST" and p["type"] == "MARKET":
-            raise AssertionError("시장가 주문은 내지 않는다(사용자 2026-11-13)")
+            # 시장가는 진입 남은 수량(ID 끝 m)만(사용자 2026-11-13 20:17). 청산·손절·익절은 금지
+            assert p.get("reduceOnly") != "true", "청산 시장가 금지"
+            assert p["newClientOrderId"].endswith("m"), p["newClientOrderId"]
+            qty = float(p["quantity"])
+            sign = 1 if p["side"] == "BUY" else -1
+            self.amt = round(self.amt + sign * qty, 6)
+            self.t += 1000
+            o = {
+                "clientOrderId": p["newClientOrderId"],
+                "status": "FILLED",
+                "avgPrice": str(self.price),
+                "executedQty": str(qty),
+                "updateTime": self.t,
+            }
+            self.orders[p["newClientOrderId"]] = o
+            self.trades.append(
+                {
+                    "time": self.t,
+                    "side": p["side"],
+                    "qty": str(qty),
+                    "price": str(self.price),
+                    "realizedPnl": "0",
+                    "commission": "0.01",
+                    "commissionAsset": "USDT",
+                }
+            )
+            return o
         if path == "/fapi/v1/order" and method == "POST" and p["type"] == "LIMIT":
             assert p["timeInForce"] in ("GTX", "GTC")
             reduce = p.get("reduceOnly") == "true"
             if reduce:
                 assert p["timeInForce"] == "GTC"
                 if self.amt == 0:
+                    raise bt.Rejected(-2022, "ReduceOnly Order is rejected.")
+                if any(
+                    o.get("conflict") and o["status"] in ("NEW", "PARTIALLY_FILLED")
+                    for o in self.limits.values()
+                ):
                     raise bt.Rejected(-2022, "ReduceOnly Order is rejected.")
                 script = self.close_script
             else:
@@ -175,7 +208,7 @@ class FakeExchange:
             return a
         if path == "/fapi/v1/algoOrder" and method == "POST":
             if self.reject_stop:
-                raise bt.Rejected(-2021, "Order would immediately trigger.")
+                raise bt.Rejected(self.reject_code, "Order would immediately trigger.")
             if p["type"] in ("STOP", "TAKE_PROFIT"):
                 # 지정가 조건부: 지정가·수량·reduceOnly·GTC, closePosition 없음
                 assert p["price"] and float(p["quantity"]) > 0, p
@@ -263,6 +296,7 @@ class FakeExchange:
             "tif": "GTC",
             "type": a["type"],
             "orderId": oid,
+            "conflict": self.child_conflict,
         }
         self.limits[child["clientOrderId"]] = child
         if partial:
@@ -1433,35 +1467,90 @@ def test_touch_limit_reprices_until_filled(env, monkeypatch):
     assert state()["position"]["qty"] == pytest.approx(0.029) and not _markets(ex)
 
 
-def test_nothing_fills_skips_entry_without_market(env, monkeypatch):
-    """지정가가 끝내 하나도 안 되면 시장가 없이 진입을 건너뛰고 알린다. 남은 주문 없음."""
+class JumpMarket(FakeMarket):
+    """지정가를 쫓는 사이(호가 조회 jump_after번 뒤) 현재가가 추격 한도 밖으로 달아난다.
+    호가는 그대로라 지정가 단계는 계속된다."""
+
+    def __init__(self, jump_after=10, jumped=102_000.0):
+        super().__init__()
+        self.books, self.jump_after, self.jumped = 0, jump_after, jumped
+
+    def book(self):
+        self.books += 1
+        return super().book()
+
+    def price(self):
+        return self.jumped if self.books > self.jump_after else self._price
+
+
+def test_nothing_fills_then_market_after_touch_time(env, monkeypatch):
+    """사용자 2026-11-13 20:17 "60초 따라가다가 안되면 시장가로 하자": 지정가가 하나도 안 되면
+    바로 체결되는 지정가를 60초 쫓은 뒤 남은 수량을 시장가로(ID -om). 지정가는 남기지 않는다."""
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
     ex.limit_script = ["none"] * 200
     with_signal(monkeypatch, "long")
     run(env, ex)
-    assert not _markets(ex) and ex.amt == 0 and not state().get("position")
+    m = _markets(ex)
+    assert len(m) == 1 and m[0]["quantity"] == "0.029" and m[0]["newClientOrderId"].endswith("-om")
     assert len(_touches(ex)) >= 2
     assert all(o["status"] != "NEW" for o in ex.limits.values())
-    assert not [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
-    assert any("진입 안 됨" in m and "지정가" in m for m in env["sent"])
-    assert "pending" not in state()
+    pos = state()["position"]
+    assert pos["qty"] == pytest.approx(0.029) and pos["fill"] == "market_fallback"
+    assert ex.algos[pos["stop_id"]]["type"] == "STOP"
+    assert any("시장가 0.029개" in x for x in env["sent"])
+
+
+def test_market_fallback_skipped_beyond_chase_limit(env, monkeypatch):
+    """시장가 직전 가격이 추격 한도 밖이면 시장가를 내지 않고 진입을 건너뛴다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["none"] * 200
+    with_signal(monkeypatch, "long")
+    run(env, ex, JumpMarket())
+    assert not _markets(ex) and ex.amt == 0 and not state().get("position")
+    assert all(o["status"] != "NEW" for o in ex.limits.values())
+    assert any("진입 안 됨" in m and "추격 한도 밖" in m for m in env["sent"])
 
 
 def test_partial_fill_kept_with_stop_for_filled_qty(env, monkeypatch):
-    """일부만 체결되면 그 수량만 갖고, 손절·익절도 그 수량으로 건다."""
+    """일부만 체결되고 시장가는 못 내면(추격 한도 밖) 그 수량만 갖고 손절·익절도 그 수량으로."""
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
     ex.limit_script = ["partial:0.010"] + ["none"] * 200
     with_signal(monkeypatch, "long")
-    run(env, ex)
+    run(env, ex, JumpMarket())
     pos = state()["position"]
     assert pos["qty"] == pytest.approx(0.010) and ex.amt == pytest.approx(0.010)
     assert ex.algos[pos["stop_id"]]["quantity"] == "0.01"
     assert not _markets(ex) and all(o["status"] != "NEW" for o in ex.limits.values())
     assert any("일부만 체결" in m for m in env["sent"])
+
+
+def test_lost_market_entry_response_not_resent(env, monkeypatch):
+    """진입 시장가 응답을 잃어도 다시 보내지 않고, 포지션으로 이어 받아 손절을 건다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["none"] * 200
+    real = ex._handle
+
+    def lose_market(method, path, p):
+        out = real(method, path, p)
+        if method == "POST" and p.get("type") == "MARKET":
+            raise bt.NetworkError("response lost")
+        return out
+
+    ex._handle = lose_market
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert len(_markets(ex)) == 1  # 다시 안 보냄
+    pos = state()["position"]
+    assert pos["qty"] == pytest.approx(0.029) and ex.amt == pytest.approx(0.029)
+    assert any(a["type"] == "STOP" and a["algoStatus"] == "NEW" for a in ex.algos.values())
 
 
 def test_ladder_respects_time_limit(env, monkeypatch):
@@ -3743,3 +3832,180 @@ def test_guard_old_market_orders_migrated_new_first(env, multi, monkeypatch):
     assert len(dels) == 2 and max(posts) < min(dels)  # 새 주문 먼저, 옛 주문은 그 뒤
     assert g2["order_style"] == bt.order_style() and "stale" not in g2
     assert all(ex.algos[i]["algoStatus"] == "NEW" for i in (g2["stop_id"], g2["tp_id"]))
+
+
+# ------------------------------------------ 레드팀 2026-11-13 (7ffb3aa 지적)
+
+
+def test_f1_chase_sleeps_and_caps_when_orders_expire(env, monkeypatch):
+    """거래소가 청산 지정가를 바로 끝내도(EXPIRED) 쉬지 않고 다시 내지 않는다: 회차마다 쉬고,
+    회차 상한·실행 한도에서 멈춘다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    ex.close_script = ["expired"] * 10_000
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    c = _closes(ex)
+    assert 2 <= len(c) <= bt.CLOSE_MAX_ROUNDS
+    assert ex.amt == pytest.approx(0.029) and state()["closing"]["why"] == "signal"
+    assert not bt.entries_blocked()
+
+
+def test_f2_4142_treated_as_would_trigger(env, monkeypatch):
+    """-4142(손절·익절이 바로 걸릴 값)도 -2021과 같이: 지정가로 닫고 '손절'로 적는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    ex.algos.clear()
+    ex.reject_stop, ex.reject_code = True, -4142
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.amt == 0 and jsonl("closed.jsonl")[-1]["why"] == "stop"
+
+
+def test_f3_resume_cancels_triggered_child_first(env, monkeypatch):
+    """이어서 쫓는 실행에서도 걸린 손절이 남긴 주문을 먼저 지운다(안 지우면 -2022만 반복)."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    ex.child_conflict = True
+    child = ex.trigger_unfilled(pos["stop_id"])
+    st = state()
+    st["closing"] = {"symbol": "BTCUSDT", "why": "stop", "base": "mnv-x9", "k": 0, "cid": None}
+    bt._save(bt.DIR / "state.json", st)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.limits[child]["status"] == "CANCELED"
+    assert ex.amt == 0 and jsonl("closed.jsonl")[-1]["why"] == "stop"
+
+
+def test_f3_reduce_conflict_clears_engine_orders_only(env, monkeypatch):
+    """-2022인데 포지션이 남았으면 엔진(mnv-) reduceOnly 주문만 지우고 다시. 사용자 주문은 둔다."""
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    base = {"executedQty": "0", "avgPrice": "0", "price": "105000", "origQty": "0.029"}
+    common = {"status": "NEW", "side": "SELL", "how": "none", "reduce": True, "tif": "GTC"}
+    ex.limits["mnv-stale-x1-1"] = {
+        **base,
+        **common,
+        "clientOrderId": "mnv-stale-x1-1",
+        "orderId": 1,
+        "conflict": True,
+    }
+    ex.limits["user-tp"] = {**base, **common, "clientOrderId": "user-tp", "orderId": 2}
+    st = state()
+    ctx = bt.Ctx(ex, FakeMarket(ex.price), env["send"], NOW, True)
+    bt.protect_close(ctx, st, "protect")
+    assert st["position"] is None and ex.amt == 0
+    assert ex.limits["mnv-stale-x1-1"]["status"] == "CANCELED"
+    assert ex.limits["user-tp"]["status"] == "NEW"
+    assert pos
+
+
+def _engine_long_with_tp(ex):
+    pos = engine_long(ex)
+    tid = f"mnv-{pos['bar'] // 60000}-t"
+    ex.algos[tid] = {
+        "clientAlgoId": tid,
+        "algoStatus": "NEW",
+        "triggerPrice": "103000.0",
+        "type": "TAKE_PROFIT",
+        "side": "SELL",
+        "price": "103000.0",
+        "quantity": "0.029",
+    }
+    st = state()
+    st["position"].update(tp=103000.0, tp_id=tid, tp_pct=3.0, tp_backfilled=True)
+    bt._save(bt.DIR / "state.json", st)
+    return st["position"]
+
+
+def test_f4_triggered_tp_not_chased_below_entry(env, monkeypatch):
+    """익절이 걸렸는데(마크 가격) 호가가 진입가 아래면 쫓지 않고 익절가 지정가를 걸어 둔다.
+    호가가 진입가 위로 오면 다음 실행이 닫는다."""
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = _engine_long_with_tp(ex)
+    child = ex.trigger_unfilled(pos["tp_id"])
+    ex.close_script = ["none"]  # 익절가 지정가는 아직 안 닿음
+    with_signal(monkeypatch, None)
+    run(env, ex, FakeMarket(99_000.0))
+    assert ex.limits[child]["status"] == "CANCELED"
+    c = _closes(ex)
+    assert len(c) == 1 and c[0]["price"] == "103000.0"  # 진입가 아래로 팔지 않는다
+    assert ex.amt == pytest.approx(0.029) and state()["closing"]["why"] == "tp"
+    assert any("진입가 아래로 쫓지 않고" in m for m in env["sent"])
+    run(env, ex, FakeMarket(101_000.0))
+    assert ex.limits[c[0]["newClientOrderId"]]["status"] == "CANCELED"
+    assert _closes(ex)[-1]["price"] == "101000.0"
+    assert ex.amt == 0 and jsonl("closed.jsonl")[-1]["why"] == "tp"
+
+
+def test_f4_triggered_stop_still_chased_below_entry(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    ex.trigger_unfilled(pos["stop_id"])
+    with_signal(monkeypatch, None)
+    run(env, ex, FakeMarket(96_000.0))
+    assert ex.amt == 0 and _closes(ex)[-1]["price"] == "96000.0"
+
+
+def test_f5_children_only_by_actual_order_id(env):
+    """actualOrderId가 없으면 짐작해서 엔진 밖 reduceOnly STOP 주문을 지우지 않는다."""
+    ex = FakeExchange()
+    ex.amt = 0.029
+    ex.limits["user-stop"] = {
+        "clientOrderId": "user-stop",
+        "status": "NEW",
+        "executedQty": "0",
+        "avgPrice": "0",
+        "price": "95000",
+        "origQty": "0.029",
+        "side": "SELL",
+        "how": "none",
+        "reduce": True,
+        "tif": "GTC",
+        "type": "STOP",
+        "orderId": 77,
+    }
+    assert bt.cancel_exit_children(ex, [{"algoStatus": "TRIGGERED"}]) == []
+    assert ex.limits["user-stop"]["status"] == "NEW"
+    assert bt.cancel_exit_children(ex, [{"actualOrderId": "77"}]) == ["77"]
+    assert ex.limits["user-stop"]["status"] == "CANCELED"
+
+
+def test_f6_unconfirmed_stop_reused_not_stacked(env, monkeypatch):
+    """확인 못 해 stop_id로 못 적은 손절이 걸려 있으면 새로 쌓지 않고 그걸 쓴다. 같은 포지션의
+    여분 엔진 손절은 취소해 하나만 둔다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    ex.algos.clear()
+    pre = f"mnv-{pos['bar'] // 60000}-s"
+    for n in (2, 3):
+        ex.algos[f"{pre}{n}"] = {
+            "clientAlgoId": f"{pre}{n}",
+            "algoStatus": "NEW",
+            "triggerPrice": "97000.0",
+            "type": "STOP",
+            "quantity": "0.029",
+        }
+    st = state()
+    st["position"].update(stop_id=f"{pre}1", stop_n=3)
+    bt._save(bt.DIR / "state.json", st)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert not [x for m, p, x in ex.writes if m == "POST" and p == "/fapi/v1/algoOrder"]
+    p = state()["position"]
+    live_stops = [a for a in ex.algos.values() if a["algoStatus"] == "NEW"]
+    assert len(live_stops) == 1 and p["stop_id"] == live_stops[0]["clientAlgoId"]

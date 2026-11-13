@@ -38,13 +38,18 @@ class FakeExchange:
         self.leverage = 10
         self.dual = False
         self.reject_stop = False
+        self.reject_code = -2021
+        self.child_conflict = False  # 걸린 손절·익절이 남긴 주문이 새 reduceOnly를 막게(-2022)
         self.lose_response: set[str] = set()  # 실행은 됐는데 응답만 잃는 경로
         self.net_fail: dict[str, int] = {}  # 실행 전 통신 오류 횟수
         self.foreign_open: list[dict] = []
         self.t = NOW_MS
         # 지정가 회차마다 꺼내 쓰는 각본: fill / none / partial:<수량> / gtx / expired / race
         self.limit_script: list[str] = []
+        # reduceOnly(청산) 지정가 각본(진입 각본과 따로): fill / none / partial:<수량> / race
+        self.close_script: list[str] = []
         self.limits: dict[str, dict] = {}
+        self._oid = 1000
 
     @property
     def writes(self) -> list[tuple[str, str, dict]]:
@@ -73,7 +78,13 @@ class FakeExchange:
             ]
         if path == "/fapi/v1/openOrders":
             mine = [
-                {"clientOrderId": cid}
+                {
+                    "clientOrderId": cid,
+                    "orderId": o["orderId"],
+                    "reduceOnly": o["reduce"],
+                    "type": o.get("type", "LIMIT"),
+                    "origType": o.get("type", "LIMIT"),
+                }
                 for cid, o in self.limits.items()
                 if o["status"] in ("NEW", "PARTIALLY_FILLED")
             ]
@@ -108,46 +119,12 @@ class FakeExchange:
             if not o:
                 raise bt.Rejected(-2013, "Order does not exist.")
             return o
-        if path == "/fapi/v1/order" and method == "POST" and p["type"] == "LIMIT":
-            assert p["timeInForce"] == "GTX"
-            how = self.limit_script.pop(0) if self.limit_script else "fill"
-            if how == "gtx":
-                raise bt.Rejected(-5022, "Post Only order will be rejected")
-            if how == "margin":
-                raise bt.Rejected(-2019, "Margin is insufficient.")
-            o = {
-                "clientOrderId": p["newClientOrderId"],
-                "status": "NEW",
-                "executedQty": "0",
-                "avgPrice": "0",
-                "price": p["price"],
-                "origQty": p["quantity"],
-                "side": p["side"],
-                "how": how,
-            }
-            if how == "expired":
-                o["status"] = "EXPIRED"
-            self.limits[p["newClientOrderId"]] = o
-            return {k: v for k, v in o.items() if k != "how"}
-        if path == "/fapi/v1/order" and method == "DELETE":
-            o = self.limits.get(p["origClientOrderId"])
-            if not o or o["status"] not in ("NEW", "PARTIALLY_FILLED"):
-                raise bt.Rejected(-2011, "Unknown order sent.")
-            if o["how"] == "race":  # 취소 직전에 다 체결됐다
-                self._fill(o, float(o["origQty"]))
-                raise bt.Rejected(-2011, "Unknown order sent.")
-            o["status"] = "CANCELED"
-            return dict(o)
-        if path == "/fapi/v1/algoOrder" and method == "GET":
-            a = self.algos.get(p["clientAlgoId"])
-            if not a:
-                raise bt.Rejected(-2013, "Order does not exist.")
-            return a
-        if path == "/fapi/v1/order" and method == "POST":
+        if path == "/fapi/v1/order" and method == "POST" and p["type"] == "MARKET":
+            # 시장가는 진입 남은 수량(ID 끝 m)만(사용자 2026-11-13 20:17). 청산·손절·익절은 금지
+            assert p.get("reduceOnly") != "true", "청산 시장가 금지"
+            assert p["newClientOrderId"].endswith("m"), p["newClientOrderId"]
             qty = float(p["quantity"])
             sign = 1 if p["side"] == "BUY" else -1
-            if p.get("reduceOnly") == "true":
-                qty = min(qty, abs(self.amt))
             self.amt = round(self.amt + sign * qty, 6)
             self.t += 1000
             o = {
@@ -170,15 +147,83 @@ class FakeExchange:
                 }
             )
             return o
+        if path == "/fapi/v1/order" and method == "POST" and p["type"] == "LIMIT":
+            assert p["timeInForce"] in ("GTX", "GTC")
+            reduce = p.get("reduceOnly") == "true"
+            if reduce:
+                assert p["timeInForce"] == "GTC"
+                if self.amt == 0:
+                    raise bt.Rejected(-2022, "ReduceOnly Order is rejected.")
+                if any(
+                    o.get("conflict") and o["status"] in ("NEW", "PARTIALLY_FILLED")
+                    for o in self.limits.values()
+                ):
+                    raise bt.Rejected(-2022, "ReduceOnly Order is rejected.")
+                script = self.close_script
+            else:
+                script = self.limit_script
+            how = script.pop(0) if script else "fill"
+            if how == "gtx":
+                raise bt.Rejected(-5022, "Post Only order will be rejected")
+            if how == "margin":
+                raise bt.Rejected(-2019, "Margin is insufficient.")
+            o = {
+                "clientOrderId": p["newClientOrderId"],
+                "status": "NEW",
+                "executedQty": "0",
+                "avgPrice": "0",
+                "price": p["price"],
+                "origQty": p["quantity"],
+                "side": p["side"],
+                "how": how,
+                "reduce": reduce,
+                "tif": p["timeInForce"],
+                "orderId": self._next_oid(),
+            }
+            if how == "expired":
+                o["status"] = "EXPIRED"
+            self.limits[p["newClientOrderId"]] = o
+            if how == "fill" and p["timeInForce"] == "GTC":
+                self._fill(o, float(o["origQty"]))  # 닿는 가격의 GTC는 내자마자 체결된다
+            return {k: v for k, v in o.items() if k != "how"}
+        if path == "/fapi/v1/order" and method == "DELETE":
+            if "orderId" in p:
+                o = next(
+                    (x for x in self.limits.values() if str(x["orderId"]) == str(p["orderId"])),
+                    None,
+                )
+            else:
+                o = self.limits.get(p["origClientOrderId"])
+            if not o or o["status"] not in ("NEW", "PARTIALLY_FILLED"):
+                raise bt.Rejected(-2011, "Unknown order sent.")
+            if o["how"] == "race":  # 취소 직전에 다 체결됐다
+                self._fill(o, float(o["origQty"]))
+                raise bt.Rejected(-2011, "Unknown order sent.")
+            o["status"] = "CANCELED"
+            return dict(o)
+        if path == "/fapi/v1/algoOrder" and method == "GET":
+            a = self.algos.get(p["clientAlgoId"])
+            if not a:
+                raise bt.Rejected(-2013, "Order does not exist.")
+            return a
         if path == "/fapi/v1/algoOrder" and method == "POST":
             if self.reject_stop:
-                raise bt.Rejected(-2021, "Order would immediately trigger.")
+                raise bt.Rejected(self.reject_code, "Order would immediately trigger.")
+            if p["type"] in ("STOP", "TAKE_PROFIT"):
+                # 지정가 조건부: 지정가·수량·reduceOnly·GTC, closePosition 없음
+                assert p["price"] and float(p["quantity"]) > 0, p
+                assert p["reduceOnly"] == "true" and p["timeInForce"] == "GTC", p
+                assert "closePosition" not in p, p
+            else:
+                assert p["type"] in ("STOP_MARKET", "TAKE_PROFIT_MARKET"), p
+                assert p["closePosition"] == "true", p
             a = {
                 "clientAlgoId": p["clientAlgoId"],
                 "algoStatus": "NEW",
                 "triggerPrice": p["triggerPrice"],
                 "side": p["side"],
                 "type": p["type"],
+                **{k: p[k] for k in ("price", "quantity", "reduceOnly", "closePosition") if k in p},
             }
             self.algos[p["clientAlgoId"]] = a
             return a
@@ -190,9 +235,15 @@ class FakeExchange:
             return a
         raise AssertionError(f"unexpected {method} {path}")
 
+    def _next_oid(self) -> int:
+        self._oid += 1
+        return self._oid
+
     def _fill(self, o: dict, q: float) -> None:
         done = float(o["executedQty"])
         q = min(q, float(o["origQty"]) - done)
+        if o.get("reduce"):
+            q = min(q, abs(self.amt))  # reduceOnly는 포지션보다 많이 체결되지 않는다
         if q <= 0:
             return
         px = float(o["price"])
@@ -224,6 +275,33 @@ class FakeExchange:
             elif o["how"].startswith("partial:") and float(o["executedQty"]) == 0:
                 self._fill(o, float(o["how"].split(":")[1]))
         return {k: v for k, v in o.items() if k != "how"}
+
+    def trigger_unfilled(self, cid: str, partial: float = 0.0) -> str:
+        """지정가 손절·익절이 걸렸는데(갭) 남긴 지정가가 체결 안 됨(또는 partial만). 남긴 주문은
+        엔진 밖 ID(거래소가 붙임)이고 algoOrder 조회의 actualOrderId로 찾는다."""
+        a = self.algos[cid]
+        a["algoStatus"] = "TRIGGERED"
+        oid = self._next_oid()
+        a["actualOrderId"] = str(oid)
+        child = {
+            "clientOrderId": f"x-auto-{oid}",
+            "status": "NEW",
+            "executedQty": "0",
+            "avgPrice": "0",
+            "price": a.get("price", a["triggerPrice"]),
+            "origQty": a.get("quantity", str(abs(self.amt))),
+            "side": a["side"],
+            "how": "none",
+            "reduce": True,
+            "tif": "GTC",
+            "type": a["type"],
+            "orderId": oid,
+            "conflict": self.child_conflict,
+        }
+        self.limits[child["clientOrderId"]] = child
+        if partial:
+            self._fill(child, partial)
+        return child["clientOrderId"]
 
     def trigger_stop(self, cid: str, price: float) -> None:
         """손절이 걸려 포지션이 닫힌 상황."""
@@ -341,11 +419,19 @@ def jsonl(name: str) -> list[dict]:
     return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
 
 
-def engine_long(ex: FakeExchange, qty=0.029, entry=100_000.0) -> dict:
-    """엔진이 연 롱(손절 포함)을 거래소와 상태에 만든다."""
+def engine_long(ex: FakeExchange, qty=0.029, entry=100_000.0, style: str = "") -> dict:
+    """엔진이 연 롱(손절 포함)을 거래소와 상태에 만든다. style을 안 주면 지금 주문 방식."""
     ex.amt = qty
     sid = f"mnv-{(BAR - bt.BAR_MS * 8) // 60000}-s"
-    ex.algos[sid] = {"clientAlgoId": sid, "algoStatus": "NEW", "triggerPrice": "97000.0"}
+    ex.algos[sid] = {
+        "clientAlgoId": sid,
+        "algoStatus": "NEW",
+        "triggerPrice": "97000.0",
+        "type": "STOP",
+        "side": "SELL",
+        "price": "96515.0",
+        "quantity": str(qty),
+    }
     pos = {
         "side": "long",
         "qty": qty,
@@ -356,6 +442,7 @@ def engine_long(ex: FakeExchange, qty=0.029, entry=100_000.0) -> dict:
         "entry_ms": NOW_MS - 3_600_000,
         "opened_at": "2026-11-08 21:30:20",
         "mode": "live",
+        "order_style": style or bt.order_style(),
     }
     bt._save(bt.DIR / "state.json", {"position": pos, "last_bar": BAR - bt.BAR_MS * 8})
     return pos
@@ -496,7 +583,10 @@ def test_flat_long_signal_opens_long_with_stop(env, monkeypatch):
     assert order["timeInForce"] == "GTX" and order["price"] == "100000.0"  # 매수 1호가
     assert order["newClientOrderId"] == f"mnv-{BAR // 60000}-o1"
     stop = ex.writes[2][2]
-    assert stop["type"] == "STOP_MARKET" and stop["closePosition"] == "true"
+    # 지정가 손절: 손절가 97000에 걸리면 0.5% 아래 96515까지 매도 지정가(수량·reduceOnly)
+    assert stop["type"] == "STOP" and "closePosition" not in stop
+    assert stop["price"] == "96515.0" and stop["quantity"] == "0.029"
+    assert stop["reduceOnly"] == "true" and stop["timeInForce"] == "GTC"
     assert stop["side"] == "SELL" and stop["triggerPrice"] == "97000.0"
     assert stop["workingType"] == "MARK_PRICE" and stop["algoType"] == "CONDITIONAL"
     pos = state()["position"]
@@ -513,12 +603,14 @@ def test_reverse_sequence_long_to_short(env, monkeypatch):
     run(env, ex)
     seq = [(m, p, x.get("side"), x.get("reduceOnly")) for m, p, x in ex.writes]
     assert seq == [
-        ("DELETE", "/fapi/v1/algoOrder", None, None),  # 1) 엔진 손절 취소
-        ("POST", "/fapi/v1/order", "SELL", "true"),  # 2) 시장가 reduceOnly 청산
-        ("POST", "/fapi/v1/order", "SELL", None),  # 4) 시장가 숏 진입
-        ("POST", "/fapi/v1/algoOrder", "BUY", None),  # 6) 숏 손절
+        ("POST", "/fapi/v1/order", "SELL", "true"),  # 1) 지정가 reduceOnly 청산(손절은 둔 채)
+        ("DELETE", "/fapi/v1/algoOrder", None, None),  # 2) 닫힌 뒤 엔진 손절 취소
+        ("POST", "/fapi/v1/order", "SELL", None),  # 3) 지정가 숏 진입
+        ("POST", "/fapi/v1/algoOrder", "BUY", "true"),  # 4) 숏 지정가 손절(reduceOnly)
     ]
-    assert ex.writes[1][2]["quantity"] == "0.029"
+    close = ex.writes[0][2]
+    assert close["quantity"] == "0.029" and close["type"] == "LIMIT"
+    assert close["timeInForce"] == "GTC" and close["price"] == "100000.0"  # 매수 1호가에 매도
     assert ex.algos[old["stop_id"]]["algoStatus"] == "CANCELED"
     pos = state()["position"]
     assert pos["side"] == "short" and pos["stop"] == pytest.approx(103000.3)  # 매도 1호가 진입
@@ -671,21 +763,28 @@ def test_lost_response_is_not_resent(env, monkeypatch):
 def test_network_error_retried_at_most_3_times(env, monkeypatch):
     ex = FakeExchange()
     ex.net_fail = {"POST /fapi/v1/order": 10}
+    px = Decimal("100000")
     with pytest.raises(bt.NetworkError):
-        bt.market(ex, "SELL", Decimal("0.01"), "mnv-1-c", reduce=True)
+        bt.limit_order(ex, "SELL", Decimal("0.01"), px, "mnv-1-c", "GTC", reduce=True)
     assert len([c for c in ex.calls if c[0] == "POST"]) == 4  # 청산: 처음 1 + 재시도 3
     ex.calls.clear()
     with pytest.raises(bt.NetworkError):
-        bt.market(ex, "BUY", Decimal("0.01"), "mnv-1-o", reduce=False)
-    assert len([c for c in ex.calls if c[0] == "POST"]) == 1  # 진입은 다시 보내지 않는다
+        bt.limit_order(ex, "BUY", Decimal("0.01"), px, "mnv-1-o", "GTX")
+    assert len([c for c in ex.calls if c[0] == "POST"]) == 4  # post-only는 바로 체결 안 됨
+    ex.calls.clear()
+    with pytest.raises(bt.NetworkError):
+        bt.limit_order(ex, "BUY", Decimal("0.01"), px, "mnv-1-ot1", "GTC")
+    assert len([c for c in ex.calls if c[0] == "POST"]) == 1  # 바로 체결되는 진입은 다시 안 보냄
 
 
 def test_rejection_not_retried(env):
     ex = FakeExchange()
     ex.reject_stop = True
     with pytest.raises(bt.Rejected):
-        bt.place_stop(ex, "long", Decimal("97000"), "mnv-1-s")
+        bt.place_stop(ex, "long", Decimal("97000"), "mnv-1-s", qty=0.01)
     assert len([c for c in ex.calls if c[0] == "POST"]) == 1
+    with pytest.raises(ValueError):  # 지정가 손절은 수량 없이 내지 않는다
+        bt.place_stop(ex, "long", Decimal("97000"), "mnv-1-s2")
 
 
 def test_open_response_lost_entirely_is_adopted_next_run(env, monkeypatch):
@@ -777,7 +876,8 @@ def test_mismatch_keeps_a_stop(env, monkeypatch):
     with_signal(monkeypatch, None)
     run(env, ex)
     posts = [x for m, p, x in ex.writes]
-    assert len(posts) == 1 and posts[0]["type"] == "STOP_MARKET" and ex.amt == 0.05
+    assert len(posts) == 1 and posts[0]["type"] == "STOP" and ex.amt == 0.05
+    assert posts[0]["quantity"] == "0.05"  # 거래소 수량으로 건다
 
 
 def test_unknown_pnl_not_counted_in_winrate(env):
@@ -986,11 +1086,11 @@ def test_ai_exits_used_for_live_orders(env, monkeypatch):
     with_signal(monkeypatch, "long")
     run(env, ex)
     algos = [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
-    assert [(a["type"], a["triggerPrice"], a["side"]) for a in algos] == [
-        ("STOP_MARKET", "98000.0", "SELL"),
-        ("TAKE_PROFIT_MARKET", "104000.0", "SELL"),
+    assert [(a["type"], a["triggerPrice"], a["price"], a["side"]) for a in algos] == [
+        ("STOP", "98000.0", "97510.0", "SELL"),
+        ("TAKE_PROFIT", "104000.0", "104000.0", "SELL"),  # 익절은 익절가 지정가
     ]
-    assert all(a["closePosition"] == "true" for a in algos)
+    assert all(a["reduceOnly"] == "true" and a["quantity"] == "0.029" for a in algos)
     pos = state()["position"]
     assert pos["stop_pct"] == 2.0 and pos["tp"] == 104000.0 and pos["tp_id"].endswith("-t")
     msg = next(m for m in env["sent"] if "롱 진입" in m)
@@ -1011,8 +1111,8 @@ def test_fixed_exits_skip_ai_and_use_3pct_tp3(env, monkeypatch):
     assert env["asked"] == []  # AI에 묻지 않는다
     algos = [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
     assert [(a["type"], a["triggerPrice"]) for a in algos] == [
-        ("STOP_MARKET", "97000.0"),
-        ("TAKE_PROFIT_MARKET", "103000.0"),
+        ("STOP", "97000.0"),
+        ("TAKE_PROFIT", "103000.0"),
     ]
     pos = state()["position"]
     assert pos["stop"] == 97000.0 and pos["stop_pct"] == 3.0
@@ -1034,7 +1134,8 @@ def test_fixed_tp_backfilled_once_on_open_position(env, monkeypatch):
     run(env, ex)
     pos = state()["position"]
     assert pos["tp"] == 103000.0 and pos["tp_backfilled"] and pos["tp_id"].endswith("-t1")
-    assert ex.algos[pos["tp_id"]]["type"] == "TAKE_PROFIT_MARKET"
+    assert ex.algos[pos["tp_id"]]["type"] == "TAKE_PROFIT"
+    assert ex.algos[pos["tp_id"]]["quantity"] == "0.029"
     assert any("기본 익절 +3%" in m for m in env["sent"])
     # 익절이 실패해 지워져도 다시 하지 않는다
     ex.algos.pop(pos["tp_id"])
@@ -1054,7 +1155,9 @@ def _engine_long_tp10(ex: FakeExchange) -> dict:
         "clientAlgoId": tid,
         "algoStatus": "NEW",
         "triggerPrice": "110000.0",
-        "type": "TAKE_PROFIT_MARKET",
+        "type": "TAKE_PROFIT",
+        "price": "110000.0",
+        "quantity": "0.029",
     }
     pos.update(tp=110000.0, tp_id=tid, tp_pct=10.0, tp_n=1, tp_backfilled=True)
     bt._save(bt.DIR / "state.json", {"position": pos, "last_bar": BAR - bt.BAR_MS * 8})
@@ -1081,8 +1184,8 @@ def test_fixed_tp_retargets_open_position_once(env, monkeypatch):
     assert len(ex.algos) == n and sum(1 for m, p, _ in ex.writes if m == "DELETE") == cancels
 
 
-def test_fixed_tp_retarget_past_price_takes_profit_at_market(env, monkeypatch):
-    """새 익절가를 이미 지났으면(-2021) 시장가로 익절하고 '익절'로 기록한다."""
+def test_fixed_tp_retarget_past_price_takes_profit_with_limit(env, monkeypatch):
+    """새 익절가를 이미 지났으면(-2021) 지정가 추격으로 익절하고 '익절'로 기록한다."""
     monkeypatch.setattr(bt, "AI_EXITS", False)
     live(env)
     ex = FakeExchange()
@@ -1093,7 +1196,10 @@ def test_fixed_tp_retarget_past_price_takes_profit_at_market(env, monkeypatch):
     run(env, ex)
     assert ex.amt == 0
     assert state()["position"] is None
-    assert any("시장가로 익절" in m for m in env["sent"])
+    assert any("지정가로 익절" in m for m in env["sent"])
+    closes = [x for m, p, x in ex.writes if x.get("reduceOnly") == "true" and p == "/fapi/v1/order"]
+    assert closes and all(x["type"] == "LIMIT" and x["timeInForce"] == "GTC" for x in closes)
+    assert closes[0]["price"] == "100000.0"  # 매도는 매수 1호가
     assert jsonl("closed.jsonl")[-1]["why"] == "tp"
     assert not (bt.DIR / "HALT").exists()
 
@@ -1196,8 +1302,9 @@ def test_reverse_cancels_stop_and_tp(env, monkeypatch):
     with_signal(monkeypatch, "short", bar=BAR + bt.BAR_MS)
     run(env, ex)
     seq = [(m, x.get("clientAlgoId") or x.get("side")) for m, p, x in ex.writes]
-    assert seq[:2] == [("DELETE", old["stop_id"]), ("DELETE", old["tp_id"])]
-    assert seq[2] == ("POST", "SELL") and ex.writes[2][2]["reduceOnly"] == "true"
+    # 손절·익절은 지정가 청산이 다 될 때까지 두고(reduceOnly라 겹쳐도 뒤집히지 않음), 닫힌 뒤 취소
+    assert seq[0] == ("POST", "SELL") and ex.writes[0][2]["reduceOnly"] == "true"
+    assert seq[1:3] == [("DELETE", old["stop_id"]), ("DELETE", old["tp_id"])]
     assert ex.algos[old["tp_id"]]["algoStatus"] == "CANCELED"
     assert state()["position"]["side"] == "short"
 
@@ -1214,7 +1321,7 @@ def test_missing_tp_is_replaced(env, monkeypatch):
     with_signal(monkeypatch, None)
     run(env, ex)
     assert state()["position"]["tp_id"].endswith("-t1")
-    assert ex.algos[state()["position"]["tp_id"]]["type"] == "TAKE_PROFIT_MARKET"
+    assert ex.algos[state()["position"]["tp_id"]]["type"] == "TAKE_PROFIT"
 
 
 def test_dry_virtual_tp_and_ai_message(env, monkeypatch):
@@ -1245,7 +1352,16 @@ def _markets(ex):
     return [x for m, p, x in ex.writes if p == "/fapi/v1/order" and x.get("type") == "MARKET"]
 
 
-def test_fast_market_uses_market(env, monkeypatch):
+def _touches(ex):
+    """바로 체결되는 진입 지정가(GTC, reduceOnly 아님)."""
+    return [
+        x for x in _limits(ex) if x.get("timeInForce") == "GTC" and x.get("reduceOnly") != "true"
+    ]
+
+
+def test_fast_move_starts_at_touch_limit_not_market(env, monkeypatch):
+    """급변동이면 post-only를 건너뛰고 바로 체결되는 가장 가까운 지정가(롱 = 매도 1호가)부터.
+    시장가는 내지 않는다(사용자 2026-11-13 "모든 매매는 지정가로 해")."""
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
@@ -1257,10 +1373,12 @@ def test_fast_market_uses_market(env, monkeypatch):
     ]
     with_signal(monkeypatch, "long")
     run(env, ex, mk)
-    assert not _limits(ex) and len(_markets(ex)) == 1
-    assert _markets(ex)[0]["newClientOrderId"].endswith("-of")
-    assert state()["position"]["fill"] == "fast"
-    assert any("시장가(급변동: 1분 움직임" in m for m in env["sent"])
+    assert not _markets(ex)
+    lim = _limits(ex)
+    assert len(lim) == 1 and lim[0]["timeInForce"] == "GTC" and lim[0]["price"] == "100000.2"
+    assert lim[0]["newClientOrderId"].endswith("-ot1")
+    assert state()["position"]["fill"] == "touch"
+    assert any("급변동(1분 움직임" in m and "바로 체결되는 지정가(1번)" in m for m in env["sent"])
 
 
 def test_fast_when_already_moved_from_signal(env, monkeypatch):
@@ -1269,7 +1387,7 @@ def test_fast_when_already_moved_from_signal(env, monkeypatch):
     ex.leverage = 3
     with_signal(monkeypatch, "long", close=100_000.0)
     run(env, ex)
-    assert not _limits(ex) and len(_markets(ex)) == 1
+    assert not _markets(ex) and len(_touches(ex)) == 1 and len(_limits(ex)) == 1
 
 
 def test_limit_filled_first_round(env, monkeypatch):
@@ -1313,19 +1431,126 @@ def test_gtx_reject_reprices(env, monkeypatch):
     assert any("지정가 체결(3회차, 메이커)" in m for m in env["sent"])
 
 
-def test_timeout_sends_remainder_at_market(env, monkeypatch):
+def test_timeout_takes_remainder_with_touch_limit(env, monkeypatch):
+    """post-only로 다 안 되면 남은 수량을 시장가가 아니라 매도 1호가 지정가(GTC)로."""
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
-    ex.limit_script = ["partial:0.005"] + ["none"] * 10
+    ex.limit_script = ["partial:0.005", "none", "fill"]
     with_signal(monkeypatch, "long")
     run(env, ex)
-    assert 1 < len(_limits(ex)) <= 6
-    m = _markets(ex)
-    assert len(m) == 1 and m[0]["quantity"] == "0.024" and m[0]["newClientOrderId"].endswith("-om")
+    assert not _markets(ex)
+    t = _touches(ex)
+    assert len(t) == 1 and t[0]["quantity"] == "0.024" and t[0]["price"] == "100000.2"
+    assert t[0]["newClientOrderId"].endswith("-ot1")
     assert state()["position"]["qty"] == pytest.approx(0.029)
-    assert any("지정가 0.005 + 시장가 0.024개(지정가 미체결)" in x for x in env["sent"])
+    assert any("지정가 0.005(메이커) + 바로 체결되는 지정가 0.024개(1번)" in x for x in env["sent"])
     assert all(o["status"] != "NEW" for o in ex.limits.values())  # 남은 지정가 없음
+
+
+def test_touch_limit_reprices_until_filled(env, monkeypatch):
+    """바로 체결되는 지정가가 안 되면 몇 초마다 취소하고 그때 호가에 다시 건다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = [
+        "none",
+        "none",
+        "none",
+        "fill",
+    ]  # GTX 1·2회차 → 닿는 가격 1회 안 됨 → 2회 체결
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    t = _touches(ex)
+    assert [x["newClientOrderId"][-3:] for x in t] == ["ot1", "ot2"]
+    assert ex.limits[t[0]["newClientOrderId"]]["status"] == "CANCELED"
+    assert state()["position"]["qty"] == pytest.approx(0.029) and not _markets(ex)
+
+
+class JumpMarket(FakeMarket):
+    """지정가를 쫓는 사이(호가 조회 jump_after번 뒤) 현재가가 추격 한도 밖으로 달아난다.
+    호가는 그대로라 지정가 단계는 계속된다."""
+
+    def __init__(self, jump_after=10, jumped=102_000.0):
+        super().__init__()
+        self.books, self.jump_after, self.jumped = 0, jump_after, jumped
+
+    def book(self):
+        self.books += 1
+        return super().book()
+
+    def price(self):
+        return self.jumped if self.books > self.jump_after else self._price
+
+
+def test_nothing_fills_then_market_after_touch_time(env, monkeypatch):
+    """사용자 2026-11-13 20:17 "60초 따라가다가 안되면 시장가로 하자": 지정가가 하나도 안 되면
+    바로 체결되는 지정가를 60초 쫓은 뒤 남은 수량을 시장가로(ID -om). 지정가는 남기지 않는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["none"] * 200
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    m = _markets(ex)
+    assert len(m) == 1 and m[0]["quantity"] == "0.029" and m[0]["newClientOrderId"].endswith("-om")
+    assert len(_touches(ex)) >= 2
+    assert all(o["status"] != "NEW" for o in ex.limits.values())
+    pos = state()["position"]
+    assert pos["qty"] == pytest.approx(0.029) and pos["fill"] == "market_fallback"
+    assert ex.algos[pos["stop_id"]]["type"] == "STOP"
+    assert any("시장가 0.029개" in x for x in env["sent"])
+
+
+def test_market_fallback_skipped_beyond_chase_limit(env, monkeypatch):
+    """시장가 직전 가격이 추격 한도 밖이면 시장가를 내지 않고 진입을 건너뛴다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["none"] * 200
+    with_signal(monkeypatch, "long")
+    run(env, ex, JumpMarket())
+    assert not _markets(ex) and ex.amt == 0 and not state().get("position")
+    assert all(o["status"] != "NEW" for o in ex.limits.values())
+    assert any("진입 안 됨" in m and "추격 한도 밖" in m for m in env["sent"])
+
+
+def test_partial_fill_kept_with_stop_for_filled_qty(env, monkeypatch):
+    """일부만 체결되고 시장가는 못 내면(추격 한도 밖) 그 수량만 갖고 손절·익절도 그 수량으로."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["partial:0.010"] + ["none"] * 200
+    with_signal(monkeypatch, "long")
+    run(env, ex, JumpMarket())
+    pos = state()["position"]
+    assert pos["qty"] == pytest.approx(0.010) and ex.amt == pytest.approx(0.010)
+    assert ex.algos[pos["stop_id"]]["quantity"] == "0.01"
+    assert not _markets(ex) and all(o["status"] != "NEW" for o in ex.limits.values())
+    assert any("일부만 체결" in m for m in env["sent"])
+
+
+def test_lost_market_entry_response_not_resent(env, monkeypatch):
+    """진입 시장가 응답을 잃어도 다시 보내지 않고, 포지션으로 이어 받아 손절을 건다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.limit_script = ["none"] * 200
+    real = ex._handle
+
+    def lose_market(method, path, p):
+        out = real(method, path, p)
+        if method == "POST" and p.get("type") == "MARKET":
+            raise bt.NetworkError("response lost")
+        return out
+
+    ex._handle = lose_market
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert len(_markets(ex)) == 1  # 다시 안 보냄
+    pos = state()["position"]
+    assert pos["qty"] == pytest.approx(0.029) and ex.amt == pytest.approx(0.029)
+    assert any(a["type"] == "STOP" and a["algoStatus"] == "NEW" for a in ex.algos.values())
 
 
 def test_ladder_respects_time_limit(env, monkeypatch):
@@ -1337,7 +1562,8 @@ def test_ladder_respects_time_limit(env, monkeypatch):
     run(env, ex)
     ev = [e for e in jsonl("events.jsonl") if e.get("event") == "run"][-1]
     assert ev["decision"] == "BTC 롱 진입"
-    assert len(_limits(ex)) <= 6
+    gtx = [x for x in _limits(ex) if x["timeInForce"] == "GTX"]
+    assert len(gtx) <= 6 and not _markets(ex)
 
 
 class DriftMarket(FakeMarket):
@@ -1424,7 +1650,10 @@ def test_crash_with_resting_limit_is_recovered(env, monkeypatch):
     assert resting["status"] == "CANCELED"
     pos = state()["position"]
     assert pos["qty"] == pytest.approx(0.012) and "pending" not in state()
-    assert any(a["algoStatus"] == "NEW" and a["type"] == "STOP_MARKET" for a in ex.algos.values())
+    assert any(
+        a["algoStatus"] == "NEW" and a["type"] == "STOP" and a["quantity"] == "0.012"
+        for a in ex.algos.values()
+    )
 
 
 def test_dry_ladder_logs_path(env, monkeypatch):
@@ -1432,7 +1661,7 @@ def test_dry_ladder_logs_path(env, monkeypatch):
     with_signal(monkeypatch, "long")
     run(env, ex)
     d = jsonl("dry.jsonl")[0]
-    assert d["path"] in ("limit", "market_fallback") and d["rounds"] >= 1 and d["steps"]
+    assert d["path"] in ("limit", "touch") and d["rounds"] >= 1 and d["steps"]
     assert not ex.writes
 
 
@@ -1467,7 +1696,7 @@ def test_error_mid_ladder_is_protected_in_same_run(env, monkeypatch):
     assert all(
         o["status"] != "NEW" and o["status"] != "PARTIALLY_FILLED" for o in ex.limits.values()
     )
-    assert any(a["type"] == "STOP_MARKET" and a["algoStatus"] == "NEW" for a in ex.algos.values())
+    assert any(a["type"] == "STOP" and a["algoStatus"] == "NEW" for a in ex.algos.values())
     assert any("진입 중 오류" in m for m in env["sent"])
 
 
@@ -1481,8 +1710,9 @@ def test_one_tick_spread_keeps_resting_order(env, monkeypatch):
     mk.spread = 0.1
     with_signal(monkeypatch, "long")
     run(env, ex, mk)
-    assert len(_limits(ex)) == 1  # 한 번만 걸었다
-    assert len(_markets(ex)) == 1  # 시간이 다 돼 남은 수량 시장가
+    gtx = [x for x in _limits(ex) if x["timeInForce"] == "GTX"]
+    assert len(gtx) == 1  # 한 번만 걸었다
+    assert len(_touches(ex)) == 1 and not _markets(ex)  # 시간이 다 돼 남은 수량은 닿는 지정가
 
 
 def test_uncertain_cancel_stops_ladder(env, monkeypatch):
@@ -1758,7 +1988,11 @@ def test_protect_close_id_is_per_position(env, monkeypatch):
     ex.reject_stop = True
     with_signal(monkeypatch, "long")
     run(env, ex)
-    cids = [w[2]["newClientOrderId"] for w in ex.writes if w[2].get("reduceOnly") == "true"]
+    cids = [
+        w[2]["newClientOrderId"]
+        for w in ex.writes
+        if w[2].get("reduceOnly") == "true" and w[1] == "/fapi/v1/order"
+    ]
     assert cids and all(c.startswith(f"mnv-{BAR // 60000}-x") for c in cids)
 
 
@@ -1785,10 +2019,12 @@ def test_protect_close_retry_uses_new_id(env, monkeypatch):
     monkeypatch.setattr(bt, "_sleep", lambda s: None)
     bt.protect_close(ctx, st, "protect")
     assert st["position"] is not None and st["position"]["x_n"] == 1
+    assert st["closing"]["cid"] == f"mnv-{pos['bar'] // 60000}-x1-1"  # 다음에 찾을 수 있게 적음
     bt.protect_close(ctx, st, "protect")
-    assert st["position"] is None and ex.amt == 0
+    assert st["position"] is None and ex.amt == 0 and "closing" not in st
     sent = [w[2]["newClientOrderId"] for w in ex.writes if w[2].get("reduceOnly") == "true"]
-    assert sent[-1] == f"mnv-{pos['bar'] // 60000}-x2"
+    # 다시 쫓을 때는 새 ID(같은 ID면 옛 주문을 찾아 아무것도 안 낸다)
+    assert sent[-1] == f"mnv-{pos['bar'] // 60000}-x1-2" and sent[0] != sent[-1]
 
 
 def test_stale_engine_stop_cancelled_before_new_entry(env, monkeypatch):
@@ -1998,9 +2234,9 @@ def test_last_bar_saved_with_new_position(env, monkeypatch):
     assert st["position"]["side"] == "long" and st["last_bar"] == BAR
 
 
-def test_lost_market_entry_keeps_pending_until_position_shows(env, monkeypatch):
-    """시장가 진입 응답을 잃고 포지션도 아직 0으로 보이면 pending을 남겨, 다음 대사가 엔진 밖
-    포지션으로 보지 않고 이어 받아 손절을 건다."""
+def test_lost_touch_entry_keeps_pending_until_position_shows(env, monkeypatch):
+    """바로 체결되는 진입 지정가 응답을 잃고 포지션도 아직 0으로 보이면 pending을 남겨, 다음
+    대사가 엔진 밖 포지션으로 보지 않고 이어 받아 손절을 건다(다시 내지 않는다)."""
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
@@ -2010,7 +2246,7 @@ def test_lost_market_entry_keeps_pending_until_position_shows(env, monkeypatch):
     lag = {"on": True}
 
     def lagging_query(client, path, key, cid):
-        if cid.endswith("-of") and lag["on"]:
+        if cid.endswith("-ot1") and lag["on"]:
             return None
         return real_query(client, path, key, cid)
 
@@ -2027,7 +2263,7 @@ def test_lost_market_entry_keeps_pending_until_position_shows(env, monkeypatch):
     run(env, ex)
     pos = state()["position"]
     assert pos and pos["side"] == "long" and not bt.entries_blocked()
-    assert any(a["algoStatus"] == "NEW" and a["type"] == "STOP_MARKET" for a in ex.algos.values())
+    assert any(a["algoStatus"] == "NEW" and a["type"] == "STOP" for a in ex.algos.values())
     assert len([w for w in ex.writes if w[1] == "/fapi/v1/order"]) == 1  # 진입은 한 번만
 
 
@@ -2340,8 +2576,8 @@ def test_holding_a_other_signal_ai_switch(env, multi, monkeypatch):
     seq = [(m, p, x.get("symbol"), x.get("reduceOnly")) for m, p, x in ex.writes]
     assert seq[:3] == [
         ("POST", "/fapi/v1/leverage", "NVDAUSDT", None),  # 닫기 전에 갈 종목을 3배로
-        ("DELETE", "/fapi/v1/algoOrder", None, None),  # BTC 손절 취소
-        ("POST", "/fapi/v1/order", "BTCUSDT", "true"),  # BTC 청산
+        ("POST", "/fapi/v1/order", "BTCUSDT", "true"),  # BTC 지정가 청산
+        ("DELETE", "/fapi/v1/algoOrder", None, None),  # 닫힌 뒤 BTC 손절 취소
     ]
     assert ex.algos[old["stop_id"]]["algoStatus"] == "CANCELED"
     assert ex.amts["BTCUSDT"] == 0 and ex.amts["NVDAUSDT"] < 0
@@ -3110,7 +3346,7 @@ def test_entry_margin_reject_backs_off_and_retries_smaller(env, monkeypatch):
     errs = [e for e in jsonl("events.jsonl") if e.get("event") == "enter_error"]
     assert errs and "diag" in errs[0] and errs[0]["try"] == 1
     assert any("다시 시도" in m for m in env["sent"])
-    assert any(a["type"] == "STOP_MARKET" and a["algoStatus"] == "NEW" for a in ex.algos.values())
+    assert any(a["type"] == "STOP" and a["algoStatus"] == "NEW" for a in ex.algos.values())
 
 
 def test_entry_margin_reject_gives_up_after_backoffs(env, monkeypatch):
@@ -3173,7 +3409,7 @@ def test_manual_open_is_adopted_with_stop_and_tp(env, monkeypatch):
     assert pos["manual"] and pos["side"] == "long" and pos["qty"] == 0.02
     assert pos["stop"] == 97000.0 and pos["tp"] == 103000.0
     kinds = {a["type"]: a["triggerPrice"] for a in ex.algos.values() if a["algoStatus"] == "NEW"}
-    assert kinds == {"STOP_MARKET": "97000.0", "TAKE_PROFIT_MARKET": "103000.0"}
+    assert kinds == {"STOP": "97000.0", "TAKE_PROFIT": "103000.0"}
     assert not bt.entries_blocked()
     assert any("이어받아 관리" in m for m in env["sent"])
     n = len(ex.algos)
@@ -3219,7 +3455,8 @@ def test_manual_add_to_engine_position_is_readopted(env, monkeypatch):
     pos = state()["position"]
     assert pos["qty"] == 0.05 and pos["entry"] == 99000.0 and pos["stop"] == 96030.0
     live_stops = [a for a in ex.algos.values() if a["algoStatus"] == "NEW"]
-    assert sorted(a["type"] for a in live_stops) == ["STOP_MARKET", "TAKE_PROFIT_MARKET"]
+    assert sorted(a["type"] for a in live_stops) == ["STOP", "TAKE_PROFIT"]
+    assert all(a["quantity"] == "0.05" for a in live_stops)  # 새 수량으로 다시 걸었다
     assert not bt.entries_blocked()
 
 
@@ -3234,7 +3471,8 @@ def test_manual_other_symbol_guarded_while_engine_holds(env, multi, monkeypatch)
     g = state()["guards"]["ETHUSDT"]
     assert g["stop"] == 2910.0 and g["tp"] == 3090.0
     eth = [a for a in ex.algos.values() if a["clientAlgoId"] in (g["stop_id"], g["tp_id"])]
-    assert sorted(a["type"] for a in eth) == ["STOP_MARKET", "TAKE_PROFIT_MARKET"]
+    assert sorted(a["type"] for a in eth) == ["STOP", "TAKE_PROFIT"]
+    assert all(a["quantity"] == "0.5" for a in eth)
     assert state()["position"]["symbol"] == "BTCUSDT" and not bt.entries_blocked()
     # 손으로 정리하면 지킴 주문을 거둔다
     ex.amts["ETHUSDT"] = 0.0
@@ -3303,3 +3541,522 @@ def test_guarded_symbol_signal_not_entered(env, multi, monkeypatch):
     s = mrun(env, ex, multi)
     assert state()["position"]["symbol"] == "BTCUSDT" and ex.amts["ETHUSDT"] == 0.5
     assert "지키는 중" in s["decision"]
+
+
+# ------------------------------------------ 모든 매매 지정가 (사용자 2026-11-13 20:00)
+
+
+def _closes(ex, sym=None):
+    """reduceOnly 청산 지정가(일반 주문)."""
+    return [
+        x
+        for m, p, x in ex.writes
+        if m == "POST"
+        and p == "/fapi/v1/order"
+        and x.get("reduceOnly") == "true"
+        and (sym is None or x.get("symbol") == sym)
+    ]
+
+
+def test_signal_close_chases_touch_until_filled(env, monkeypatch):
+    """반대 신호 청산: 매수 1호가에 reduceOnly 지정가 → 몇 초 안 되면 취소하고 다시
+    → 다 될 때까지."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    ex.close_script = ["none", "partial:0.009", "fill"]
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    c = _closes(ex)
+    assert [x["newClientOrderId"] for x in c] == [f"mnv-{BAR // 60000}-c-{k}" for k in (1, 2, 3)]
+    assert [x["quantity"] for x in c] == ["0.029", "0.029", "0.02"]  # 남은 수량만 다시
+    assert all(x["type"] == "LIMIT" and x["timeInForce"] == "GTC" for x in c)
+    assert all(x["price"] == "100000.0" for x in c)  # 매도는 매수 1호가
+    assert ex.limits[c[0]["newClientOrderId"]]["status"] == "CANCELED"
+    assert not _markets(ex)
+    assert jsonl("closed.jsonl")[-1]["why"] == "signal" and "closing" not in state()
+    assert state()["position"]["side"] == "short"  # 닫힌 뒤 숏 진입
+
+
+def test_close_chase_rests_across_runs_then_finishes(env, monkeypatch):
+    """실행 안에 다 못 닫으면 마지막 지정가를 걸어 둔 채 끝내고(진입 안 함, 정지 안 함), 다음 실행이
+    그 주문을 취소하고 새 호가로 이어서 닫는다. 두 번 닫거나 '수동 청산'으로 보지 않는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    old = engine_long(ex)
+    ex.close_script = ["none"] * 500
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    st = state()
+    cl = st["closing"]
+    assert st["position"]["side"] == "long" and ex.amt == pytest.approx(0.029)
+    assert ex.limits[cl["cid"]]["status"] == "NEW"  # 걸어 둔 채(GTC)
+    assert cl["why"] == "signal" and cl["k"] >= 2
+    assert ex.algos[old["stop_id"]]["algoStatus"] == "NEW"  # 손절은 그대로 지킨다
+    assert not bt.entries_blocked() and not jsonl("closed.jsonl")
+    assert any("다음 실행에서 이어서" in m for m in env["sent"])
+    assert not [x for x in _limits(ex) if x.get("reduceOnly") != "true"]  # 진입 안 함
+    # 다음 실행: 걸어 둔 주문을 취소하고 새 ID로 이어서 → 닫힘
+    ex.close_script = []
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.limits[cl["cid"]]["status"] == "CANCELED"
+    last = _closes(ex)[-1]["newClientOrderId"]
+    assert last == f"{cl['base']}-{cl['k'] + 1}"
+    assert ex.amt == 0 and state()["position"] is None and "closing" not in state()
+    closed = jsonl("closed.jsonl")
+    assert len(closed) == 1 and closed[0]["why"] == "signal"
+    assert not bt.entries_blocked()
+    assert ex.algos[old["stop_id"]]["algoStatus"] == "CANCELED"
+
+
+def test_resting_close_filled_between_runs_is_engine_close(env, monkeypatch):
+    """걸어 둔 청산 지정가가 실행 사이에 체결되면 엔진 청산(why 그대로)으로 적고 멈추지 않는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    ex.close_script = ["none"] * 500
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    cid = state()["closing"]["cid"]
+    ex._fill(ex.limits[cid], 1.0)  # 실행 사이 체결
+    assert ex.amt == 0
+    n = len(_closes(ex))
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert len(_closes(ex)) == n  # 더 내지 않는다
+    closed = jsonl("closed.jsonl")
+    assert len(closed) == 1 and closed[0]["why"] == "signal" and closed[0]["pnl"] is not None
+    assert not bt.entries_blocked() and "closing" not in state()
+
+
+def test_stop_triggered_but_unfilled_is_chased(env, monkeypatch):
+    """지정가 손절이 걸렸는데(갭) 남긴 지정가가 안 채워졌다: 그 주문을 취소하고 호가로 쫓아
+    닫는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    child = ex.trigger_unfilled(pos["stop_id"])
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.limits[child]["status"] == "CANCELED"
+    assert ex.amt == 0 and state()["position"] is None
+    assert jsonl("closed.jsonl")[-1]["why"] == "stop"
+    assert any("손절 지정가가 걸렸는데" in m for m in env["sent"])
+    assert not bt.entries_blocked() and not _markets(ex)
+
+
+def test_stop_triggered_partially_filled_not_treated_as_manual(env, monkeypatch):
+    """걸린 손절이 일부만 체결돼 수량이 줄어도 '수동 변경'으로 이어받지 않고 남은 것을 쫓는다."""
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    ex.trigger_unfilled(pos["stop_id"], partial=0.01)
+    assert ex.amt == pytest.approx(0.019)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.amt == 0 and state()["position"] is None
+    assert jsonl("closed.jsonl")[-1]["why"] == "stop"
+    assert not any("이어받아" in m for m in env["sent"])
+
+
+def test_stop_would_trigger_closes_with_limit_as_stop(env, monkeypatch):
+    """손절을 다시 걸려는데 이미 손절가를 지났다(-2021): 지정가로 닫고 '손절'로 적는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    ex.algos.clear()
+    ex.reject_stop = True
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.amt == 0 and not _markets(ex) and _closes(ex)
+    assert jsonl("closed.jsonl")[-1]["why"] == "stop"
+
+
+def test_migration_places_new_limit_stop_before_cancelling_old(env, monkeypatch):
+    """배포 직후: 옛 STOP_MARKET·TAKE_PROFIT_MARKET(closePosition) 포지션은 첫 실행에서 새 지정가
+    손절을 먼저 걸고 걸린 것을 본 뒤 옛 손절을 취소, 옛 익절을 취소하고 새 지정가 익절을 건다."""
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex, style="")
+    old_sid = pos["stop_id"]
+    ex.algos[old_sid] = {
+        "clientAlgoId": old_sid,
+        "algoStatus": "NEW",
+        "triggerPrice": "97000.0",
+        "type": "STOP_MARKET",
+        "closePosition": "true",
+    }
+    tid = f"mnv-{pos['bar'] // 60000}-t"
+    ex.algos[tid] = {
+        "clientAlgoId": tid,
+        "algoStatus": "NEW",
+        "triggerPrice": "103000.0",
+        "type": "TAKE_PROFIT_MARKET",
+        "closePosition": "true",
+    }
+    st = state()
+    st["position"].pop("order_style")
+    st["position"].update(tp=103000.0, tp_id=tid, tp_pct=3.0, tp_backfilled=True)
+    bt._save(bt.DIR / "state.json", st)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    seq = [(m, x.get("type") or x.get("clientAlgoId")) for m, p, x in ex.writes]
+    assert seq == [
+        ("POST", "STOP"),  # 1) 새 지정가 손절 먼저
+        ("DELETE", old_sid),  # 2) 옛 손절 취소
+        ("DELETE", tid),  # 3) 옛 익절 취소
+        ("POST", "TAKE_PROFIT"),  # 4) 새 지정가 익절
+    ]
+    p = state()["position"]
+    assert p["order_style"] == bt.order_style() and p["stop_id"] != old_sid
+    assert ex.algos[p["stop_id"]]["quantity"] == "0.029"
+    assert ex.algos[p["tp_id"]]["type"] == "TAKE_PROFIT"
+    assert ex.algos[old_sid]["algoStatus"] == ex.algos[tid]["algoStatus"] == "CANCELED"
+    assert any("새 방식으로 바꿨어요" in m for m in env["sent"])
+    n = len(ex.writes)
+    run(env, ex)  # 다음 실행은 그대로
+    assert len(ex.writes) == n
+
+
+def test_migration_keeps_old_stop_if_new_one_fails(env, monkeypatch):
+    """새 손절이 거부되면 옛 손절을 그대로 두고 다음 실행에서 다시 한다(손절 없는 틈 없음)."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex, style="")
+    st = state()
+    st["position"].pop("order_style")
+    bt._save(bt.DIR / "state.json", st)
+    real = ex._handle
+
+    def no_new_stop(method, path, p):
+        if method == "POST" and path == "/fapi/v1/algoOrder":
+            raise bt.Rejected(-1111, "Precision is over the maximum")
+        return real(method, path, p)
+
+    ex._handle = no_new_stop
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.algos[pos["stop_id"]]["algoStatus"] == "NEW"
+    assert "order_style" not in state()["position"] and ex.amt == pytest.approx(0.029)
+    assert not [w for w in ex.writes if w[0] == "DELETE"]
+
+
+def test_stop_order_market_switch(env, monkeypatch):
+    """STOP_ORDER = "market"이면 손절만 예전 STOP_MARKET(closePosition), 익절은 지정가 그대로."""
+    monkeypatch.setattr(bt, "STOP_ORDER", "market")
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    algos = [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
+    assert [a["type"] for a in algos] == ["STOP_MARKET", "TAKE_PROFIT"]
+    assert algos[0]["closePosition"] == "true" and "quantity" not in algos[0]
+    assert state()["position"]["order_style"] == "stop-market/tp-limit"
+
+
+def test_stop_limit_price_rounds_safe_way():
+    assert bt.stop_limit_price("long", Decimal("97000.05"), "0.1") == Decimal("96515.0")
+    assert bt.stop_limit_price("short", Decimal("103000"), "0.1") == Decimal("103515.0")
+    assert bt.stop_limit_price("short", Decimal("100.01"), "0.01") == Decimal("100.52")
+
+
+def test_guard_past_stop_is_chased_with_limit(env, multi, monkeypatch):
+    """지키는 수동 포지션이 이미 손절가를 지났으면(-2021) 시장가가 아니라 지정가 추격으로 닫는다."""
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    ex.amts["ETHUSDT"] = 0.5
+    ex.reject_stop = True  # 새 손절은 바로 걸릴 값(BTC 손절은 이미 걸려 있어 다시 안 건다)
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    c = _closes(ex, "ETHUSDT")
+    assert c and c[0]["side"] == "SELL" and c[0]["price"] == "3000.0"
+    assert ex.amts["ETHUSDT"] == 0 and "ETHUSDT" not in state()["guards"]
+    assert ex.amts["BTCUSDT"] == pytest.approx(0.029) and not _markets(ex)
+    assert any("지정가로 닫았어요" in m for m in env["sent"])
+
+
+def test_guard_close_rests_and_resumes(env, multi, monkeypatch):
+    """지키는 포지션 청산이 실행 안에 안 끝나면 걸어 두고 다음 실행이 이어서 닫는다."""
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    ex.amts["ETHUSDT"] = 0.5
+    ex.reject_stop = True
+    ex.close_script = ["none"] * 500
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    g = state()["guards"]["ETHUSDT"]
+    assert g["closing"]["cid"] and ex.limits[g["closing"]["cid"]]["status"] == "NEW"
+    ex.close_script = []
+    mrun(env, ex, multi)
+    assert ex.limits[g["closing"]["cid"]]["status"] == "CANCELED"
+    assert ex.amts["ETHUSDT"] == 0 and "ETHUSDT" not in state()["guards"]
+
+
+def test_guard_old_market_orders_migrated_new_first(env, multi, monkeypatch):
+    """옛 방식 지킴 주문은 새 지정가 손절·익절을 건 뒤에 거둔다."""
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    ex.amts["ETHUSDT"] = 0.5
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    st = state()
+    g = st["guards"]["ETHUSDT"]
+    old = (g["stop_id"], g["tp_id"])
+    g.pop("order_style")  # 옛 방식으로 건 지킴
+    bt._save(bt.DIR / "state.json", st)
+    ex.calls.clear()
+    mrun(env, ex, multi)
+    g2 = state()["guards"]["ETHUSDT"]
+    seq = [(m, x.get("clientAlgoId")) for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
+    posts = [i for i, (m, _) in enumerate(seq) if m == "POST"]
+    dels = [i for i, (m, c) in enumerate(seq) if m == "DELETE" and c in old]
+    assert len(dels) == 2 and max(posts) < min(dels)  # 새 주문 먼저, 옛 주문은 그 뒤
+    assert g2["order_style"] == bt.order_style() and "stale" not in g2
+    assert all(ex.algos[i]["algoStatus"] == "NEW" for i in (g2["stop_id"], g2["tp_id"]))
+
+
+# ------------------------------------------ 레드팀 2026-11-13 (7ffb3aa 지적)
+
+
+def test_f1_chase_sleeps_and_caps_when_orders_expire(env, monkeypatch):
+    """거래소가 청산 지정가를 바로 끝내도(EXPIRED) 쉬지 않고 다시 내지 않는다: 회차마다 쉬고,
+    회차 상한·실행 한도에서 멈춘다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    ex.close_script = ["expired"] * 10_000
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    c = _closes(ex)
+    assert 2 <= len(c) <= bt.CLOSE_MAX_ROUNDS
+    assert ex.amt == pytest.approx(0.029) and state()["closing"]["why"] == "signal"
+    assert not bt.entries_blocked()
+
+
+def test_f2_4142_treated_as_would_trigger(env, monkeypatch):
+    """-4142(손절·익절이 바로 걸릴 값)도 -2021과 같이: 지정가로 닫고 '손절'로 적는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    ex.algos.clear()
+    ex.reject_stop, ex.reject_code = True, -4142
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.amt == 0 and jsonl("closed.jsonl")[-1]["why"] == "stop"
+
+
+def test_f3_resume_cancels_triggered_child_first(env, monkeypatch):
+    """이어서 쫓는 실행에서도 걸린 손절이 남긴 주문을 먼저 지운다(안 지우면 -2022만 반복)."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    ex.child_conflict = True
+    child = ex.trigger_unfilled(pos["stop_id"])
+    st = state()
+    st["closing"] = {"symbol": "BTCUSDT", "why": "stop", "base": "mnv-x9", "k": 0, "cid": None}
+    bt._save(bt.DIR / "state.json", st)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert ex.limits[child]["status"] == "CANCELED"
+    assert ex.amt == 0 and jsonl("closed.jsonl")[-1]["why"] == "stop"
+
+
+def test_f3_reduce_conflict_clears_engine_orders_only(env, monkeypatch):
+    """-2022인데 포지션이 남았으면 엔진(mnv-) reduceOnly 주문만 지우고 다시. 사용자 주문은 둔다."""
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    base = {"executedQty": "0", "avgPrice": "0", "price": "105000", "origQty": "0.029"}
+    common = {"status": "NEW", "side": "SELL", "how": "none", "reduce": True, "tif": "GTC"}
+    ex.limits["mnv-stale-x1-1"] = {
+        **base,
+        **common,
+        "clientOrderId": "mnv-stale-x1-1",
+        "orderId": 1,
+        "conflict": True,
+    }
+    ex.limits["user-tp"] = {**base, **common, "clientOrderId": "user-tp", "orderId": 2}
+    st = state()
+    ctx = bt.Ctx(ex, FakeMarket(ex.price), env["send"], NOW, True)
+    bt.protect_close(ctx, st, "protect")
+    assert st["position"] is None and ex.amt == 0
+    assert ex.limits["mnv-stale-x1-1"]["status"] == "CANCELED"
+    assert ex.limits["user-tp"]["status"] == "NEW"
+    assert pos
+
+
+def _engine_long_with_tp(ex):
+    pos = engine_long(ex)
+    tid = f"mnv-{pos['bar'] // 60000}-t"
+    ex.algos[tid] = {
+        "clientAlgoId": tid,
+        "algoStatus": "NEW",
+        "triggerPrice": "103000.0",
+        "type": "TAKE_PROFIT",
+        "side": "SELL",
+        "price": "103000.0",
+        "quantity": "0.029",
+    }
+    st = state()
+    st["position"].update(tp=103000.0, tp_id=tid, tp_pct=3.0, tp_backfilled=True)
+    bt._save(bt.DIR / "state.json", st)
+    return st["position"]
+
+
+def test_f4_triggered_tp_below_entry_stays_normal_position(env, monkeypatch):
+    """익절이 걸렸는데 호가가 진입가보다 나쁘면 닫지 않는다: 남은 익절 주문을 지우고 평소
+    포지션으로 둔다(손절 그대로, 익절은 다시 걸고, 알림 한 번, 매매 멈추지 않음)."""
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = _engine_long_with_tp(ex)
+    child = ex.trigger_unfilled(pos["tp_id"])
+    with_signal(monkeypatch, None)
+    s = run(env, ex, FakeMarket(99_000.0))
+    assert ex.limits[child]["status"] == "CANCELED" and not _closes(ex)
+    p = state()["position"]
+    assert ex.amt == pytest.approx(0.029) and "closing" not in state()
+    assert ex.algos[pos["stop_id"]]["algoStatus"] == "NEW"  # 손절은 그대로
+    assert p["tp_id"] != pos["tp_id"] and ex.algos[p["tp_id"]]["algoStatus"] == "NEW"
+    assert ex.algos[p["tp_id"]]["price"] == "103000.0"
+    assert sum("익절가에 닿았지만" in m for m in env["sent"]) == 1
+    assert "수동 개입" not in s["decision"]
+    # 다시 걸린 익절도 또 걸렸다: 알림은 한 번만
+    ex.trigger_unfilled(p["tp_id"])
+    run(env, ex, FakeMarket(99_000.0))
+    assert sum("익절가에 닿았지만" in m for m in env["sent"]) == 1 and ex.amt > 0
+
+
+def test_h1_tp_waiting_then_stop_gap_is_chased_as_stop(env, monkeypatch):
+    """익절이 진입가 아래라 기다리는 중에 손절이 걸리고 지정가가 안 채워지면 손절로 호가 추격."""
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = _engine_long_with_tp(ex)
+    ex.trigger_unfilled(pos["tp_id"])
+    with_signal(monkeypatch, None)
+    run(env, ex, FakeMarket(99_000.0))
+    assert ex.algos[pos["stop_id"]]["algoStatus"] == "NEW"
+    child = ex.trigger_unfilled(pos["stop_id"])
+    run(env, ex, FakeMarket(96_000.0))
+    assert ex.limits[child]["status"] == "CANCELED"
+    assert ex.amt == 0 and _closes(ex)[-1]["price"] == "96000.0"
+    assert jsonl("closed.jsonl")[-1]["why"] == "stop"
+
+
+def test_h1_tp_closing_switches_to_stop_when_stop_hits(env, monkeypatch):
+    """익절 청산을 쫓는 도중(이어서) 손절이 걸리면 손절로 바꿔 바닥 없이 쫓고 손절로 적는다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = _engine_long_with_tp(ex)
+    child = ex.trigger_unfilled(pos["stop_id"])
+    st = state()
+    st["closing"] = {"symbol": "BTCUSDT", "why": "tp", "base": "mnv-x7", "k": 0, "cid": None}
+    bt._save(bt.DIR / "state.json", st)
+    with_signal(monkeypatch, None)
+    run(env, ex, FakeMarket(96_000.0))
+    assert ex.limits[child]["status"] == "CANCELED"
+    assert ex.amt == 0 and _closes(ex)[-1]["price"] == "96000.0"
+    assert jsonl("closed.jsonl")[-1]["why"] == "stop"
+
+
+def test_h2_tp_wait_does_not_freeze_opposite_signal(env, monkeypatch):
+    """익절이 진입가 아래로 걸려 기다리는 중에도 반대 신호 청산·진입은 평소대로 한다."""
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = _engine_long_with_tp(ex)
+    ex.trigger_unfilled(pos["tp_id"])
+    with_signal(monkeypatch, "short", close=99_000.0)
+    s = run(env, ex, FakeMarket(99_000.0))
+    assert jsonl("closed.jsonl")[-1]["why"] == "signal"
+    assert state()["position"]["side"] == "short" and s["decision"].startswith("BTC 숏 진입")
+
+
+def test_f4_triggered_stop_still_chased_below_entry(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    ex.trigger_unfilled(pos["stop_id"])
+    with_signal(monkeypatch, None)
+    run(env, ex, FakeMarket(96_000.0))
+    assert ex.amt == 0 and _closes(ex)[-1]["price"] == "96000.0"
+
+
+def test_f5_children_only_by_actual_order_id(env):
+    """actualOrderId가 없으면 짐작해서 엔진 밖 reduceOnly STOP 주문을 지우지 않는다."""
+    ex = FakeExchange()
+    ex.amt = 0.029
+    ex.limits["user-stop"] = {
+        "clientOrderId": "user-stop",
+        "status": "NEW",
+        "executedQty": "0",
+        "avgPrice": "0",
+        "price": "95000",
+        "origQty": "0.029",
+        "side": "SELL",
+        "how": "none",
+        "reduce": True,
+        "tif": "GTC",
+        "type": "STOP",
+        "orderId": 77,
+    }
+    assert bt.cancel_exit_children(ex, [{"algoStatus": "TRIGGERED"}]) == []
+    assert ex.limits["user-stop"]["status"] == "NEW"
+    assert bt.cancel_exit_children(ex, [{"actualOrderId": "77"}]) == ["77"]
+    assert ex.limits["user-stop"]["status"] == "CANCELED"
+
+
+def test_f6_unconfirmed_stop_reused_not_stacked(env, monkeypatch):
+    """확인 못 해 stop_id로 못 적은 손절이 걸려 있으면 새로 쌓지 않고 그걸 쓴다. 같은 포지션의
+    여분 엔진 손절은 취소해 하나만 둔다."""
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)
+    ex.algos.clear()
+    pre = f"mnv-{pos['bar'] // 60000}-s"
+    for n in (2, 3):
+        ex.algos[f"{pre}{n}"] = {
+            "clientAlgoId": f"{pre}{n}",
+            "algoStatus": "NEW",
+            "triggerPrice": "97000.0",
+            "type": "STOP",
+            "quantity": "0.029",
+        }
+    st = state()
+    st["position"].update(stop_id=f"{pre}1", stop_n=3)
+    bt._save(bt.DIR / "state.json", st)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    assert not [x for m, p, x in ex.writes if m == "POST" and p == "/fapi/v1/algoOrder"]
+    p = state()["position"]
+    live_stops = [a for a in ex.algos.values() if a["algoStatus"] == "NEW"]
+    assert len(live_stops) == 1 and p["stop_id"] == live_stops[0]["clientAlgoId"]

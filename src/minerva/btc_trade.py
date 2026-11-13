@@ -15,7 +15,7 @@ TradFi 전체를 쉰다. 그 시장이 쉬는 시간(`tradingSchedule` NO_TRADIN
 Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70), W=3, 3개 중 3개, 넘어옴(cross) 모드.
 매매: 롱↔숏 갈아타기. 반대 신호면 닫고 반대로 연다. 같은 방향 신호면 그대로 둔다.
 같은 봉에 롱·숏 신호가 둘 다 나오면 아무것도 하지 않는다(화면 `switchSim`과 같음).
-손절: 진입 체결가에서 3% 떨어진 거래소 STOP_MARKET(closePosition, 마크 가격 기준).
+손절: 진입 체결가에서 3% 떨어진 거래소 조건부 지정가 STOP(수량·reduceOnly, 마크 가격 기준).
 손절 뒤에는 다음 신호까지 쉰다. 레버리지 3배, 교차 마진(바꾸지 않는다).
 크기: 가용 잔고 × margin_frac × (1 − FEE_BUFFER) × 3 / 가격, 종목 수량 단위로 내림.
 추격 한도: 실행 시 가격이 신호 봉 종가에서 진입 방향으로 1%(15분·4시간·일봉 방향이 모두 같으면 3%)
@@ -34,9 +34,9 @@ Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70), W=3, 3개 중 3개, 넘어옴(cros
 - 주문 ID는 신호 봉과 동작으로 정한다(`mnv-<봉 시작 분>-<동작>`). 보내기 전에 같은 ID를 조회해
   중복을 막는다. 통신 오류만 10초 간격 최대 3회 다시 보낸다. 거래소 거부는 다시 보내지 않는다.
 - 매 실행마다 바이낸스와 대사한다(포지션·미체결·체결): 손절 체결 확인, 수동 개입 감지,
-  손절 주문이 없으면 다시 걸고 실패하면 시장가로 닫는다.
+  손절 주문이 없으면 다시 걸고 실패하면 지정가 추격으로 닫는다(시장가 주문은 내지 않는다).
 
-조건부 주문(STOP_MARKET)은 2025-12-09부터 `/fapi/v1/algoOrder`(Algo Service)로만 받는다.
+조건부 주문(STOP·TAKE_PROFIT)은 2025-12-09부터 `/fapi/v1/algoOrder`(Algo Service)로만 받는다.
 `/fapi/v1/order`로 보내면 -4120으로 거부된다.
 
 실행: `python -m minerva.btc_trade run` (minerva-btc-trade.timer, 15분 봉 마감 20초 뒤)
@@ -128,18 +128,42 @@ FIXED_TP_PCT = 3.0
 # 확인해. 수동으로 샀어도 알아서 손절과 익절해야 해"). 실행마다(15분) 계좌 전체를 본다.
 # - 엔진이 빈손인데 포지션이 보이면 이어받아 손절 3%·익절(FIXED_TP_PCT)을 걸고
 #   엔진 포지션처럼 관리한다
-#   (거래소 평균 진입가 기준. 이미 손절가를 지났으면 손절을 걸 수 없어 시장가로 닫는다).
+#   (거래소 평균 진입가 기준. 이미 손절가를 지났으면 손절을 걸 수 없어 지정가 추격으로 닫는다).
 # - 엔진 포지션 수량·방향을 손으로 바꿨으면 새 수량·평균가로 다시 이어받는다.
 # - 엔진 포지션을 손으로 닫았으면 기록만 하고 매매를 멈추지 않는다.
 # - 엔진이 이미 한 종목을 들고 있을 때 다른 종목 수동 포지션은 손절·익절 주문만 걸어 지킨다(guards).
 MANUAL_ADOPT = True
 USER_CLOSE_STOP = -4130  # 같은 방향 closePosition 조건부 주문이 이미 있음(사용자 것)
-WOULD_TRIGGER = -2021  # "Order would immediately trigger": 이미 손절가를 지났다
+# "Order would immediately trigger"(-2021)·"take profit or stop order will be triggered
+# immediately"(-4142): 이미 손절가·익절가를 지났다(레드팀 2026-11-13: 둘 다 같게)
+WOULD_TRIGGER = (-2021, -4142)
 # 마크 가격: 체결가(CONTRACT_PRICE)는 한 번의 꼬리·허수 체결로도 손절이 걸린다. 마크 가격은 여러
 # 거래소 지수로 만들어 순간 튐에 덜 걸리고 청산 기준과도 같다.
 # 대신 급락 때 체결가보다 늦게 걸릴 수 있다.
 WORKING_TYPE = "MARK_PRICE"
-TP_KIND = "TAKE_PROFIT_MARKET"
+# 모든 매매는 지정가(사용자 2026-11-13 20:00 "시장가 말고 그 시점에 가장 가까운 지정가로 해.
+# 거래될때까지", "모든 매매는 지정가로 해"). 청산·손절·익절에 시장가 주문을 내지 않는다.
+# 예외는 진입 남은 수량: 지정가로 60초 쫓아도 안 되면 시장가(사용자 2026-11-13 20:17
+# "60초 따라가다가 안되면 시장가로 하자", ladder 3단계).
+# 거래소 손절: "limit"이면 조건부 지정가(STOP, 수량·reduceOnly). 걸리면 손절가에서
+# STOP_LIMIT_SLIP_PCT만큼 불리한 지정가가 나가 그 안에서만 체결된다. 그보다 크게 갭이 나면
+# 체결되지 않고 남는다 → 엔진이 다음 실행(최대 15분)에 호가 추격으로 닫는다.
+# "market"이면 예전 STOP_MARKET(closePosition). 사용자가 손절만 시장가로 되돌리라 하면
+# 여기만 바꾼다.
+STOP_ORDER = "limit"
+STOP_LIMIT_SLIP_PCT = 0.5
+STOP_KIND = "STOP"
+# 익절은 늘 조건부 지정가(TAKE_PROFIT): 익절가에 걸리면 익절가 지정가(수량·reduceOnly).
+TP_KIND = "TAKE_PROFIT"
+# 지정가 청산 추격: 지금 바로 체결되는 가장 가까운 가격(매도 = 매수 1호가, 매수 = 매도 1호가)에
+# reduceOnly 지정가를 걸고 CLOSE_POLL_S마다 보고, CLOSE_WAIT_S 안에 다 안 되면 취소하고 남은
+# 수량을 그때 호가에 다시 건다. 실행 한도(RUN_DEADLINE_S − CLOSE_MARGIN_S)가 되면 마지막 지정가를
+# 걸어 둔 채(GTC) 끝내고 `state["closing"]`에 적어 다음 실행이 이어서 쫓는다.
+CLOSE_WAIT_S = 5
+CLOSE_POLL_S = 2
+CLOSE_MARGIN_S = 30
+CLOSE_MAX_ROUNDS = 80  # 한 실행에서 청산 추격 회차 상한(요청 한도 보호)
+REDUCE_REJECT = -2022  # "ReduceOnly Order is rejected": 줄일 포지션이 없다
 # 시험에서 Claude 호출을 바꿔 끼우는 자리. None이면 실제 `claude -p`
 AI_CALLER: Callable[[str], str] | None = None
 # 사용자 지정 2026-11-08. 실험실 기본값과 같지만, 실험실 기본값이 바뀌어도
@@ -198,20 +222,25 @@ RECOVER_TRY_GAP = 30
 STALE_MS = 2 * BAR_MS
 # 거래소 지연으로 실행이 길어지면 새 진입은 하지 않는다(systemd 제한 600초 전에 손절까지 끝나게)
 MAX_RUN_SECS = 180
-# 진입 방식(사용자 2026-11-08 22:48 "급등/급락이 아니면 지정가로, 안 되면 조금 더 올려서라도"):
-# 급변동이면 시장가, 아니면 post-only(GTX) 지정가를 최우선 호가에 걸고 10초마다 한 틱씩 시장 쪽으로
-# 옮긴다. 시간이 다 되면 남은 수량은 시장가. `config.json`의 "entry"로 바꿀 수 있다.
+# 진입 방식(사용자 2026-11-08 22:48 "급등/급락이 아니면 지정가로, 안 되면 조금 더 올려서라도",
+# 2026-11-13 "모든 매매는 지정가로 해", 20:17 "60초 따라가다가 안되면 시장가로 하자"):
+# 급변동이 아니면 post-only(GTX) 지정가를
+# 최우선 호가에 걸고 10초마다 한 틱씩 시장 쪽으로 옮긴다. 급변동이거나 그래도 남으면 바로 체결되는
+# 가장 가까운 가격(롱 = 매도 1호가, 숏 = 매수 1호가)에 일반 지정가(GTC)를 걸고 몇 초마다 다시 건다.
+# 그래도(touch_max_s) 남으면 남은 수량은 시장가(추격 한도 안일 때만). `config.json`의 "entry".
 ENTRY_DEFAULTS: dict = {
     "fast_1m_pct": 0.3,  # 최근 1분봉 시가 대비 지금 가격 변화(%) 이상이면 급변동
     "fast_range_atr": 1.0,  # 지금 15분봉 고저 폭이 ATR(14, 15분) × 이 값 이상이면 급변동
     "fast_from_signal_pct": 0.5,  # 신호 봉 종가에서 진입 방향으로 이만큼(%) 이미 갔으면 급변동
-    "ladder_rounds": 6,  # 지정가 최대 회차
+    "ladder_rounds": 6,  # post-only 지정가 최대 회차
     "ladder_wait_s": 10,  # 회차마다 기다리는 시간
     "ladder_poll_s": 2,  # 체결 확인 간격
-    "ladder_max_s": 70,  # 사다리 전체 시간 한도(넘으면 남은 수량 시장가)
+    "ladder_max_s": 70,  # post-only 단계 시간 한도(넘으면 바로 체결되는 지정가 단계로)
+    "touch_wait_s": 5,  # 바로 체결되는 지정가: 회차마다 기다리는 시간
+    "touch_max_s": 60,  # 바로 체결되는 지정가 단계 시간 한도(넘으면 남은 수량 시장가)
 }
 MAKER_FEE = 0.0002
-# 한 실행의 전체 시간 한도(systemd 600초 전에 손절까지 끝나게). 넘으면 사다리는 시장가 없이 멈춘다
+# 한 실행의 전체 시간 한도(systemd 600초 전에 손절까지 끝나게). 넘으면 사다리는 멈춘다
 RUN_DEADLINE_S = 420
 GTX_REJECT = (-5022,)  # post-only가 바로 체결될 가격이라 거부됨 → 새 호가로 다시
 # AI가 연달아 기본값으로 돌아가면(인증 만료·한도) 알린다
@@ -673,12 +702,13 @@ def foreign_orders(client) -> list[str]:
     return out
 
 
-def cancel_engine_stops(client, keep: str | None = None) -> list[str]:
-    """엔진 손절(접두어 mnv-)만 취소한다. 사용자 주문은 건드리지 않는다."""
+def cancel_engine_stops(client, keep: str | set | None = None) -> list[str]:
+    """엔진 손절(접두어 mnv-)만 취소한다. 사용자 주문은 건드리지 않는다. keep은 남길 ID(들)."""
+    keep = {keep} if isinstance(keep, str) else set(keep or ())
     done = []
     for a in open_algos(client):
         cid = str(a.get("clientAlgoId", ""))
-        if not cid.startswith(PREFIX) or cid == keep:
+        if not cid.startswith(PREFIX) or cid in keep:
             continue
         try:
             _delete(client, "/fapi/v1/algoOrder", {"clientAlgoId": cid})
@@ -702,8 +732,37 @@ def _delete(client, path: str, params: dict):
     raise NetworkError(f"DELETE {path} 실패: {last}")
 
 
-def market(client, side: str, qty: Decimal, cid: str, reduce: bool) -> dict:
-    """시장가. side는 BUY/SELL. 체결 결과(평균가·수량)를 돌려준다."""
+def limit_order(
+    client, side: str, qty: Decimal, px: Decimal, cid: str, tif: str = "GTX", reduce: bool = False
+) -> dict:
+    """지정가 주문. side는 BUY/SELL, tif는 GTX(post-only) 또는 GTC. 시장가는 내지 않는다."""
+    params = {
+        "symbol": _sym(client),
+        "side": side,
+        "type": "LIMIT",
+        "timeInForce": tif,
+        "quantity": str(qty),
+        "price": str(px),
+        "newClientOrderId": cid,
+        "newOrderRespType": "RESULT",
+    }
+    if reduce:
+        params["reduceOnly"] = "true"
+    # 바로 체결되는 진입 GTC는 응답을 잃어도 다시 보내지 않는다: 체결된 주문은 ID 중복 검사에 안
+    # 걸려(미체결끼리만) 조회가 늦으면 두 번 들어간다(예전 시장가 진입과 같은 이유). post-only는
+    # 바로 체결될 수 없고, reduceOnly는 포지션을 늘릴 수 없어 다시 보내도 된다
+    resend = reduce or tif == "GTX"
+    r = _send(
+        client, "POST", "/fapi/v1/order", params, "/fapi/v1/order", "origClientOrderId", resend
+    )
+    _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "req": params, "res": _slim(r)})
+    return r
+
+
+def market_entry(client, side: str, qty: Decimal, cid: str) -> dict:
+    """진입 남은 수량 시장가(진입만. 청산·손절·익절은 시장가를 쓰지 않는다). 응답을 잃어도 다시
+    보내지 않는다: 바로 체결된 주문은 ID 중복 검사에 안 걸려 두 번 들어갈 수 있다
+    (대사가 이어 받는다)."""
     params = {
         "symbol": _sym(client),
         "side": side,
@@ -712,11 +771,8 @@ def market(client, side: str, qty: Decimal, cid: str, reduce: bool) -> dict:
         "newClientOrderId": cid,
         "newOrderRespType": "RESULT",
     }
-    if reduce:
-        params["reduceOnly"] = "true"
-    # 진입(reduce=False)은 다시 보내지 않는다. reduceOnly는 포지션을 늘릴 수 없어 다시 보내도 된다
     r = _send(
-        client, "POST", "/fapi/v1/order", params, "/fapi/v1/order", "origClientOrderId", reduce
+        client, "POST", "/fapi/v1/order", params, "/fapi/v1/order", "origClientOrderId", False
     )
     if float(r.get("avgPrice") or 0) == 0 and r.get("status") != "FILLED":
         _sleep(1)
@@ -728,22 +784,110 @@ def market(client, side: str, qty: Decimal, cid: str, reduce: bool) -> dict:
     return r
 
 
-def place_stop(client, side: str, trigger: Decimal, cid: str, kind: str = "STOP_MARKET") -> dict:
-    """포지션 전체를 닫는 조건부 주문(Algo Service). side는 포지션 방향(long/short).
-    kind = STOP_MARKET(손절) 또는 TAKE_PROFIT_MARKET(익절)."""
+def cancel_order(client, cid: str) -> dict:
+    """일반 주문 취소. 취소한 뒤 반드시 다시 조회해 그 사이 체결된 수량까지 센다(취소·체결 경합).
+    끝 상태를 확인하지 못하면 마지막으로 본 상태(또는 UNKNOWN)."""
+    try:
+        _delete(client, "/fapi/v1/order", {"symbol": _sym(client), "origClientOrderId": cid})
+    except Rejected as e:
+        if e.code not in NOT_FOUND:
+            raise
+    _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel": cid})
+    r = None
+    for k in range(3):
+        if k:
+            _sleep(1)
+        r = _query(client, "/fapi/v1/order", "origClientOrderId", cid)
+        if r and r.get("status") in TERMINAL:
+            return r
+    return r or {"status": "UNKNOWN", "executedQty": "0"}
+
+
+def stop_limit_price(side: str, trigger: Decimal, tick: str) -> Decimal:
+    """조건부 지정가 손절의 지정가: 손절가에서 STOP_LIMIT_SLIP_PCT만큼 불리하게(롱은 아래, 숏은 위),
+    틱은 체결되기 쉬운 쪽(롱 내림, 숏 올림)으로 맞춘다."""
+    slip = STOP_LIMIT_SLIP_PCT / 100
+    if side == "long":
+        return _round(round(float(trigger) * (1 - slip), 10), tick, ROUND_FLOOR)
+    return _round(round(float(trigger) * (1 + slip), 10), tick, ROUND_CEILING)
+
+
+def order_style() -> str:
+    """지금 손절·익절 주문 방식. 포지션·지킴 기록의 값과 다르면 다음 실행이 다시 건다
+    (_migrate_exits)."""
+    return f"stop-{STOP_ORDER}/tp-limit"
+
+
+def place_stop(
+    client,
+    side: str,
+    trigger: Decimal,
+    cid: str,
+    kind: str = STOP_KIND,
+    qty: float | Decimal | None = None,
+) -> dict:
+    """손절·익절 조건부 주문(Algo Service). side는 포지션 방향(long/short).
+    kind = STOP(손절) 또는 TAKE_PROFIT(익절). 둘 다 지정가·수량·reduceOnly(qty 필요):
+    손절 지정가는 손절가에서 STOP_LIMIT_SLIP_PCT 불리하게, 익절 지정가는 익절가 그대로.
+    STOP_ORDER가 "market"이면 손절만 예전 STOP_MARKET(closePosition)."""
     params = {
         "algoType": "CONDITIONAL",
         "symbol": _sym(client),
         "side": "SELL" if side == "long" else "BUY",
-        "type": kind,
         "triggerPrice": str(trigger),
-        "closePosition": "true",
         "workingType": WORKING_TYPE,
         "clientAlgoId": cid,
     }
+    if kind == STOP_KIND and STOP_ORDER == "market":
+        params.update(type="STOP_MARKET", closePosition="true")
+    else:
+        if not qty or float(qty) <= 0:
+            raise ValueError(f"{cid}: 지정가 손절·익절에는 수량이 필요해요")
+        if kind == STOP_KIND:
+            px = stop_limit_price(side, trigger, filters(client)["tick"])
+        else:
+            px = trigger
+        params.update(
+            type=kind,
+            price=str(px),
+            quantity=str(_close_qty(float(qty))),
+            reduceOnly="true",
+            timeInForce="GTC",
+        )
     r = _send(client, "POST", "/fapi/v1/algoOrder", params, "/fapi/v1/algoOrder", "clientAlgoId")
     _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "req": params, "res": _slim(r)})
     return r
+
+
+def _exit_triggered(client, cid: str | None) -> dict | None:
+    """엔진 손절·익절 조건부 주문이 걸렸으면(TRIGGERED·FINISHED 등) 그 조회 결과, 아니면 None.
+    조회가 안 되면 None(다음 실행에서 다시 본다)."""
+    if not cid or cid == "user":
+        return None
+    try:
+        st = _query(client, "/fapi/v1/algoOrder", "clientAlgoId", cid)
+    except (Rejected, NetworkError):
+        return None
+    return st if _triggered(st) else None
+
+
+def cancel_exit_children(client, algos: list[dict | None]) -> list[str]:
+    """걸린 조건부 지정가가 거래소에 남긴 일반 지정가(체결 안 된 손절·익절 주문)를 취소한다.
+    algoOrder 조회의 actualOrderId로만 찾는다(짐작해서 사용자 주문을 지우지 않는다, 레드팀
+    2026-11-13). actualOrderId가 없으면 아무것도 지우지 않는다. 취소한 orderId 목록."""
+    sym = _sym(client)
+    ids = sorted({str(a.get("actualOrderId")) for a in algos if a and a.get("actualOrderId")})
+    done: list[str] = []
+    for oid in ids:
+        try:
+            _delete(client, "/fapi/v1/order", {"symbol": sym, "orderId": oid})
+        except Rejected as e:
+            if e.code not in NOT_FOUND:
+                raise
+            continue  # 이미 체결·취소됐다
+        done.append(oid)
+        _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel_child": oid})
+    return done
 
 
 def _slim(r: dict) -> dict:
@@ -767,9 +911,15 @@ def stop_is_open(client, cid: str, tries: int = 3) -> bool:
     for k in range(tries):
         if k:
             _sleep(1)
-        if any(a.get("clientAlgoId") == cid for a in open_algos(client)):
+        if cid in open_algo_ids(open_algos(client)):
             return True
     return False
+
+
+def open_algo_ids(algos: list[dict]) -> set:
+    """아직 걸리지 않은(NEW) 조건부 주문 ID. 걸린 뒤(TRIGGERED 등) 목록에 남아 있어도 빼서,
+    '손절이 이미 걸렸는데 남은 지정가가 체결 안 됨'을 놓치지 않는다."""
+    return {a.get("clientAlgoId") for a in algos if (a.get("algoStatus") or "NEW") == "NEW"}
 
 
 def stop_placed(client, r: dict, cid: str) -> bool:
@@ -1193,24 +1343,73 @@ def reconcile_dry(ctx: Ctx, state: dict, rows15: list[list], now_ms: int) -> Non
         return
 
 
-def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
-    """실전 엔진 포지션에 손절(·익절)이 걸려 있게 한다. 손절을 못 걸면 시장가로 닫는다.
-    익절은 못 걸어도 손절이 지키므로 알리고 익절 없이 간다. 보호되면 True."""
+def _reuse_open_stop(ctx: Ctx, pos: dict, algos: list[dict], qty: float) -> str | None:
+    """이 포지션 엔진 손절(ID `<봉>-s…`)이 이미 걸려 있으면(지금 방식·같은 손절가·같은 수량) 그 ID.
+    응답을 잃었거나 확인이 늦어 stop_id로 적지 못한 손절 위에 또 쌓지 않는다(레드팀 2026-11-13).
+    하나를 고르면 같은 접두어의 다른 엔진 손절은 취소해 손절을 하나만 둔다. 없으면 None."""
+    prefix = _cid(pos["bar"], "s", pos_symbol(pos))
+    want = "STOP_MARKET" if STOP_ORDER == "market" else STOP_KIND
+    mine = [
+        a
+        for a in algos
+        if (a.get("algoStatus") or "NEW") == "NEW"
+        and str(a.get("clientAlgoId", "")).startswith(prefix)
+    ]
+
+    def fits(a: dict) -> bool:
+        try:
+            same_px = abs(float(a.get("triggerPrice") or 0) - float(pos["stop"])) < 1e-9
+            same_q = want == "STOP_MARKET" or abs(float(a.get("quantity") or 0) - qty) < 1e-9
+        except (TypeError, ValueError):
+            return False
+        return a.get("type") == want and same_px and same_q
+
+    keep = next((a["clientAlgoId"] for a in reversed(mine) if fits(a)), None)
+    if keep is None:
+        return None
+    for a in mine:
+        cid = a["clientAlgoId"]
+        if cid == keep:
+            continue
+        try:
+            _delete(ctx.client, "/fapi/v1/algoOrder", {"clientAlgoId": cid})
+            _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel": cid})
+        except Rejected as e:
+            if e.code not in NOT_FOUND:
+                ctx.event(event="extra_stop_cancel_failed", cid=cid, error=str(e))
+        except NetworkError as e:
+            ctx.event(event="extra_stop_cancel_failed", cid=cid, error=str(e))
+    ctx.event(event="reuse_stop", cid=keep, cancelled=[a["clientAlgoId"] for a in mine])
+    return keep
+
+
+def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True, qty: float | None = None) -> bool:
+    """실전 엔진 포지션에 손절(·익절)이 걸려 있게 한다. 손절을 못 걸면 지정가 추격으로 닫는다.
+    익절은 못 걸어도 손절이 지키므로 알리고 익절 없이 간다. 보호되면 True.
+    qty는 지정가 손절·익절 수량(없으면 엔진 기록 수량, 거래소 수량이 다를 때 넘긴다)."""
     pos = state["position"]
-    open_ids = {a.get("clientAlgoId") for a in open_algos(ctx.client)}
+    qty = qty or pos["qty"]
+    algos = open_algos(ctx.client)
+    open_ids = open_algo_ids(algos)
+    if pos["stop_id"] not in open_ids:
+        found = _reuse_open_stop(ctx, pos, algos, qty)
+        if found:
+            pos["stop_id"] = found
+            _save(DIR / "state.json", state)
+            open_ids.add(found)
     if pos["stop_id"] not in open_ids:
         n = pos.get("stop_n", 0) + 1
         cid = _pos_cid(pos, "s", n)
         trigger = False
         try:
-            r = place_stop(ctx.client, pos["side"], Decimal(str(pos["stop"])), cid)
+            r = place_stop(ctx.client, pos["side"], Decimal(str(pos["stop"])), cid, STOP_KIND, qty)
             pos.update(stop_id=cid, stop_n=n)
             _save(DIR / "state.json", state)
             ok = stop_placed(ctx.client, r, cid)
             why = "" if ok else f"상태 {r.get('algoStatus')}"
         except (Rejected, NetworkError) as e:
             ok, why = False, str(e)
-            trigger = isinstance(e, Rejected) and e.code == WOULD_TRIGGER
+            trigger = isinstance(e, Rejected) and e.code in WOULD_TRIGGER
             if pos.get("manual") and isinstance(e, Rejected) and e.code == USER_CLOSE_STOP:
                 # 사용자가 이미 closePosition 손절을 걸어 두었다: 그걸로 지켜진 것으로 본다
                 pos["stop_id"] = "user"
@@ -1227,8 +1426,16 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
             if not with_tp:  # 수동 개입 포지션은 닫지 않는다: 크게 알리기만
                 ctx.say(f"🆘 손절을 다시 걸지 못했어요({why}). 바이낸스 앱에서 직접 확인하세요!")
                 return False
-            ctx.say(f"❌ 손절 재설정 실패({why}) → 시장가로 닫아요")
-            protect_close(ctx, state, "protect")
+            if trigger:
+                # 이미 손절가를 지났다(손절이 걸렸어야 할 가격): 손절로 보고 지정가로 닫는다
+                ctx.say(
+                    f"✂️ {_name(ctx.symbol)} 이미 손절가 {_px(pos['stop'])}를 지났어요 "
+                    "→ 지정가로 닫아요"
+                )
+                protect_close(ctx, state, "stop")
+            else:
+                ctx.say(f"❌ 손절 재설정 실패({why}) → 지정가로 닫아요")
+                protect_close(ctx, state, "protect")
             return state.get("position") is None
         if pos["stop_id"] != "user":
             ctx.say(
@@ -1239,16 +1446,24 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
         n = pos.get("tp_n", 0) + 1
         cid = _pos_cid(pos, "t", n)
         try:
-            place_stop(ctx.client, pos["side"], Decimal(str(pos["tp"])), cid, TP_KIND)
+            place_stop(ctx.client, pos["side"], Decimal(str(pos["tp"])), cid, TP_KIND, qty)
             pos.update(tp_id=cid, tp_n=n)
             ctx.say(f"🎯 {_name(ctx.symbol)} 익절 주문이 없어 다시 걸었어요: {_px(pos['tp'])}")
         except (Rejected, NetworkError) as e:
-            if isinstance(e, Rejected) and e.code == WOULD_TRIGGER:
-                # 이미 익절가를 지났다(익절 값을 낮췄을 때 등): 기다리지 않고 시장가로 익절한다
+            if (
+                isinstance(e, Rejected)
+                and e.code in WOULD_TRIGGER
+                and _tp_below_entry(ctx, pos["side"], float(pos["entry"]))
+            ):
+                # 마크 가격은 익절가를 지났는데 호가는 진입가보다 나쁘다: 닫지 않고 다음에 다시
+                _tp_wait(ctx, state)
+                return True
+            if isinstance(e, Rejected) and e.code in WOULD_TRIGGER:
+                # 이미 익절가를 지났다(익절 값을 낮췄을 때 등): 기다리지 않고 지정가 추격으로 익절
                 _save(DIR / "state.json", state)
                 ctx.say(
                     f"🎯 {_name(ctx.symbol)} 이미 익절가 {_px(pos['tp'])}를 지났어요 "
-                    "→ 시장가로 익절"
+                    "→ 지정가로 익절"
                 )
                 protect_close(ctx, state, "tp")
                 return state.get("position") is None
@@ -1266,52 +1481,249 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True) -> bool:
     return True
 
 
-def protect_close(ctx: Ctx, state: dict, why: str) -> None:
-    """보호 못 하는 엔진 포지션을 시장가로 닫는다. 실패하면 크게 알린다."""
+def _touch_px(market, close_side: str) -> Decimal:
+    """지금 바로 체결되는 가장 가까운 가격: 매도는 매수 1호가, 매수는 매도 1호가."""
+    bid, ask = market.book()
+    return Decimal(str(bid if close_side == "SELL" else ask))
+
+
+def _clear_reduce_conflicts(c, exit_ids) -> None:
+    """reduceOnly 청산이 남은 reduceOnly 주문과 겹쳐 거부(-2022)될 때: 엔진 주문(mnv-)과 엔진
+    손절·익절이 걸려 남긴 주문(actualOrderId)만 지운다. 사용자 주문은 건드리지 않는다."""
+    cancel_engine_entries(c)
+    algos = [_exit_triggered(c, i) for i in exit_ids if i]
+    if any(algos):
+        cancel_exit_children(c, algos)
+
+
+def chase_flat(
+    ctx: Ctx,
+    pos_side: str,
+    base: str,
+    k: int = 0,
+    resting: str | None = None,
+    on_place: Callable[[str, int], None] | None = None,
+    exit_ids: tuple = (),
+) -> dict:
+    """그 종목 포지션을 reduceOnly 지정가 추격으로 0으로 만든다(사용자 2026-11-13 "시장가 말고 그
+    시점에 가장 가까운 지정가로 해. 거래될때까지").
+
+    매 회차: 포지션을 읽고 → 지금 호가(매도 = 매수 1호가)에 남은 수량 GTC reduceOnly 지정가 →
+    CLOSE_POLL_S마다 보며 CLOSE_WAIT_S 기다림 → 다 안 되면 취소(취소 뒤 다시 조회)하고 다시.
+    reduceOnly라 여러 주문이 겹쳐도 반대 포지션이 되지 않는다. 실행 한도가 가까우면 마지막 지정가를
+    걸어 둔 채 돌아온다. 회차는 CLOSE_MAX_ROUNDS까지, 회차 사이에는 늘 쉰다(레드팀 2026-11-13:
+    거래소가 바로 끝낸 주문(EXPIRED 등)에 쉬지 않고 다시 내면 요청 한도에 걸린다).
+    resting은 앞 실행이 걸어 둔 지정가(먼저 취소하고 새 호가로).
+    on_place(cid, k)는 내기 직전에 불러 ID를 저장하게 한다(죽어도 다음 실행이 찾는다).
+    -2022(reduceOnly 거부)인데 포지션이 남아 있으면 엔진·걸린 손절·익절 주문만 지우고 다시.
+    {"flat": bool, "cid": 걸어 둔 주문 ID 또는 None, "k", "steps"}"""
+    c = ctx.client
+    long_ = pos_side == "long"
+    close_side = "SELL" if long_ else "BUY"
+    steps: list[dict] = []
+
+    def out(flat: bool, cid: str | None = None) -> dict:
+        return {"flat": flat, "cid": cid, "k": k, "steps": steps}
+
+    def late() -> bool:
+        return _clock() >= ctx.deadline - CLOSE_MARGIN_S
+
+    if resting:
+        r = cancel_order(c, resting)
+        steps.append({"cid": resting, "status": r.get("status"), "resumed": True})
+    rounds = 0
+    while True:
+        amt = position_amt(c)
+        if amt == 0:
+            return out(True)
+        if (amt > 0) != long_:
+            raise RuntimeError(f"청산 중 포지션 방향이 바뀜({amt:+})")
+        if rounds and (late() or rounds >= CLOSE_MAX_ROUNDS):
+            return out(False)  # 걸어 둔 주문 없이 다음 실행으로
+        px = _touch_px(ctx.market, close_side)
+        rounds += 1
+        k += 1
+        cid = f"{base}-{k}"
+        if on_place:
+            on_place(cid, k)
+        try:
+            r = limit_order(c, close_side, _close_qty(amt), px, cid, "GTC", reduce=True)
+        except Rejected as e:
+            if e.code != REDUCE_REJECT:
+                raise
+            # 응답을 잃고 다시 보낸 reduceOnly가 이미 닫힌 뒤라 거부될 수 있다
+            if position_amt(c) == 0:
+                return out(True)
+            steps.append({"cid": cid, "px": float(px), "status": "REJECTED -2022"})
+            _clear_reduce_conflicts(c, exit_ids)
+            _sleep(CLOSE_POLL_S)
+            continue
+        end = _clock() + CLOSE_WAIT_S
+        while r.get("status") != "FILLED" and _clock() < end:
+            _sleep(CLOSE_POLL_S)
+            r = _query(c, "/fapi/v1/order", "origClientOrderId", cid) or r
+        steps.append(
+            {"cid": cid, "px": float(px), "status": r.get("status"), "qty": r.get("executedQty")}
+        )
+        if r.get("status") in TERMINAL:
+            # 다 체결됐거나 거래소가 끝냈다(만료 등): 쉬고 포지션을 다시 읽는다
+            if r.get("status") != "FILLED":
+                _sleep(CLOSE_POLL_S)
+            continue
+        if late():
+            return out(False, cid)
+        cancel_order(c, cid)
+
+
+def _cleanup_exits(ctx: Ctx, pos: dict) -> None:
+    """닫힌 포지션의 남은 엔진 주문을 거둔다: 조건부 손절·익절, 걸린 지정가 손절·익절이 남긴 주문,
+    추격 청산 지정가. 실패해도 다음 대사가 거둔다."""
+    c = ctx.client
+    try:
+        cancel_engine_stops(c)
+    except (Rejected, NetworkError) as e:
+        ctx.event(event="cancel_after_close_failed", error=str(e))
+    try:
+        algos = [_exit_triggered(c, pos.get(k)) for k in ("stop_id", "tp_id")]
+        if any(algos):
+            cancel_exit_children(c, algos)
+        cancel_engine_entries(c)
+    except (Rejected, NetworkError) as e:
+        ctx.event(event="cancel_after_close_failed", error=str(e))
+
+
+def _finish_close(ctx: Ctx, state: dict, why: str) -> None:
+    """포지션이 0인 것을 확인한 뒤: 상태를 비우고, 남은 주문을 거두고, 손익을 적는다."""
     pos = state["position"]
     close_side = "SELL" if pos["side"] == "long" else "BUY"
-    # ID는 포지션·시도마다(실행 분 단위면 같은 실행의 두 번째 비상 청산이 앞 주문을 찾고 끝난다)
-    # 시도마다 새 ID(앞 시도가 만료·부분 체결이면 같은 ID는 옛 주문을 찾아 아무것도 안 낸다)
-    n = pos.get("x_n", 0) + 1
-    pos["x_n"] = n
+    # 닫힌 것은 확인됐다: 뒤 조회가 실패해도 포지션을 남기지 않는다
+    # (남기면 다음 실행이 '수동 청산'으로 보고 거짓 정지를 건다)
+    state["position"] = None
+    state.pop("closing", None)
+    state.pop("pending", None)
+    state["closed_through_ms"] = int(time.time() * 1000) - 2000
     _save(DIR / "state.json", state)
-    cid = _pos_cid(pos, "x", n)
+    _cleanup_exits(ctx, pos)
     try:
-        amt = position_amt(ctx.client)
-        if amt:
-            market(ctx.client, close_side, _close_qty(amt), cid, reduce=True)
-        if position_amt(ctx.client) != 0:
-            raise RuntimeError("청산 뒤에도 포지션이 남음")
+        px, pnl = _close_result(ctx.client, pos, close_side)
+    except (Rejected, NetworkError):
+        px = pnl = None
+    # 같은 실행에서 새로 들어가면 이 청산 체결이 새 포지션 손익에 섞이지 않게
+    if pos.get("closed_ms"):
+        state["closed_through_ms"] = pos["closed_ms"]
+    _save(DIR / "state.json", state)
+    _record_close(ctx, pos, px, pnl, why)
+
+
+def close_engine(ctx: Ctx, state: dict, why: str, base: str | None = None) -> str:
+    """엔진 포지션을 지정가 추격으로 닫는다. 손절·익절 주문은 닫힐 때까지 그대로 둔다(reduceOnly라
+    겹쳐도 반대 포지션이 되지 않고, 추격이 길어져도 손절이 지킨다).
+    "flat"이면 닫고 기록까지 했다. "resting"이면 마지막 지정가를 걸어 둔 채 `state["closing"]`에
+    적었다(다음 실행이 이어서). 거래소 오류는 예외로 올린다(closing은 남는다)."""
+    pos = state["position"]
+    cl = state.get("closing")
+    if not cl or pos_symbol(cl) != pos_symbol(pos):
+        if base is None:
+            # ID는 포지션·시도마다 새로(같은 ID면 옛 주문을 찾아 아무것도 안 낸다)
+            n = pos.get("x_n", 0) + 1
+            pos["x_n"] = n
+            base = _pos_cid(pos, "x", n)
+        cl = {
+            "symbol": pos_symbol(pos),
+            "why": why,
+            "base": base,
+            "k": 0,
+            "cid": None,
+            "at": _now_iso(ctx.now),
+        }
+        state["closing"] = cl
+        _save(DIR / "state.json", state)
+
+    def on_place(cid: str, k: int) -> None:
+        cl.update(cid=cid, k=k)
+        _save(DIR / "state.json", state)
+
+    exit_ids = (pos.get("stop_id"), pos.get("tp_id"))
+    if cl["why"] == "tp" and _stop_hit(ctx, pos):
+        # 익절 청산 도중 손절이 걸렸거나 호가가 손절가를 넘었다: 손절로 보고 바닥 없이 쫓는다
+        cl["why"] = "stop"
+        _save(DIR / "state.json", state)
+    # 걸린 손절·익절이 남긴 주문이 있으면 먼저 지운다(이어서 쫓을 때도: 안 지우면 -2022만 반복)
+    _clear_children(ctx, exit_ids)
+    res = chase_flat(
+        ctx, pos["side"], cl["base"], int(cl.get("k") or 0), cl.get("cid"), on_place, exit_ids
+    )
+    ctx.event(event="close_chase", symbol=pos_symbol(pos), why=cl["why"], steps=res["steps"])
+    if not res["flat"]:
+        cl.update(cid=res["cid"], k=res["k"])
+        _save(DIR / "state.json", state)
+        return "resting"
+    _finish_close(ctx, state, cl["why"])
+    return "flat"
+
+
+def _stop_hit(ctx: Ctx, pos: dict) -> bool:
+    """손절이 걸렸거나(algo가 NEW가 아님) 지금 호가가 손절가를 넘었나. 못 읽으면 False."""
+    if _exit_triggered(ctx.client, pos.get("stop_id")):
+        return True
+    try:
+        px = float(_touch_px(ctx.market, "SELL" if pos["side"] == "long" else "BUY"))
+    except (NetworkError, OSError, ValueError, KeyError, AttributeError):
+        return False
+    stop = float(pos.get("stop") or 0)
+    return bool(stop) and (px <= stop if pos["side"] == "long" else px >= stop)
+
+
+def _tp_below_entry(ctx: Ctx, side: str, entry: float) -> bool:
+    """익절인데 지금 바로 체결되는 호가가 진입가보다 나쁜가(레드팀 2026-11-13: TradFi는 장 밖에
+    마크 가격이 체결가 위에 머물 수 있어 익절이 걸려도 호가는 진입가 아래일 수 있다). 그러면
+    진입가 아래로 쫓지 않는다. 호가를 못 읽으면 True(나쁜 가격에 닫지 않는 쪽)."""
+    try:
+        px = float(_touch_px(ctx.market, "SELL" if side == "long" else "BUY"))
+    except (NetworkError, OSError, ValueError, KeyError, AttributeError):
+        return True
+    return px < entry if side == "long" else px > entry
+
+
+def _clear_children(ctx: Ctx, exit_ids) -> None:
+    try:
+        algos = [_exit_triggered(ctx.client, i) for i in exit_ids if i]
+        if any(algos):
+            cancel_exit_children(ctx.client, algos)
+    except (Rejected, NetworkError) as e:
+        ctx.event(event="cancel_child_failed", error=str(e))  # reduceOnly라 겹쳐도 된다
+
+
+def _resting_text(ctx: Ctx, pos: dict) -> str:
+    return (
+        f"⏳ {_who(ctx.symbol, pos['side'])} 청산 지정가가 이번 실행 안에 다 체결되지 않았어요 → "
+        "걸어 둔 채 다음 실행에서 이어서 쫓아요(손절·익절 주문은 그대로)"
+    )
+
+
+def protect_close(ctx: Ctx, state: dict, why: str) -> None:
+    """보호 못 하는 엔진 포지션(또는 이미 지난 익절·걸렸는데 안 채워진 손절)을 지정가 추격으로
+    닫는다. 실패하면 크게 알린다. 다 못 닫으면 지정가를 걸어 두고 다음 실행이 이어서 쫓는다."""
+    pos = state["position"]
+    try:
+        res = close_engine(ctx, state, why)
+        if res == "resting":
+            ctx.say(_resting_text(ctx, pos))
+        return
     except (Rejected, NetworkError, RuntimeError) as e:
-        # 응답을 잃고 다시 보낸 reduceOnly는 이미 닫힌 뒤라 '포지션 없음'(-2022)으로 거부될 수 있다.
-        # 포지션을 남기면 다음 실행이 '수동 청산'으로 보고 거짓 정지를 건다
         try:
             gone = position_amt(ctx.client) == 0
         except (Rejected, NetworkError):
             gone = False
         if not gone:
             ctx.say(
-                f"🆘 손절 없는 포지션을 닫지 못했어요: {e}\n지금 바이낸스 앱에서 직접 확인하세요!"
+                f"🆘 포지션을 지정가로 닫지 못했어요: {e}\n"
+                "다음 실행에서 다시 쫓아요. 지금 바이낸스 앱에서도 확인하세요!"
             )
             ctx.event(event="unprotected", error=str(e))
             return
         ctx.event(event="protect_close_error_but_flat", error=str(e))
-    # 닫힌 것은 확인됐다: 뒤 조회가 실패해도 포지션을 남기지 않는다
-    # (남기면 다음 실행이 '수동 청산'으로 보고 거짓 정지를 건다)
-    state["position"] = None
-    _save(DIR / "state.json", state)
-    try:
-        cancel_engine_stops(ctx.client)
-    except (Rejected, NetworkError) as e:
-        ctx.event(event="cancel_after_protect_failed", error=str(e))  # 다음 대사가 취소한다
-    try:
-        px, pnl = _close_result(ctx.client, pos, close_side)
-    except (Rejected, NetworkError):
-        px = pnl = None
-    # 같은 실행에서 새로 들어가면 이 청산 체결이 새 포지션 손익에 섞이지 않게(close_position과 같게)
-    state["closed_through_ms"] = pos.get("closed_ms") or int(time.time() * 1000) - 2000
-    _save(DIR / "state.json", state)
-    _record_close(ctx, pos, px, pnl, why)
+    _finish_close(ctx, state, (state.get("closing") or {}).get("why") or why)
 
 
 def _manual_levels(ctx: Ctx, side: str, entry: float) -> tuple[float, float | None]:
@@ -1369,6 +1781,7 @@ def adopt_manual(ctx: Ctx, state: dict, row: dict, why: str) -> dict | None:
         "mode": "live",
         "manual": True,
         "fill": "manual",
+        "order_style": order_style(),
     }
     if state.get("closed_through_ms"):
         pos["after_ms"] = state.pop("closed_through_ms")
@@ -1424,6 +1837,7 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
     amt = position_amt(c)
     if not pos:
         state.pop("pending", None)
+        state.pop("closing", None)  # 남은 추격 지정가는 아래 cancel_engine_entries가 거둔다
         if amt != 0 and MANUAL_ADOPT:
             cancel_engine_entries(c)
             cancel_engine_stops(c)  # 옛 엔진 손절·지킴 주문이 새 수량과 섞이지 않게
@@ -1447,9 +1861,16 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         return True
     sign = 1 if pos["side"] == "long" else -1
     close_side = "SELL" if sign > 0 else "BUY"
+    closing = state.get("closing")
+    if closing and pos_symbol(closing) != pos_symbol(pos):
+        state.pop("closing", None)  # 다른 종목 기록(있을 수 없음): 버린다
+        closing = None
     if amt == 0:
         why = "manual"
-        if pending and pending.get("close"):
+        if closing:
+            # 앞 실행이 걸어 둔 추격 지정가(또는 그 사이 손절·익절)로 닫혔다: 엔진 청산이다
+            why = closing.get("why") or "signal"
+        if why == "manual" and pending and pending.get("close"):
             o = _query(c, "/fapi/v1/order", "origClientOrderId", pending["close"])
             if o and o.get("status") == "FILLED":
                 why = "signal"
@@ -1471,9 +1892,12 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
                 why = "tp"
         state["position"] = None
         state.pop("pending", None)
+        state.pop("closing", None)
         # 실행 시작 뒤에 체결된 손절·익절이 같은 실행의 새 포지션 손익에 섞이지 않게
         state["closed_through_ms"] = pos.get("closed_ms") or int(time.time() * 1000) - 2000
-        cancel_engine_stops(c)  # 손절·익절 중 남은 쪽을 취소 (OCO처럼)
+        _save(DIR / "state.json", state)
+        # 손절·익절 중 남은 쪽(OCO처럼), 걸린 지정가가 남긴 주문, 남은 추격 지정가를 거둔다
+        _cleanup_exits(ctx, pos)
         _save(DIR / "state.json", state)
         _record_close(ctx, pos, px, pnl, why)
         if why == "manual" and MANUAL_ADOPT and not _liquidated(ctx, int(pos["entry_ms"]) - 1000):
@@ -1483,6 +1907,36 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             set_no_entry("엔진 포지션이 손절·익절·신호 없이 닫힘(수동 또는 강제 청산)", ctx.send)
         return why != "manual"
     state.pop("pending", None)
+    if closing and (amt > 0) == (sign > 0):
+        # 앞 실행이 다 못 닫은 지정가 청산: 걸어 둔 주문을 취소하고 지금 호가로 이어서 쫓는다
+        # (부분 체결로 수량이 줄었어도 '수동 변경'으로 보지 않는다)
+        ctx.say(f"⏳ {_who(ctx.symbol, pos['side'])} 지정가 청산을 이어서 쫓아요")
+        protect_close(ctx, state, closing.get("why") or "signal")
+        return state.get("position") is None
+    if closing:
+        state.pop("closing", None)  # 손으로 뒤집었다: 아래 수동 처리로
+        cancel_engine_entries(c)
+    trig = _triggered_exit(ctx, pos)
+    if trig and (amt > 0) == (sign > 0):
+        # 지정가 손절·익절이 걸렸는데(갭 등으로) 체결이 안 됐거나 덜 됐다: 남은 주문을 거두고 쫓는다
+        label, st = trig
+        try:
+            cancel_exit_children(c, [st])
+        except (Rejected, NetworkError) as e:
+            ctx.event(event="cancel_child_failed", error=str(e))  # reduceOnly라 겹쳐도 된다
+        ctx.event(event="exit_triggered_open", why=label, amt=amt, algo=_slim(st))
+        if label == "tp" and _tp_below_entry(ctx, pos["side"], float(pos["entry"])):
+            # 익절은 걸렸는데 호가가 진입가보다 나쁘다: 닫지 않고 평소 포지션으로 둔다
+            # (손절·반대 신호·매매는 그대로, 익절은 아래 ensure_stop이 익절가에 다시 건다)
+            _tp_wait(ctx, state)
+        else:
+            name = "손절" if label == "stop" else "익절"
+            ctx.say(
+                f"⚡ {_who(ctx.symbol, pos['side'])} {name} 지정가가 걸렸는데 포지션이 남아 "
+                f"있어요({amt:+}) → 지금 호가로 쫓아 닫아요"
+            )
+            protect_close(ctx, state, label)
+            return state.get("position") is None
     cancel_engine_entries(c)  # 남은 진입 지정가가 체결되면 수량이 어긋난다
     if (
         abs(amt - sign * pos["qty"]) > 1e-9
@@ -1492,7 +1946,8 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         flipped = (amt > 0) != (sign > 0)
         row = position_row(c)
         if not row.get("amt") or float(row.get("entry") or 0) <= 0:
-            return ensure_stop(ctx, state, with_tp=False)  # 그 사이 바뀜: 다음 실행에서 다시
+            # 그 사이 바뀜: 다음 실행에서 다시
+            return ensure_stop(ctx, state, with_tp=False, qty=abs(amt))
         if flipped:
             # 손으로 반대로 뒤집었다: 앞 포지션은 수동 청산으로 남기고 새 포지션을 이어받는다
             _record_close(ctx, pos, None, None, "manual")
@@ -1512,7 +1967,7 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             # 틱을 못 읽었다: 옛 값으로 손절만 다시 걸고 다음 실행에서 다시
             state["position"] = old
             state["position"]["stop_id"] = None
-            ensure_stop(ctx, state, with_tp=False)
+            ensure_stop(ctx, state, with_tp=False, qty=abs(amt))
         _save(DIR / "state.json", state)
         return False
     if abs(amt - sign * pos["qty"]) > 1e-9:
@@ -1524,14 +1979,118 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             )
             state["foreign_key"] = key
         set_no_entry("포지션 수량 불일치(수동 개입)", ctx.send)
-        # closePosition 손절은 수량과 상관없이 전체를 지킨다. 없으면 다시 건다(닫지는 않는다)
+        # 손절이 없으면 거래소 수량으로 다시 건다(닫지는 않는다). 걸려 있는 지정가 손절은 옛 수량
+        # 그대로다(MANUAL_ADOPT가 꺼졌을 때만 오는 길)
         if (amt > 0) == (sign > 0):
-            ensure_stop(ctx, state, with_tp=False)
+            ensure_stop(ctx, state, with_tp=False, qty=abs(amt))
         return False
     state.pop("foreign_key", None)
+    _migrate_exits(ctx, state)
     _backfill_tp(ctx, state)
     _retarget_tp(ctx, state)
     return ensure_stop(ctx, state)
+
+
+def _tp_wait(ctx: Ctx, state: dict) -> None:
+    """익절이 걸렸지만(또는 이미 지났지만) 지금 호가가 진입가보다 나빠 닫지 않는다. 익절 주문 ID를
+    비워 다음 ensure_stop이 익절가에 다시 걸게 한다. 알림은 포지션마다 한 번."""
+    pos = state["position"]
+    pos["tp_id"] = None
+    if not pos.get("tp_wait_told"):
+        pos["tp_wait_told"] = True
+        ctx.say(
+            f"⏸ {_who(ctx.symbol, pos['side'])} 익절가에 닿았지만 지금 호가가 진입가 "
+            f"{_px(pos['entry'])}보다 나빠요 → 닫지 않고 손절·반대 신호로 관리하며 익절을 다시 "
+            "걸어요"
+        )
+    ctx.event(event="tp_wait", symbol=ctx.symbol, entry=pos["entry"], tp=pos.get("tp"))
+    _save(DIR / "state.json", state)
+
+
+def _triggered_exit(ctx: Ctx, pos: dict) -> tuple[str, dict] | None:
+    """엔진 손절·익절 중 걸린(NEW가 아닌) 것이 있으면 ("stop"|"tp", 조회 결과). 목록에 NEW로
+    보이면 묻지 않는다(조회는 목록에서 빠졌을 때만)."""
+    try:
+        open_ids = open_algo_ids(open_algos(ctx.client))
+    except (Rejected, NetworkError):
+        return None
+    for key, label in (("stop_id", "stop"), ("tp_id", "tp")):
+        cid = pos.get(key)
+        if not cid or cid in open_ids:
+            continue
+        st = _exit_triggered(ctx.client, cid)
+        if st:
+            return label, st
+    return None
+
+
+def _migrate_exits(ctx: Ctx, state: dict) -> None:
+    """손절·익절 주문 방식이 바뀌었으면(2026-11-13 STOP_MARKET·TAKE_PROFIT_MARKET closePosition →
+    지정가 STOP·TAKE_PROFIT) 보유 포지션 주문을 새 방식으로 다시 건다. 새 손절을 먼저 걸고 걸린 것을
+    확인한 뒤에만 옛 손절을 취소한다(손절 없는 틈을 만들지 않는다. -4130은 closePosition끼리만이라
+    수량 손절과 같이 걸린다). 옛 익절은 취소하고 tp_id를 비워 ensure_stop이 새로 건다.
+    새 손절이 안 걸리면 옛 손절을 두고 다음 실행에서 다시 한다."""
+    pos = state["position"]
+    if pos.get("order_style") == order_style():
+        return
+    c = ctx.client
+    old_stop, old_tp = pos.get("stop_id"), pos.get("tp_id")
+    if old_stop != "user":
+        n = pos.get("stop_n", 0) + 1
+        cid = _pos_cid(pos, "s", n)
+        try:
+            # 앞 실행이 걸었지만 확인을 못 한 새 방식 손절이 있으면 그걸 쓴다(쌓지 않는다)
+            algos = [a for a in open_algos(c) if a.get("clientAlgoId") != old_stop]
+            found = _reuse_open_stop(ctx, pos, algos, pos["qty"])
+            if found:
+                cid, ok = found, True
+            else:
+                r = place_stop(
+                    c, pos["side"], Decimal(str(pos["stop"])), cid, STOP_KIND, pos["qty"]
+                )
+                pos["stop_n"] = n
+                _save(DIR / "state.json", state)
+                ok = stop_placed(c, r, cid)
+        except (Rejected, NetworkError, ValueError) as e:
+            ctx.event(event="migrate_stop_failed", error=str(e), old=old_stop)
+            return  # 옛 손절이 지키고 있다: 다음 실행에서 다시
+        if not ok:
+            ctx.event(event="migrate_stop_unconfirmed", cid=cid, old=old_stop)
+            return
+        pos["stop_id"] = cid
+        _save(DIR / "state.json", state)
+        if old_stop:
+            try:
+                _delete(c, "/fapi/v1/algoOrder", {"clientAlgoId": old_stop})
+                _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel": old_stop})
+            except Rejected as e:
+                if e.code not in NOT_FOUND:
+                    ctx.event(event="migrate_cancel_failed", cid=old_stop, error=str(e))
+            except NetworkError as e:
+                # 남아도 같은 손절가의 closePosition이라 위험하지 않고, 청산 뒤 거둔다
+                ctx.event(event="migrate_cancel_failed", cid=old_stop, error=str(e))
+    if old_tp:
+        try:
+            _delete(c, "/fapi/v1/algoOrder", {"clientAlgoId": old_tp})
+            _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel": old_tp})
+        except Rejected as e:
+            if e.code not in NOT_FOUND:
+                ctx.event(event="migrate_cancel_failed", cid=old_tp, error=str(e))
+                _save(DIR / "state.json", state)
+                return  # 옛 익절이 남아 있다: 다음 실행에서 다시
+        except NetworkError as e:
+            ctx.event(event="migrate_cancel_failed", cid=old_tp, error=str(e))
+            _save(DIR / "state.json", state)
+            return
+        pos["tp_id"] = None
+    pos["order_style"] = order_style()
+    _save(DIR / "state.json", state)
+    ctx.event(event="migrate_exits", style=order_style(), old_stop=old_stop, old_tp=old_tp)
+    kind = f"지정가(손절가에서 {STOP_LIMIT_SLIP_PCT:g}% 안)" if STOP_ORDER == "limit" else "시장가"
+    ctx.say(
+        f"🔁 {_name(ctx.symbol)} 손절·익절 주문을 새 방식으로 바꿨어요: 손절 {kind}·익절 지정가"
+        f"(손절 {_px(pos['stop'])}" + (f", 익절 {_px(pos['tp'])})" if pos.get("tp") else ")")
+    )
 
 
 def _backfill_tp(ctx: Ctx, state: dict) -> None:
@@ -1557,7 +2116,7 @@ def _retarget_tp(ctx: Ctx, state: dict) -> None:
     """고정 익절 값이 바뀌면 보유 포지션 익절도 새 값으로 다시 건다(사용자 2026-11-13 "익절도
     손절과 동일하게" 10%→3%, 보유 엔비디아에도 적용 "1번으로"). 옛 익절 주문을 취소하고 새
     익절가를 적어 두면 ensure_stop이 건다. 새 익절가를 이미 지났으면 거래소가 -2021로 거부하고
-    ensure_stop이 시장가로 익절한다. 취소가 통신 실패면 다음 실행에서 다시 한다."""
+    ensure_stop이 지정가 추격으로 익절한다. 취소가 통신 실패면 다음 실행에서 다시 한다."""
     pos = state["position"]
     old = pos.get("tp_pct")
     if AI_EXITS or not FIXED_TP_PCT or not pos.get("tp") or old is None:
@@ -1612,6 +2171,7 @@ def _adopt(state: dict, pending: dict, order: dict) -> dict:
         "entry_ms": int(order.get("updateTime") or order.get("time") or 0),
         "opened_at": pending.get("at"),
         "mode": "live",
+        "order_style": order_style(),
     }
     if pending.get("try", 1) > 1:
         pos["try"] = pending["try"]  # 다시 거는 손절·익절·비상 청산 ID도 앞 시도와 겹치지 않게
@@ -1733,11 +2293,17 @@ def mark_unavailable(ctx: Ctx, state: dict, err: Rejected) -> None:
 
 
 def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
-    """반대 신호 청산. 1) 엔진 손절·익절 취소 2) 시장가 reduceOnly 3) 청산 확인. 성공하면 True."""
+    """반대 신호 청산: reduceOnly 지정가 추격(지금 호가, 다 될 때까지 다시 걸기) → 청산 확인 →
+    엔진 손절·익절 취소. 손절·익절은 닫힐 때까지 그대로 둔다. 닫혔으면 True.
+    실행 안에 다 못 닫으면 지정가를 걸어 둔 채 False(다음 실행이 이어서 쫓는다, 진입하지 않는다)."""
     pos = state["position"]
     close_side = "SELL" if pos["side"] == "long" else "BUY"
     if not ctx.live:
-        px = ctx.market.price()
+        # 드라이런: 지금 호가(매도 = 매수 1호가)에 다 체결된 것으로 본다
+        try:
+            px = float(_touch_px(ctx.market, close_side))
+        except (NetworkError, OSError, ValueError, KeyError):
+            px = ctx.market.price()
         sign = 1 if pos["side"] == "long" else -1
         pnl = sign * pos["qty"] * (px - pos["entry"]) - pos["qty"] * (pos["entry"] + px) * TAKER_FEE
         _append(
@@ -1749,7 +2315,7 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
                 "side": pos["side"],
                 "qty": pos["qty"],
                 "price": px,
-                "type": "MARKET reduceOnly",
+                "type": "LIMIT GTC reduceOnly(호가 추격)",
                 "cid": _cid(bar, "c", ctx.symbol),
                 "cancel": [x for x in (pos.get("stop_id"), pos.get("tp_id")) if x],
             },
@@ -1757,42 +2323,26 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
         state["position"] = None
         _record_close(ctx, pos, px, pnl, "signal")
         return True
-    c = ctx.client
-    cid = _cid(bar, "c", ctx.symbol)
-    state["pending"] = {"close": cid, "symbol": ctx.symbol}
-    _save(DIR / "state.json", state)
     try:
-        cancel_engine_stops(c)
-        amt = position_amt(c)
-        if amt:
-            market(c, close_side, _close_qty(amt), cid, reduce=True)
-        if position_amt(c) != 0:
-            raise RuntimeError("청산 주문 뒤에도 포지션이 남음")
+        res = close_engine(ctx, state, "signal", base=_cid(bar, "c", ctx.symbol))
     except (Rejected, NetworkError, RuntimeError) as e:
-        ctx.say(
-            f"❌ {_who(ctx.symbol, pos['side'])} 청산 실패: {e} → 손절을 다시 확인하고 "
-            "진입하지 않아요"
-        )
         try:
-            reconcile_live(ctx, state)
-        except (Rejected, NetworkError) as e2:
-            ctx.say(f"🆘 청산 실패 뒤 상태 확인도 실패: {e2}. 바이낸스 앱에서 확인하세요!")
+            gone = position_amt(ctx.client) == 0
+        except (Rejected, NetworkError):
+            gone = False
+        if gone:
+            ctx.event(event="close_error_but_flat", error=str(e))
+            _finish_close(ctx, state, "signal")
+            return True
+        ctx.say(
+            f"❌ {_who(ctx.symbol, pos['side'])} 청산 실패: {e} → 손절·익절은 그대로 두고 "
+            "다음 실행에서 다시 쫓아요. 진입하지 않아요"
+        )
         _save(DIR / "state.json", state)
         return False
-    # 청산은 확인됐다: 손익 조회가 실패해도 포지션은 닫힌 것으로 적는다
-    state["position"] = None
-    state.pop("pending", None)
-    # 손익 조회가 실패하면 쓰는 값: 거래소와 시계가 조금 어긋나도 새 진입 체결을 빼지 않게 2초 앞
-    state["closed_through_ms"] = int(time.time() * 1000) - 2000
-    _save(DIR / "state.json", state)
-    try:
-        px, pnl = _close_result(c, pos, close_side)
-    except (Rejected, NetworkError):
-        px = pnl = None
-    if pos.get("closed_ms"):
-        state["closed_through_ms"] = pos["closed_ms"]
-        _save(DIR / "state.json", state)
-    _record_close(ctx, pos, px, pnl, "signal")
+    if res != "flat":
+        ctx.say(_resting_text(ctx, pos) + ". 이번에는 새로 진입하지 않아요")
+        return False
     return True
 
 
@@ -1956,7 +2506,7 @@ def fast_market(
 
 
 class LiveVenue:
-    """실제 바이낸스. 지정가는 post-only(GTX)."""
+    """실제 바이낸스. 지정가만(post-only GTX 또는 바로 체결되는 GTC)."""
 
     def __init__(self, ctx: Ctx):
         self.ctx = ctx
@@ -1965,48 +2515,24 @@ class LiveVenue:
     def book(self) -> tuple[float, float]:
         return self.ctx.market.book()
 
-    def place(self, cid: str, side: str, qty: Decimal, px: Decimal) -> dict:
-        params = {
-            "symbol": _sym(self.c),
-            "side": side,
-            "type": "LIMIT",
-            "timeInForce": "GTX",
-            "quantity": str(qty),
-            "price": str(px),
-            "newClientOrderId": cid,
-            "newOrderRespType": "RESULT",
-        }
-        # 미체결 지정가는 같은 ID가 막아 주므로 조회 뒤 다시 보내도 된다
-        r = _send(self.c, "POST", "/fapi/v1/order", params, "/fapi/v1/order", "origClientOrderId")
-        _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "req": params, "res": _slim(r)})
-        return r
+    def place(self, cid: str, side: str, qty: Decimal, px: Decimal, tif: str = "GTX") -> dict:
+        return limit_order(self.c, side, qty, px, cid, tif)
 
     def status(self, cid: str) -> dict | None:
         return _query(self.c, "/fapi/v1/order", "origClientOrderId", cid)
 
     def cancel(self, cid: str) -> dict:
         """취소한 뒤 반드시 다시 조회해 그 사이 체결된 수량까지 센다(취소·체결 경합)."""
-        try:
-            _delete(self.c, "/fapi/v1/order", {"symbol": _sym(self.c), "origClientOrderId": cid})
-        except Rejected as e:
-            if e.code not in NOT_FOUND:
-                raise
-        _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel": cid})
-        for k in range(3):
-            if k:
-                _sleep(1)
-            r = self.status(cid)
-            if r and r.get("status") in TERMINAL:
-                return r
-        return r or {"status": "UNKNOWN", "executedQty": "0"}
+        return cancel_order(self.c, cid)
 
     def market(self, cid: str, side: str, qty: Decimal) -> dict:
-        return market(self.c, side, qty, cid, reduce=False)
+        return market_entry(self.c, side, qty, cid)
 
 
 class DryVenue:
     """드라이런: 호가·체결가로 거칠게 흉내 낸다. 내 매수 지정가는 매도 호가가 내려와 닿거나
-    최근 체결가가 그 아래로 지나가면 다 체결된 것으로 본다(대기열 순서는 모른다). 숏은 반대."""
+    최근 체결가가 그 아래로 지나가면 다 체결된 것으로 본다(대기열 순서는 모른다). 숏은 반대.
+    바로 체결되는 가격의 GTC 지정가는 그 가격에 다 체결된 것으로 본다."""
 
     def __init__(self, ctx: Ctx):
         self.ctx = ctx
@@ -2015,12 +2541,15 @@ class DryVenue:
     def book(self) -> tuple[float, float]:
         return self.ctx.market.book()
 
-    def place(self, cid: str, side: str, qty: Decimal, px: Decimal) -> dict:
+    def place(self, cid: str, side: str, qty: Decimal, px: Decimal, tif: str = "GTX") -> dict:
         bid, ask = self.book()
         p = float(px)
-        if (side == "BUY" and p >= ask) or (side == "SELL" and p <= bid):
+        crosses = (side == "BUY" and p >= ask) or (side == "SELL" and p <= bid)
+        if crosses and tif == "GTX":
             return {"status": "EXPIRED", "executedQty": "0"}
         self.orders[cid] = {"side": side, "qty": qty, "px": p, "status": "NEW", "executedQty": "0"}
+        if crosses:
+            self.orders[cid].update(status="FILLED", executedQty=str(qty), avgPrice=str(p))
         return dict(self.orders[cid])
 
     def status(self, cid: str) -> dict | None:
@@ -2044,11 +2573,8 @@ class DryVenue:
 
     def market(self, cid: str, side: str, qty: Decimal) -> dict:
         bid, ask = self.book()
-        return {
-            "status": "FILLED",
-            "executedQty": str(qty),
-            "avgPrice": str(ask if side == "BUY" else bid),
-        }
+        px = ask if side == "BUY" else bid
+        return {"status": "FILLED", "executedQty": str(qty), "avgPrice": str(px)}
 
 
 class LadderAbort(RuntimeError):
@@ -2065,14 +2591,23 @@ def ladder(
     base: str,
     price_now: Callable[[], float],
     deadline: float | None = None,
+    fast: str = "",
 ) -> dict:
-    """post-only 지정가 사다리. 1회차는 최우선 호가(롱=매수 호가, 숏=매도 호가),
-    회차마다 그때 호가에서 한 틱씩 더 시장 쪽으로. 새 가격이 걸어 둔 가격과 같으면(스프레드 1틱)
-    취소하지 않고 그대로 둬 대기열 순서를 지킨다. 시간이 다 되면 남은 수량은 시장가.
+    """지정가 우선 진입(사용자 2026-11-13 "모든 매매는 지정가로 해", 20:17 "60초 따라가다가
+    안되면 시장가로 하자").
 
-    추격 한도를 넘으면 멈춘다(그때까지 체결된 수량은 그대로 둔다).
+    1단계 post-only(GTX) 사다리: 1회차는 최우선 호가(롱=매수 호가, 숏=매도 호가), 회차마다 그때
+    호가에서 한 틱씩 더 시장 쪽으로. 새 가격이 걸어 둔 가격과 같으면(스프레드 1틱) 취소하지 않고
+    그대로 둬 대기열 순서를 지킨다. 급변동(fast)이면 1단계를 건너뛴다.
+    2단계 바로 체결되는 지정가(GTC): 남은 수량을 지금 바로 체결되는 가장 가까운 가격(롱 = 매도
+    1호가, 숏 = 매수 1호가)에 걸고 touch_wait_s마다 취소·다시 건다(touch_max_s까지,
+    ID `<base>t<j>`).
+    3단계 그래도 touch_max_s 안에 다 안 되면 남은 수량은 시장가(ID `<base>m`, 추격 한도·실행
+    한도 안일 때만). 추격 한도·실행 한도로 멈추면 체결된 만큼만 갖는다(아무것도 없으면 진입 안 함).
+
+    회차마다 추격 한도를 넘으면 멈춘다(그때까지 체결된 수량은 그대로 둔다).
     남은 수량이 최소 수량·최소 주문 금액보다 작으면 그대로 받아들인다.
-    deadline(_clock 기준)을 넘으면 시장가 없이 멈춘다(실행 전체 시간 한도).
+    deadline(_clock 기준)을 넘으면 멈춘다(실행 전체 시간 한도). 지정가는 남기지 않는다.
     지정가 끝 상태를 확인하지 못하면 LadderAbort(더 내지 않는다).
     """
     cfg = entry_cfg()
@@ -2081,29 +2616,32 @@ def ladder(
     filled, cost = Decimal(0), 0.0
     maker, taker = Decimal(0), Decimal(0)
     t0 = _clock()
-    path, rounds, note = "", 0, ""
+    path, rounds, touches, note = "", 0, 0, ""
     steps: list[dict] = []
     cur: dict | None = None  # 걸려 있는 지정가 {"cid", "px"}
 
     def small(rest: Decimal, px: float) -> bool:
         return float(rest) < flt["min_qty"] or float(rest) * px < flt["min_notional"]
 
-    def settle(cid: str, px: Decimal, r: dict | None) -> None:
+    def settle(cid: str, px: Decimal, r: dict | None, taking: bool = False) -> None:
         """끝난 지정가의 체결 수량을 센다. 끝 상태가 아니면 멈춘다(이중 체결 방지)."""
-        nonlocal filled, cost, maker
+        nonlocal filled, cost, maker, taker
         if not r or r.get("status") not in TERMINAL:
             raise LadderAbort(f"{cid} 상태 확인 안 됨({(r or {}).get('status')})")
         q = Decimal(str(r.get("executedQty") or 0))
         if q:
             filled += q
-            maker += q
+            if taking:
+                taker += q
+            else:
+                maker += q
             cost += float(q) * (float(r.get("avgPrice") or 0) or float(px))
         steps.append({"cid": cid, "px": float(px), "filled": float(q), "status": r.get("status")})
 
     def late() -> bool:
         return deadline is not None and _clock() >= deadline
 
-    for k in range(1, int(cfg["ladder_rounds"]) + 1):
+    for k in range(1, 0 if fast else int(cfg["ladder_rounds"]) + 1):
         if late():
             path, note = "abandon", "실행 시간 한도"
             break
@@ -2129,7 +2667,7 @@ def ladder(
                 break
             cid = f"{base}{k}"
             try:
-                r = venue.place(cid, order_side, rest, px)
+                r = venue.place(cid, order_side, rest, px, "GTX")
             except Rejected as e:
                 if e.code not in GTX_REJECT:
                     raise
@@ -2160,30 +2698,74 @@ def ladder(
     if cur:
         settle(cur["cid"], cur["px"], venue.cancel(cur["cid"]))
         cur = None
+    # 2단계: 바로 체결되는 가장 가까운 가격의 지정가(GTC). 남겨 두지 않는다
+    t1 = _clock()
+    j = 0
+    timed_out = False
+    while path != "abandon" and filled < qty:
+        rest = qty - filled
+        if late():
+            path, note = "abandon", "실행 시간 한도"
+            break
+        if j and _clock() - t1 >= cfg["touch_max_s"]:
+            timed_out = True  # 아래에서 남은 수량을 시장가로(사용자 2026-11-13 20:17)
+            break
+        bid, ask = venue.book()
+        px = Decimal(str(ask if side == "long" else bid))
+        if small(rest, float(px)):
+            note = note or f"남은 {rest}개는 최소 주문보다 작아 그대로 둠"
+            break
+        if not chase_ok(side, float(px), sig["close"], gate["pct"]):
+            path, note = "abandon", f"호가 {_px(float(px))}가 추격 한도 밖"
+            break
+        j += 1
+        touches = j
+        cid = f"{base}t{j}"
+        r = venue.place(cid, order_side, rest, px, "GTC")
+        wait_end = _clock() + cfg["touch_wait_s"]
+        if deadline is not None:
+            wait_end = min(wait_end, deadline)
+        while r.get("status") not in TERMINAL and _clock() < wait_end:
+            _sleep(cfg["ladder_poll_s"])
+            r = venue.status(cid) or r
+        if r.get("status") not in TERMINAL:
+            r = venue.cancel(cid)
+        settle(cid, px, r, taking=True)
+    # 3단계(진입만, 사용자 2026-11-13 20:17 "60초 따라가다가 안되면 시장가로 하자"): 지정가를
+    # touch_max_s 쫓아도 남으면 남은 수량을 시장가로. 추격 한도·실행 시간 한도는 다시 본다
+    mkt = Decimal(0)
     rest = qty - filled
-    if filled >= qty:
-        path = "limit"
-    elif path != "abandon" and rest > 0:
+    if timed_out and rest > 0:
         now_px = price_now()
         if small(rest, now_px):
             note = note or f"남은 {rest}개는 최소 주문보다 작아 그대로 둠"
-            path = "limit" if filled else "none"
+        elif late():
+            path, note = "abandon", "실행 시간 한도(시장가 안 냄)"
         elif not chase_ok(side, now_px, sig["close"], gate["pct"]):
-            path, note = "abandon", f"시간이 다 됐을 때 가격 {_px(now_px)}가 추격 한도 밖"
+            path, note = "abandon", f"지정가 시간이 다 됐을 때 가격 {_px(now_px)}가 추격 한도 밖"
         else:
             r = venue.market(f"{base}m", order_side, rest)
-            q = Decimal(str(r.get("executedQty") or 0))
-            filled += q
-            taker += q
-            cost += float(q) * (float(r.get("avgPrice") or 0) or now_px)
-            path = "market_fallback"
+            mkt = Decimal(str(r.get("executedQty") or 0))
+            filled += mkt
+            taker += mkt
+            cost += float(mkt) * (float(r.get("avgPrice") or 0) or now_px)
+            steps.append({"cid": f"{base}m", "market": float(mkt), "status": r.get("status")})
+    if mkt:
+        path = "market_fallback"
+    elif filled >= qty or (filled and path != "abandon"):
+        path = "touch" if taker else "limit"
+    elif not filled:
+        path = "none" if path != "abandon" else path
     avg = cost / float(filled) if filled else None
     fee = (float(maker) * MAKER_FEE + float(taker) * TAKER_FEE) * (avg or 0)
     return {
         "qty": float(filled),
         "avg": avg,
         "path": path or "none",
+        "fast": fast,
         "rounds": rounds,
+        "touches": touches,
+        "market_qty": float(mkt),
         "maker_qty": float(maker),
         "taker_qty": float(taker),
         "fee": fee,
@@ -2194,18 +2776,26 @@ def ladder(
 
 
 def fill_text(f: dict) -> str:
-    if f["path"] == "fast":
-        return f"시장가(급변동: {f['note']})"
+    fast = f"급변동({f['fast']}) → " if f.get("fast") else ""
     if f["path"] == "limit":
         return f"지정가 체결({f['rounds']}회차, 메이커)"
+    if f["path"] == "touch":
+        if f["maker_qty"]:
+            return (
+                f"{fast}지정가 {f['maker_qty']}(메이커) + 바로 체결되는 지정가 "
+                f"{f['taker_qty']}개({f['touches']}번)"
+            )
+        return f"{fast}바로 체결되는 지정가({f['touches']}번)"
     if f["path"] == "market_fallback":
+        lim = f["qty"] - f["market_qty"]
+        head = f"지정가 {lim:g} + " if lim > 1e-12 else ""
         return (
-            f"지정가 {f['maker_qty']} + 시장가 {f['taker_qty']}개(지정가 미체결)"
-            if f["maker_qty"]
-            else "시장가(지정가 미체결)"
+            f"{fast}{head}시장가 {f['market_qty']:g}개(지정가 {f.get('touches', 0)}번 쫓아도 남음)"
         )
     if f["path"] == "abandon":
-        return f"지정가 일부만 체결({f['note']})"
+        return f"{fast}지정가 일부만 체결({f['note']})"
+    if f["path"] == "none" and f.get("note"):
+        return f"{fast}지정가 체결 없음({f['note']})"
     return f["path"]
 
 
@@ -2286,31 +2876,16 @@ def _settle_entry(ctx: Ctx, want: float | None, tries: int = 5) -> dict | None:
 def _enter(
     ctx: Ctx, venue, side: str, qty: Decimal, sig: dict, gate: dict, flt: dict, base: str
 ) -> dict:
-    """급변동이면 시장가 한 번, 아니면 지정가 사다리."""
+    """지정가 진입. 급변동이면 post-only 단계를 건너뛰고 바로 체결되는 지정가부터."""
     price = ctx.market.price()
     fast = fast_market(ctx.market, side, sig["close"], price, ctx.rows15, ctx.now_ms)
-    if fast:
-        r = venue.market(f"{base}f", "BUY" if side == "long" else "SELL", qty)
-        q = float(r.get("executedQty") or 0)
-        avg = float(r.get("avgPrice") or 0) or price
-        return {
-            "qty": q,
-            "avg": avg if q else None,
-            "path": "fast",
-            "rounds": 0,
-            "maker_qty": 0.0,
-            "taker_qty": q,
-            "fee": q * avg * TAKER_FEE,
-            "note": fast,
-            "secs": 0.0,
-            "steps": [],
-        }
-    return ladder(venue, side, qty, sig, gate, flt, base, ctx.market.price, ctx.deadline)
+    return ladder(venue, side, qty, sig, gate, flt, base, ctx.market.price, ctx.deadline, fast)
 
 
 def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan: dict) -> None:
-    """4) 진입(급변동이면 시장가, 아니면 post-only 지정가 사다리) 5) 평균 체결가
-    6) STOP_MARKET(+TAKE_PROFIT_MARKET) 7) 걸렸는지 확인. 실패하면 닫거나 알린다.
+    """4) 진입(지정가만: post-only 사다리 → 바로 체결되는 지정가, 급변동이면 바로 뒤쪽부터)
+    5) 평균 체결가 6) 지정가 손절 STOP(+익절 TAKE_PROFIT, 체결 수량) 7) 걸렸는지 확인.
+    실패하면 지정가 추격으로 닫거나 알린다.
     AI 답을 기다린 뒤라 추격 한도를 새 가격으로 다시 본다(사다리도 회차마다 본다)."""
     side = sig["dir"]
     sym = ctx.symbol
@@ -2523,7 +3098,7 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
             mark_unavailable(ctx, state, err)
             return
         if err:
-            # 응답을 잃은 시장가 진입은 체결됐어도 포지션이 늦게 보일 수 있다. pending을 버리면
+            # 응답을 잃은 진입 지정가는 체결됐어도 포지션이 늦게 보일 수 있다. pending을 버리면
             # 다음 실행이 그 포지션을 '엔진 밖'으로 보고 손절 없이 정지한다. 남겨 두면 다음 대사가
             # 이어 받는다(그때도 0이면 pending을 버리고 같은 신호를 새 ID로 다시 본다)
             ctx.say(f"⚠️ {who} 진입 중 오류({why}), 포지션은 아직 0 → 다음 실행에서 다시 대사해요")
@@ -2557,20 +3132,20 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
     done = False
     try:
         try:
-            s = place_stop(c, side, Decimal(str(pos["stop"])), sid)
+            s = place_stop(c, side, Decimal(str(pos["stop"])), sid, STOP_KIND, pos["qty"])
             ok = stop_placed(c, s, sid)
             err = "" if ok else f"상태 {s.get('algoStatus')}"
         except (Rejected, NetworkError) as e:
             ok, err = False, str(e)
         if not ok:
-            ctx.say(f"❌ 손절 주문 실패({err}) → 방금 연 {who}을 시장가로 닫아요")
+            ctx.say(f"❌ 손절 주문 실패({err}) → 방금 연 {who}을 지정가로 닫아요")
             protect_close(ctx, state, "protect")
             done = True
             return
         tp_note = ""
         if pos.get("tp"):
             try:
-                place_stop(c, side, Decimal(str(pos["tp"])), tid, TP_KIND)
+                place_stop(c, side, Decimal(str(pos["tp"])), tid, TP_KIND, pos["qty"])
             except (Rejected, NetworkError) as e:
                 # 응답만 잃었을 수 있다: 걸려 있으면 그대로 둔다
                 try:
@@ -3043,6 +3618,7 @@ def check_strays(ctx: Ctx, state: dict, held: str) -> bool:
             gctx = ctx.at(sym)
             try:
                 cancel_engine_stops(gctx.client)
+                cancel_engine_entries(gctx.client)  # 걸어 둔 추격 청산 지정가
             except (Rejected, NetworkError):
                 continue  # 다음 실행에서 다시
             guards.pop(sym, None)
@@ -3070,7 +3646,7 @@ def check_strays(ctx: Ctx, state: dict, held: str) -> bool:
         for sym in order:
             try:
                 guard_stray(ctx.at(sym), state)
-            except (Rejected, NetworkError, OSError, ValueError, KeyError) as e:
+            except (Rejected, NetworkError, OSError, ValueError, KeyError, RuntimeError) as e:
                 ctx.say(
                     f"🆘 {_name(sym)} 수동 포지션 손절을 걸지 못했어요({e}). 앱에서 확인하세요!"
                 )
@@ -3099,10 +3675,10 @@ def _mark_or_zero(ctx: Ctx, sym: str) -> float:
 
 
 def guard_stray(ctx: Ctx, state: dict) -> None:
-    """엔진이 다른 종목을 들고 있을 때 손으로 연 포지션: 손절 3%·익절(FIXED_TP_PCT) 주문만
-    걸어 지킨다
-    (신호로 관리하지는 않는다). 수량·평균가가 바뀌면 다시 건다. 손절가를 이미 지났으면
-    시장가로 닫는다."""
+    """엔진이 다른 종목을 들고 있을 때 손으로 연 포지션: 손절 3%·익절(FIXED_TP_PCT) 지정가 조건부
+    주문(수량·reduceOnly)만 걸어 지킨다(신호로 관리하지는 않는다). 수량·평균가·익절 값·주문 방식이
+    바뀌면 새 주문을 먼저 걸고 옛 주문을 거둔다. 손절·익절가를 이미 지났거나 걸린 손절·익절
+    지정가가 체결 안 됐으면 지정가 추격으로 닫는다(다 못 닫으면 다음 실행이 이어서)."""
     c = ctx.client
     sym = ctx.symbol
     row = position_row(c)
@@ -3111,13 +3687,20 @@ def guard_stray(ctx: Ctx, state: dict) -> None:
     side = "long" if row["amt"] > 0 else "short"
     guards = state.setdefault("guards", {})
     g = guards.get(sym)
-    if (
+    if g and g.get("closing") and g["side"] == side:
+        ctx.say(f"⏳ {_who(sym, side)} 수동 포지션 지정가 청산을 이어서 쫓아요")
+        _guard_close(ctx, state, g, side, g["closing"].get("why") or "stop")
+        return
+    tp_pct = FIXED_TP_PCT or None
+    changed = (
         not g
         or g["side"] != side
         or abs(g["qty"] - abs(row["amt"])) > 1e-9
         or abs(g["entry"] - row["entry"]) > 1e-9
-    ):
-        cancel_engine_stops(c)
+        or g.get("order_style") != order_style()
+        or (g.get("tp_pct") != tp_pct and not AI_EXITS)
+    )
+    if changed:
         stop, tp = _manual_levels(ctx, side, row["entry"])
         g = {
             "side": side,
@@ -3125,53 +3708,116 @@ def guard_stray(ctx: Ctx, state: dict) -> None:
             "entry": row["entry"],
             "stop": stop,
             "tp": tp,
+            "tp_pct": tp_pct,
             "n": (g or {}).get("n", 0),
             "stop_id": None,
             "tp_id": None,
+            "order_style": order_style(),
+            "stale": True,  # 새 손절이 걸린 것을 확인하면 옛 지킴 주문을 거둔다
         }
         guards[sym] = g
         _save(DIR / "state.json", state)
         tp_txt = f", 익절 {_px(tp)}" if tp else ""
         ctx.say(
             f"🛡 {_who(sym, side)} 수동 포지션 {g['qty']} @ {_px(row['entry'])}: 엔진이 다른 종목을 "
-            f"들고 있어 손절 {_px(stop)}{tp_txt} 주문만 걸어 지켜요"
+            f"들고 있어 손절 {_px(stop)}{tp_txt} 지정가 주문만 걸어 지켜요"
         )
-    open_ids = {a.get("clientAlgoId") for a in open_algos(c)}
+    open_ids = open_algo_ids(open_algos(c))
+    for key, why in (("stop_id", "stop"), ("tp_id", "tp")):
+        if g.get(key) and g[key] not in open_ids:
+            st = _exit_triggered(c, g[key])
+            if st:
+                cancel_exit_children(c, [st])
+                if why == "tp" and _tp_below_entry(ctx, side, float(g["entry"])):
+                    g["tp_id"] = None  # 닫지 않고 아래에서 익절을 다시 건다(손절은 그대로)
+                    continue
+                ctx.say(
+                    f"⚡ {_who(sym, side)} 수동 포지션 지정가 손절·익절이 걸렸는데 남아 있어요 "
+                    "→ 쫓아 닫아요"
+                )
+                _guard_close(ctx, state, g, side, why)
+                return
     minute = ctx.now_ms - ctx.now_ms % 60_000
-    if g.get("stop_id") not in open_ids:
+    stop_ok = g.get("stop_id") in open_ids or g.get("stop_id") == "user"
+    if not stop_ok:
         g["n"] = _next_manual_n(state)
         cid = _cid(minute, f"g{g['n']}", sym)
         try:
-            r = place_stop(c, side, Decimal(str(g["stop"])), cid)
+            r = place_stop(c, side, Decimal(str(g["stop"])), cid, STOP_KIND, g["qty"])
         except Rejected as e:
             if e.code == USER_CLOSE_STOP:
-                g["stop_id"] = "user"  # 사용자 손절이 이미 있다
+                g["stop_id"] = "user"  # 사용자 손절이 이미 있다(손절이 시장가 closePosition일 때만)
                 _save(DIR / "state.json", state)
                 return
-            if e.code != WOULD_TRIGGER:
+            if e.code not in WOULD_TRIGGER:
                 _save(DIR / "state.json", state)
                 raise  # 닫지 않고 알리기만(check_strays가 🆘)
-            close_side = "SELL" if side == "long" else "BUY"
-            xid = _cid(minute, f"gx{g['n']}", sym)
-            market(c, close_side, _close_qty(row["amt"]), xid, reduce=True)
-            guards.pop(sym, None)
-            _save(DIR / "state.json", state)
-            ctx.say(f"✂️ {_who(sym, side)} 수동 포지션이 이미 손절가를 지나 시장가로 닫았어요")
+            ctx.say(f"✂️ {_who(sym, side)} 수동 포지션이 이미 손절가를 지났어요 → 지정가로 닫아요")
+            _guard_close(ctx, state, g, side, "stop")
             return
         g["stop_id"] = cid
         _save(DIR / "state.json", state)
-        if not stop_placed(c, r, cid):
+        stop_ok = stop_placed(c, r, cid)
+        if not stop_ok:
             ctx.say(f"⚠️ {_name(sym)} 수동 포지션 손절 확인이 안 돼요 → 다음 실행에서 다시 봐요")
     if g.get("tp") and g.get("tp_id") not in open_ids:
         g["n"] = _next_manual_n(state)
         cid = _cid(minute, f"h{g['n']}", sym)
         try:
-            place_stop(c, side, Decimal(str(g["tp"])), cid, TP_KIND)
+            place_stop(c, side, Decimal(str(g["tp"])), cid, TP_KIND, g["qty"])
             g["tp_id"] = cid
         except Rejected as e:
+            if e.code in WOULD_TRIGGER and _tp_below_entry(ctx, side, float(g["entry"])):
+                g["tp_id"] = None  # 호가가 진입가보다 나쁘다: 닫지 않고 다음 실행에서 다시
+                _save(DIR / "state.json", state)
+                return
+            if e.code in WOULD_TRIGGER:
+                ctx.say(
+                    f"🎯 {_who(sym, side)} 수동 포지션이 이미 익절가를 지났어요 → 지정가로 익절"
+                )
+                _guard_close(ctx, state, g, side, "tp")
+                return
             ctx.say(f"⚠️ {_name(sym)} 수동 포지션 익절 주문 실패({e}) → 손절만 걸어 둠")
             g["tp"] = None
         _save(DIR / "state.json", state)
+    if g.get("stale") and stop_ok:
+        # 새 손절이 걸린 것을 본 뒤에 옛 지킴 주문을 거둔다(손절 없는 틈을 만들지 않는다)
+        cancel_engine_stops(c, keep={g.get("stop_id"), g.get("tp_id")} - {None})
+        g.pop("stale", None)
+        _save(DIR / "state.json", state)
+
+
+def _guard_close(ctx: Ctx, state: dict, g: dict, side: str, why: str) -> None:
+    """지키는 수동 포지션을 지정가 추격으로 닫는다. 다 못 닫으면 g["closing"]에 적어 다음 실행이
+    이어서 쫓는다. 거래소 오류는 예외로 올린다(check_strays가 🆘)."""
+    sym = ctx.symbol
+    if not g.get("closing"):
+        g["n"] = _next_manual_n(state)
+        minute = ctx.now_ms - ctx.now_ms % 60_000
+        g["closing"] = {"base": _cid(minute, f"gx{g['n']}", sym), "k": 0, "cid": None, "why": why}
+        _save(DIR / "state.json", state)
+    cl = g["closing"]
+
+    def on_place(cid: str, k: int) -> None:
+        cl.update(cid=cid, k=k)
+        _save(DIR / "state.json", state)
+
+    exit_ids = (g.get("stop_id"), g.get("tp_id"))
+    _clear_children(ctx, exit_ids)
+    res = chase_flat(
+        ctx, side, cl["base"], int(cl.get("k") or 0), cl.get("cid"), on_place, exit_ids
+    )
+    ctx.event(event="guard_close_chase", symbol=sym, why=cl["why"], steps=res["steps"])
+    if not res["flat"]:
+        cl.update(cid=res["cid"], k=res["k"])
+        _save(DIR / "state.json", state)
+        ctx.say(_resting_text(ctx, {"side": side}))
+        return
+    state.setdefault("guards", {}).pop(sym, None)
+    _save(DIR / "state.json", state)
+    _cleanup_exits(ctx, g)
+    label = {"stop": "손절가", "tp": "익절가"}.get(cl["why"], cl["why"])
+    ctx.say(f"✂️ {_who(sym, side)} 수동 포지션을 지정가로 닫았어요({label})")
 
 
 # ---------------------------------------------------------------- 한 번 실행

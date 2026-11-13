@@ -74,6 +74,11 @@ def held_symbol() -> str | None:
     return sym if isinstance(sym, str) and _SYMBOL.match(sym) else None
 
 
+# 매매와 상관없이 바이낸스 화면에 늘 보여 줄 종목(사용자 2026-11-13 "앤트로픽 차트는 꼭 넣어놓자
+# 매매를 하던 안하던", 상장 전 선물). 보기만 한다: 엔진 진입 대상(tradable)과는 따로다.
+WATCH_SYMBOLS = ("ANTHROPICUSDT",)
+
+
 def traded_view(now: datetime | None = None) -> dict:
     """엔진이 지금 매매하는 종목 = 새로 들어갈 수 있는 종목(tradable) + 들고 있는 종목.
     든 종목을 맨 앞에, 나머지는 엔진 우선순위(백테스트 승률 순)."""
@@ -85,6 +90,7 @@ def traded_view(now: datetime | None = None) -> dict:
     held = held_symbol()
     if held:
         order = [held] + [s for s in order if s != held]
+    order += [s for s in WATCH_SYMBOLS if s not in order]
     stats = u.get("stats") or {}
     rows = []
     for s in order:
@@ -99,6 +105,7 @@ def traded_view(now: datetime | None = None) -> dict:
                 "ret": ret,
                 "held": s == held,
                 "tradable": s in tradable,
+                "watch": s in WATCH_SYMBOLS and s not in tradable and s != held,
                 # COIN·EQUITY·COMMODITY 등(바이낸스 분류). 범위 파일에 없으면 None
                 "underlying": st.get("underlying"),
                 # /api/soxl이 큰 그림·일봉 지표 분석을 내주는 종목이면 그 설명
@@ -129,7 +136,7 @@ def near_view(now: datetime | None = None) -> dict:
     if not isinstance(data, dict):
         return {"status": "pending", "message": "신호 거리 파일 모양이 달라요"}
     traded = traded_view(now)
-    want = {r["symbol"] for r in traded["symbols"]}
+    want = {r["symbol"] for r in traded["symbols"] if not r.get("watch")}
     held = next((r["symbol"] for r in traded["symbols"] if r["held"]), None)
     rows = data.get("rows") if isinstance(data.get("rows"), list) else []
     rows = [
@@ -141,7 +148,7 @@ def near_view(now: datetime | None = None) -> dict:
         **data,
         "status": "ok",
         "rows": rows,
-        "traded": [r["symbol"] for r in traded["symbols"]],
+        "traded": sorted(want, key=[r["symbol"] for r in traded["symbols"]].index),
         "window_days": traded["window_days"],
     }
 

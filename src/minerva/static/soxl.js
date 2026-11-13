@@ -177,7 +177,7 @@
     }
     row.innerHTML = '<span class="mini">지금 매매하는 종목</span>' + list.map((r) => {
       const wr = r.winrate == null ? "" : ` <span class="mini">${U.num(r.winrate, 0)}%</span>`;
-      const held = r.held ? ' <span class="chip">보유</span>' : "";
+      const held = r.held ? ' <span class="chip">보유</span>' : r.watch ? ' <span class="chip">관심·매매 안 함</span>' : "";
       return `<button type="button" data-sym="${U.esc(r.symbol)}" aria-pressed="false">${U.esc(r.name || r.symbol)}${wr}${held}</button>`;
     }).join("");
     const pick = [want, cur, saved(), "BTCUSDT"].find(has) || list[0].symbol;

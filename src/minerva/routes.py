@@ -125,7 +125,9 @@ def kline_symbols() -> set[str]:
         traded = btc_view.traded_symbols()
     except (OSError, ValueError, KeyError, TypeError):
         traded = []
-    return set(KLINE_SYMBOLS) | set(traded[:KLINE_TRADED_MAX])
+    watch = set(btc_view.WATCH_SYMBOLS)  # 관심 종목은 상한과 상관없이 늘 연다
+    traded = [s for s in traded if s not in watch]
+    return set(KLINE_SYMBOLS) | set(traded[:KLINE_TRADED_MAX]) | watch
 
 
 LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}

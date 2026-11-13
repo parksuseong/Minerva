@@ -1739,9 +1739,9 @@ def _next_manual_n(state: dict) -> int:
     return n
 
 
-# 강제 청산 기록을 연달아 이만큼 못 읽으면(15분 실행 기준 1시간) 예전처럼 진입을 멈춘다.
-# 그 전까지는 그 실행만 신규 진입을 쉬고 다음 실행에서 다시 본다(사용자 2026-11-14 "1번 작업해":
-# 조회 한 번 실패로 매매가 멈추지 않게)
+# 강제 청산 기록을 못 읽으면 바로 멈추지 않는다(사용자 2026-11-14 "1번 작업해"). 손으로 한 것으로
+# 보고 평소대로 처리하되(이어받기·손절), 확인될 때까지 신규 진입만 쉰다(state.liq_recheck,
+# 정지 사유로 넘겨 반대 신호 청산·손절은 그대로). 이만큼 연달아 못 읽으면(약 1시간) 진입 정지
 LIQ_UNKNOWN_MAX = 4
 
 
@@ -1756,45 +1756,43 @@ def _liquidated(ctx: Ctx, since_ms: int) -> bool | None:
     return bool(rows)
 
 
-def _liq_check(ctx: Ctx, state: dict, since_ms: int) -> bool | None:
-    """_liquidated + 연속 실패 횟수. LIQ_UNKNOWN_MAX번 연달아 모르면 True(멈추는 쪽)."""
+def _liq_or_queue(ctx: Ctx, state: dict, since_ms: int) -> bool:
+    """강제 청산이면 True. 못 읽으면 다시 볼 목록에 넣고 False(손으로 한 것으로 처리).
+    이미 다시 볼 목록에 있으면 이번 실행에선 묻지 않는다(check_liq_rechecks가 본다)."""
+    pend = state.setdefault("liq_recheck", {})
+    if ctx.symbol in pend:
+        pend[ctx.symbol]["since"] = min(int(pend[ctx.symbol]["since"]), since_ms)
+        return False
     got = _liquidated(ctx, since_ms)
-    counts = state.setdefault("liq_unknown", {})
-    if got is not None:
-        counts.pop(ctx.symbol, None)
-        if not counts:
-            state.pop("liq_unknown", None)
-        return got
-    n = int(counts.get(ctx.symbol) or 0) + 1
-    counts[ctx.symbol] = n
-    if n >= LIQ_UNKNOWN_MAX:
-        counts.pop(ctx.symbol, None)
-        if not counts:
-            state.pop("liq_unknown", None)
+    if got is None:
+        pend[ctx.symbol] = {"since": since_ms, "n": 1}
         ctx.say(
-            f"⚠️ {_name(ctx.symbol)} 강제 청산 기록을 {n}번 연달아 못 읽었어요 → 안전하게 신규 "
-            "진입을 멈춰요"
+            f"⏸ {_name(ctx.symbol)} 강제 청산 기록을 못 읽었어요 → 손으로 한 것으로 보고 평소처럼 "
+            "관리하되, 확인될 때까지 신규 진입만 쉬어요(15분마다 다시 봐요)"
         )
-        return True
-    return None
-
-
-def check_liq_rechecks(ctx: Ctx, state: dict) -> bool:
-    """손절·익절·신호 없이 닫힌 포지션 중 강제 청산 여부를 아직 모르는 것을 다시 본다.
-    모두 확인되면 True(진입해도 됨). 강제 청산이면 진입을 멈춘다."""
-    pend = state.get("liq_recheck") or {}
-    ok = True
-    for sym, since_ms in list(pend.items()):
-        got = _liq_check(ctx.at(sym), state, int(since_ms))
-        if got is None:
-            ok = False
-            continue
-        pend.pop(sym, None)
-        if got:
-            set_no_entry(f"{_name(sym)} 포지션이 강제 청산(청산·ADL)으로 닫힘", ctx.send)
     if not pend:
         state.pop("liq_recheck", None)
-    return ok
+    return bool(got)
+
+
+def check_liq_rechecks(ctx: Ctx, state: dict) -> None:
+    """앞 실행에서 강제 청산인지 못 읽은 종목을 다시 본다(실행 시작에 한 번).
+    강제 청산이면 진입 정지, LIQ_UNKNOWN_MAX번 연달아 못 읽어도 진입 정지."""
+    pend = state.get("liq_recheck") or {}
+    for sym, rec in list(pend.items()):
+        got = _liquidated(ctx.at(sym), int(rec["since"]))
+        if got is None:
+            rec["n"] = int(rec.get("n") or 1) + 1
+            if rec["n"] < LIQ_UNKNOWN_MAX:
+                continue
+            set_no_entry(
+                f"{_name(sym)} 강제 청산 기록을 {rec['n']}번 연달아 못 읽음(확인 못 함)", ctx.send
+            )
+        elif got:
+            set_no_entry(f"{_name(sym)} 포지션이 강제 청산(청산·ADL)으로 닫히거나 줄었음", ctx.send)
+        pend.pop(sym, None)
+    if not pend:
+        state.pop("liq_recheck", None)
 
 
 def adopt_manual(ctx: Ctx, state: dict, row: dict, why: str) -> dict | None:
@@ -1948,22 +1946,13 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         _cleanup_exits(ctx, pos)
         _save(DIR / "state.json", state)
         _record_close(ctx, pos, px, pnl, why)
-        liq = (
-            _liq_check(ctx, state, int(pos["entry_ms"]) - 1000)
-            if why == "manual" and MANUAL_ADOPT
-            else True
-        )
-        if why == "manual" and MANUAL_ADOPT and liq is None:
-            # 강제 청산인지 못 읽었다: 이번엔 신규 진입만 쉬고 다음 실행에서 다시 본다
-            state.setdefault("liq_recheck", {})[ctx.symbol] = int(pos["entry_ms"]) - 1000
-            _save(DIR / "state.json", state)
-            ctx.say(
-                f"⏸ {_name(ctx.symbol)} 포지션이 손절·익절·신호 없이 닫혔는데 강제 청산 기록을 "
-                "못 읽었어요 → 이번엔 신규 진입을 쉬고 15분 뒤 다시 확인해요"
-            )
-            return False
-        if why == "manual" and MANUAL_ADOPT and not liq:
+        if (
+            why == "manual"
+            and MANUAL_ADOPT
+            and not _liq_or_queue(ctx, state, int(pos["entry_ms"]) - 1000)
+        ):
             # 사용자가 손으로 정리할 수 있다(2026-11-13): 기록만 하고 멈추지 않는다
+            _save(DIR / "state.json", state)
             return True
         if why == "manual":
             set_no_entry("엔진 포지션이 손절·익절·신호 없이 닫힘(수동 또는 강제 청산)", ctx.send)
@@ -2000,20 +1989,14 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
             protect_close(ctx, state, label)
             return state.get("position") is None
     cancel_engine_entries(c)  # 남은 진입 지정가가 체결되면 수량이 어긋난다
-    liq = (
-        _liq_check(ctx, state, int(pos["entry_ms"]) - 1000)
-        if abs(amt - sign * pos["qty"]) > 1e-9 and MANUAL_ADOPT
-        else True
-    )
-    if liq is None:
-        # 수량이 바뀌었는데 강제 청산(ADL 일부 등)인지 못 읽었다: 멈추지 않고 이번엔 진입만 쉰다.
-        # 같은 방향이면 지금 수량으로 손절만 지킨다. 다음 실행에서 다시 본다
-        ctx.event(event="qty_change_liq_unknown", amt=amt, qty=pos["qty"])
-        if (amt > 0) == (sign > 0):
-            ensure_stop(ctx, state, with_tp=False, qty=abs(amt))
-        _save(DIR / "state.json", state)
-        return False
-    if abs(amt - sign * pos["qty"]) > 1e-9 and MANUAL_ADOPT and not liq:
+    # 강제 청산·ADL은 포지션을 줄이기만 한다: 같은 방향으로 줄었을 때만 기록을 본다
+    # (뒤집기·늘리기는 손으로 한 것이라 바로 이어받는다. 못 읽으면 이어받고 진입만 쉰다)
+    shrunk = (amt > 0) == (sign > 0) and abs(amt) < pos["qty"]
+    if (
+        abs(amt - sign * pos["qty"]) > 1e-9
+        and MANUAL_ADOPT
+        and not (shrunk and _liq_or_queue(ctx, state, int(pos["entry_ms"]) - 1000))
+    ):
         flipped = (amt > 0) != (sign > 0)
         row = position_row(c)
         if not row.get("amt") or float(row.get("entry") or 0) <= 0:
@@ -3952,8 +3935,9 @@ def run(
         else:
             # 앞 실행에서 강제 청산인지 못 읽은 청산을 다시 본다(모르면 이번에도 진입 쉼).
             # 대사보다 먼저 봐서 이번 실행에 새로 생긴 것은 다음 실행부터 센다
-            recheck_ok = not state.get("liq_recheck") or check_liq_rechecks(ctx, state)
-            can_trade = reconcile_live(ctx.at(held), state) and recheck_ok
+            if state.get("liq_recheck"):
+                check_liq_rechecks(ctx, state)
+            can_trade = reconcile_live(ctx.at(held), state)
             # 엔진은 한 종목만 든다: 다른 종목 포지션이 보이면 짐작하지 않고 신규 진입을 멈춘다
             if not check_strays(ctx, state, held):
                 can_trade = False
@@ -3988,6 +3972,9 @@ def run(
             last_px = float(rows_by[pos_symbol(p)][-1][4])
             equity += sign * p["qty"] * (last_px - p["entry"])
     halts = check_halts("live" if live else "dry", state, equity, now, ctx.say)
+    if live and state.get("liq_recheck"):
+        # 강제 청산인지 확인될 때까지 신규 진입만 쉰다(반대 신호 청산·손절은 그대로)
+        halts.append("강제 청산 기록 확인 중(" + ", ".join(map(_name, state["liq_recheck"])) + ")")
 
     sigs: dict[str, dict] = {}
     for sym in rows_by:

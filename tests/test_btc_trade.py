@@ -3523,27 +3523,27 @@ def test_liquidation_still_halts_with_manual_adopt(env, monkeypatch):
     assert bt.entries_blocked()
 
 
-def test_liquidation_read_failure_pauses_one_run_then_rechecks(env, monkeypatch):
+FAIL_ONCE = bt.RETRIES + 1  # 한 번 묻기(재시도 포함) 실패
+
+
+def test_liquidation_read_failure_pauses_entries_then_rechecks(env, monkeypatch):
     # 사용자 2026-11-14: 강제 청산 기록을 못 읽었다고 바로 멈추지 않는다
     monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
     live(env)
     ex = FakeExchange()
     engine_long(ex)
     ex.amt = 0.0
-    ex.net_fail["GET /fapi/v1/forceOrders"] = bt.RETRIES + 1  # 한 번 묻기(재시도 포함) 실패
+    ex.net_fail["GET /fapi/v1/forceOrders"] = FAIL_ONCE
     with_signal(monkeypatch, "long")
-    n_orders = len(ex.orders) + len(ex.limits)
     run(env, ex)
     assert jsonl("closed.jsonl")[-1]["why"] == "manual"
     assert not bt.entries_blocked()
-    assert state().get("position") is None  # 모르는 동안은 새로 들어가지 않는다
-    assert len(ex.orders) + len(ex.limits) == n_orders
-    assert "BTCUSDT" in state()["liq_recheck"]
+    assert state().get("position") is None and ex.amt == 0.0  # 모르는 동안은 새로 안 들어감
+    assert state()["liq_recheck"]["BTCUSDT"]["n"] == 1
     # 다음 실행: 읽히고 강제 청산이 아니다 → 기록을 지우고 평소대로
     with_signal(monkeypatch, None)
     run(env, ex)
-    assert "liq_recheck" not in state() and "liq_unknown" not in state()
-    assert not bt.entries_blocked()
+    assert "liq_recheck" not in state() and not bt.entries_blocked()
 
 
 def test_liquidation_recheck_finds_liquidation_halts(env, monkeypatch):
@@ -3552,7 +3552,7 @@ def test_liquidation_recheck_finds_liquidation_halts(env, monkeypatch):
     ex = FakeExchange()
     engine_long(ex)
     ex.amt = 0.0
-    ex.net_fail["GET /fapi/v1/forceOrders"] = bt.RETRIES + 1  # 한 번 묻기(재시도 포함) 실패
+    ex.net_fail["GET /fapi/v1/forceOrders"] = FAIL_ONCE
     with_signal(monkeypatch, None)
     run(env, ex)
     assert not bt.entries_blocked()
@@ -3567,34 +3567,62 @@ def test_liquidation_unreadable_four_runs_halts(env, monkeypatch):
     ex = FakeExchange()
     engine_long(ex)
     ex.amt = 0.0
-    ex.net_fail["GET /fapi/v1/forceOrders"] = 99
+    ex.net_fail["GET /fapi/v1/forceOrders"] = 999
     with_signal(monkeypatch, None)
     for _ in range(bt.LIQ_UNKNOWN_MAX - 1):
         run(env, ex)
         assert not bt.entries_blocked()
     run(env, ex)
-    assert bt.entries_blocked()
-    assert "liq_recheck" not in state() and "liq_unknown" not in state()
+    assert bt.entries_blocked() and "liq_recheck" not in state()
+    assert "못 읽음" in (bt.DIR / "NO_ENTRY").read_text()
 
 
-def test_qty_change_with_unreadable_liquidation_keeps_stop_no_halt(env, monkeypatch):
+def test_qty_shrink_with_unreadable_liquidation_adopts_and_pauses(env, monkeypatch):
     monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
     engine_long(ex, qty=0.029)
     ex.amt = 0.02  # 줄었다(손으로 일부 정리 또는 ADL 일부)
-    ex.net_fail["GET /fapi/v1/forceOrders"] = bt.RETRIES + 1  # 한 번 묻기(재시도 포함) 실패
+    ex.net_fail["GET /fapi/v1/forceOrders"] = FAIL_ONCE
     with_signal(monkeypatch, None)
     run(env, ex)
     assert not bt.entries_blocked()
-    assert state()["position"]["qty"] == 0.029  # 아직 이어받지 않았다
+    assert state()["position"]["qty"] == 0.02  # 지금 수량으로 이어받고 손절도 새 수량
     stops = [a for a in ex.algos.values() if a["algoStatus"] == "NEW" and a["type"] == "STOP"]
-    assert stops  # 손절은 남아 있다(reduceOnly라 수량이 커도 포지션만큼만 닫힌다)
-    # 다음 실행: 읽히면 새 수량으로 이어받는다
+    assert len(stops) == 1 and stops[0]["quantity"] == "0.02"
+    assert "BTCUSDT" in state()["liq_recheck"]
+    # 확인 중에도 반대 신호 청산은 한다(새 진입만 쉰다)
+    ex.net_fail["GET /fapi/v1/forceOrders"] = FAIL_ONCE
+    with_signal(monkeypatch, "short")
     run(env, ex)
-    assert state()["position"]["qty"] == 0.02 and not bt.entries_blocked()
-    assert "liq_unknown" not in state()
+    assert ex.amt == 0.0 and state().get("position") is None
+    assert not bt.entries_blocked()
+
+
+def test_manual_flip_or_add_adopts_without_reading_liquidations(env, monkeypatch):
+    # 강제 청산은 포지션을 줄이기만 한다: 뒤집기·늘리기는 기록을 안 보고 바로 이어받는다
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex, qty=0.02)
+    ex.amt = 0.05
+    ex.net_fail["GET /fapi/v1/forceOrders"] = 999
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["qty"] == 0.05 and pos["side"] == "long"
+    stops = [a for a in ex.algos.values() if a["algoStatus"] == "NEW" and a["type"] == "STOP"]
+    assert len(stops) == 1 and stops[0]["quantity"] == "0.05"
+    ex.amt = -0.02  # 손으로 뒤집었다
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["side"] == "short" and pos["qty"] == 0.02
+    stops = [a for a in ex.algos.values() if a["algoStatus"] == "NEW" and a["type"] == "STOP"]
+    assert len(stops) == 1 and stops[0]["side"] == "BUY"
+    assert "liq_recheck" not in state() and not bt.entries_blocked()
+    assert not [c for c in ex.calls if c[1] == "/fapi/v1/forceOrders"]
 
 
 def test_manual_stop_failure_other_than_trigger_does_not_close(env, monkeypatch):

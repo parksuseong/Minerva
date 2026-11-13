@@ -146,6 +146,12 @@
     const hm = `${pad(x.getUTCHours())}:${pad(x.getUTCMinutes())}`;
     return withDate ? `${pad(x.getUTCMonth() + 1)}/${pad(x.getUTCDate())} ${hm}` : hm;
   };
+  // 일별 점의 time은 {year, month, day} 또는 "YYYY-MM-DD"로 온다
+  const dayText = (t) => {
+    if (typeof t === "string") return `${t.slice(5, 7)}/${t.slice(8, 10)}`;
+    if (t && typeof t === "object") return `${pad(t.month)}/${pad(t.day)}`;
+    return kst(t, true).slice(0, 5);
+  };
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
   let chart = null;
   let line = null;
@@ -153,15 +159,23 @@
 
   function drawSeries(d) {
     const LC = window.LightweightCharts;
-    const pts = (d.points || []).map((p) => ({ time: p.t, value: p.v }));
+    // 일별: KST 날짜마다 마지막 점(그날 마감값, 오늘은 지금 값). 시각은 이미 KST를 UTC 자리에 둔 값
+    const byDay = new Map();
+    for (const p of d.points || []) {
+      if (typeof p.t !== "number" || typeof p.v !== "number") continue;
+      const day = new Date(p.t * 1000).toISOString().slice(0, 10);
+      const prev = byDay.get(day);
+      if (!prev || p.t >= prev.t) byDay.set(day, p);
+    }
+    const pts = [...byDay.keys()].sort().map((k) => ({ time: k, value: byDay.get(k).v }));
     if (d.live === false) {
       $("bn-chart-note").textContent = "실전 자동매매를 시작하면 그때부터 그려요";
       if (line) line.setData([]);
       return;
     }
     $("bn-chart-note").textContent = pts.length < 2
-      ? "기록이 쌓이는 중이에요 (5분마다 한 점)"
-      : `5분마다 한 점 · 가로선 = 시드 ${usdt(d.seed)} · 수수료를 뺀 순평가액`;
+      ? "기록이 쌓이는 중이에요 (하루에 한 점, 오늘은 지금 값)"
+      : `하루에 한 점(그날 마지막 값, 오늘은 지금 값) · 가로선 = 시드 ${usdt(d.seed)} · 수수료를 뺀 순평가액`;
     if (!LC || !pts.length || !$("bn-chart").clientWidth) return;
     const up = css("--up") || "#dc2626", down = css("--down") || "#2563eb";
     const text = css("--muted") || "#6b7280", grid = css("--line") || "#e5e7eb";
@@ -173,11 +187,11 @@
     };
     if (!chart) {
       chart = LC.createChart($("bn-chart"), { autoSize: true, ...look,
-        localization: { locale: "ko-KR", timeFormatter: (t) => kst(t, true),
+        localization: { locale: "ko-KR", timeFormatter: dayText,
           priceFormatter: (v) => `${num(v)}` },
         crosshair: { mode: LC.CrosshairMode.Magnet },
-        timeScale: { ...look.timeScale, timeVisible: true, secondsVisible: false,
-          tickMarkFormatter: (t, type) => (type <= 2 ? kst(t, true).slice(0, 5) : kst(t, false)) } });
+        timeScale: { ...look.timeScale, timeVisible: false, secondsVisible: false,
+          tickMarkFormatter: dayText } });
       line = chart.addSeries(LC.BaselineSeries, { lineWidth: 2, priceLineVisible: false });
     }
     chart.applyOptions(look);

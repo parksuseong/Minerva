@@ -83,6 +83,8 @@ DEFAULT_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
 # 그 네 종목의 백테스트 승률(%): SCR ① 15분·3배·손절 3%, 최근 1년(상장이 늦으면 상장 이후),
 # 2026-11-11 측정(사용자 "승률 높은 걸 우선순위로")
 DEFAULT_WINRATE = {"BTCUSDT": 54, "NVDAUSDT": 49, "ETHUSDT": 44, "SOXLUSDT": 17}
+# 같은 측정의 1년 수익(%, 2026-11-12 갱신 값). universe.json이 없을 때 수익 > 0 판정용
+DEFAULT_RET = {"BTCUSDT": 41.7, "NVDAUSDT": -27.7, "ETHUSDT": 89.6, "SOXLUSDT": -99.3}
 # 이번 실행의 종목·승률·우선순위. run()·preflight()가 `use_universe`로 universe.json에서 채운다
 SYMBOLS: tuple[str, ...] = DEFAULT_SYMBOLS
 SYMBOL_WINRATE: dict[str, float] = dict(DEFAULT_WINRATE)
@@ -268,18 +270,25 @@ def universe(now_ms: int | None = None) -> dict:
 
 def tradable_set(syms, stats: dict) -> frozenset:
     """새로 들어갈 수 있는 종목. 백테스트 승률 ≥ MIN_ENTRY_WINRATE(사용자 2026-11-12 "승률 50프로
-    미만은 들어가지마" → 같은 날 45로 낮춤, 네 종목도 예외 없음)이고 표본이 충분한 종목.
-    백테스트 수익 > 0 조건은 사용자 "그냥 빼자"(2026-11-12)로 없앴다. 나머지는 신호·화면만."""
+    미만은 들어가지마" → 같은 날 45로 낮춤)이고, 백테스트 수익 > 0이고(사용자 2026-11-13
+    "백테스트해서 수익률이 +인것만 매매하자", 예외 없음)
+    표본이 충분한 종목. 나머지는 신호·화면만."""
     ok = set()
     for s in syms:
         st = stats.get(s) or {}
-        if float(st.get("winrate") or 0) >= MIN_ENTRY_WINRATE and not btc_universe.low_sample(st):
+        if (
+            float(st.get("winrate") or 0) >= MIN_ENTRY_WINRATE
+            and float(st.get("ret") or 0) > 0
+            and not btc_universe.low_sample(st)
+        ):
             ok.add(s)
     return frozenset(ok)
 
 
 def _default_tradable() -> frozenset:
-    return frozenset(s for s in DEFAULT_SYMBOLS if DEFAULT_WINRATE[s] >= MIN_ENTRY_WINRATE)
+    return frozenset(
+        s for s in DEFAULT_SYMBOLS if DEFAULT_WINRATE[s] >= MIN_ENTRY_WINRATE and DEFAULT_RET[s] > 0
+    )
 
 
 def tradable(sym: str) -> bool:
@@ -2613,7 +2622,7 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
     elif sym not in SYMBOLS:
         out["skip"] = "종목 범위(거래량 상위)에서 빠져 새로 들어가지 않음(보유분 정리만)"
     elif not tradable(sym):
-        out["skip"] = "승률 45% 미만이거나 표본이 적어 새로 들어가지 않음(보유분 정리만)"
+        out["skip"] = "승률 45% 미만·백테스트 손실·표본 부족이라 새로 들어가지 않음(보유분 정리만)"
     elif _clock() - t_start > MAX_RUN_SECS:
         out["skip"] = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
     elif c.market is None:
@@ -2845,7 +2854,7 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
     for sym, g in others.items():
         rate = float(SYMBOL_WINRATE.get(sym) or 0)
         if not tradable(sym):
-            passed[sym] = "승률 45% 미만이거나 표본 적음(신호 표시만, 진입 안 함)"
+            passed[sym] = "승률 45% 미만·백테스트 손실·표본 부족(신호 표시만, 진입 안 함)"
         elif pos and rate < a_rate + SWITCH_EDGE_PP:
             passed[sym] = (
                 f"승률 {rate:g}%가 보유 {_name(a_sym)} {a_rate:g}% + {SWITCH_EDGE_PP:g}%p보다 낮음"

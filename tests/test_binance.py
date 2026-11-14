@@ -383,3 +383,58 @@ def test_trade_symbols_adds_engine_and_open_positions_only(tmp_path):
     assert got[:4] == list(binance.TRADE_SYMBOLS)
     assert set(got[4:]) == {"DOGEUSDT", "SOLUSDT", "XRPUSDT", "HYPEUSDT"}
     assert binance.trade_symbols(None, tmp_path / "missing") == list(binance.TRADE_SYMBOLS)
+
+
+def _algo(side, kind, px):
+    return {"side": side, "orderType": kind, "triggerPrice": str(px)}
+
+
+def test_attach_exits_long_and_short():
+    """닫는 쪽 주문만, 같은 종류가 여럿이면 진입가에 가까운 것. %는 진입가 대비 가격 변화."""
+    long_ = {"side": "롱", "entry": 100.0}
+    binance.attach_exits(long_, [
+        _algo("SELL", "STOP", 97), _algo("SELL", "STOP_MARKET", 95),
+        _algo("SELL", "TAKE_PROFIT", 103), _algo("BUY", "TAKE_PROFIT", 90),
+    ])
+    assert long_["stop"] == 97 and long_["stop_pct"] == pytest.approx(-3.0)
+    assert long_["tp"] == 103 and long_["tp_pct"] == pytest.approx(3.0)
+    short = {"side": "숏", "entry": 200.0}
+    binance.attach_exits(short, [_algo("BUY", "STOP", 206), _algo("SELL", "STOP", 190)])
+    assert short["stop"] == 206 and short["stop_pct"] == pytest.approx(3.0)
+    assert short["tp"] is None and short["tp_pct"] is None
+
+
+def test_snapshot_reads_exits_per_position_and_survives_failure(monkeypatch):
+    pages = {
+        "/fapi/v2/account": ACCOUNT,
+        "/fapi/v2/positionRisk": RISK,
+        "/fapi/v1/openOrders": [],
+        "/fapi/v1/userTrades": [],
+        "/fapi/v1/income": [],
+        "/fapi/v1/commissionRate": {
+            "makerCommissionRate": "0.0002",
+            "takerCommissionRate": "0.0005",
+        },
+    }
+    asked = []
+
+    def fake_get(cfg, path, **p):
+        if path == "/fapi/v1/openAlgoOrders":
+            asked.append(p.get("symbol"))
+            return [_algo("BUY", "STOP", 78280), _algo("BUY", "TAKE_PROFIT", 73720)]
+        return pages[path]
+
+    monkeypatch.setattr(binance, "_get", fake_get)
+    pos = binance.snapshot(CFG, NOW, None)["positions"][0]
+    assert asked == ["BTCUSDT"]  # 보유 종목만, 종목 지정(무게 1)
+    assert pos["stop"] == 78280 and pos["stop_pct"] == pytest.approx(3.0)
+    assert pos["tp"] == 73720 and pos["tp_pct"] == pytest.approx(-3.0)
+
+    def broken(cfg, path, **p):
+        if path == "/fapi/v1/openAlgoOrders":
+            raise binance.BinanceError("HTTP 500")
+        return pages[path]
+
+    monkeypatch.setattr(binance, "_get", broken)
+    data = binance.snapshot(CFG, NOW, None)
+    assert data["status"] == "ok" and "stop" not in data["positions"][0]

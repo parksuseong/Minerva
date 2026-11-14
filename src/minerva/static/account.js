@@ -128,8 +128,14 @@
       <div class="row"><span>지갑 잔고 · 주문 가능</span>
         <span class="px">${usdt(d.wallet)} · ${usdt(d.available)}</span></div>
       ${ret}${breakdown}${rate}${err}`;
+    // 바이낸스에 걸린 손절·익절 주문의 발동가와 진입가 대비 가격 변화 %(증거금 손익 아님)
+    const exitCell = (v, pct) => v === undefined ? "-" : v == null ? "없음"
+      : `${num(v)} (${pct == null ? "-" : (pct > 0 ? "+" : "") + num(pct)}%)`;
     $("bn-positions").innerHTML = table([["symbol", "종목"], ["side", "방향"], ["qty", "수량"],
-      ["entry", "진입가"], ["mark", "현재가"], ["liq", "청산가"],
+      ["entry", "진입가"],
+      ["stop", "손절가", (v, x) => exitCell(v, x.stop_pct)],
+      ["tp", "익절가", (v, x) => exitCell(v, x.tp_pct)],
+      ["mark", "현재가"], ["liq", "청산가"],
       ["leverage", "레버리지", (v, x) => `${v}배 ${esc(x.margin_type)}`],
       ["pnl", "미실현손익", (v, x) => signed(v, `${num(v)} (${x.pnl_pct == null ? "-" : num(x.pnl_pct)}%)`)]],
     d.positions);

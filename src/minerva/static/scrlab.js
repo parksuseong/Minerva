@@ -30,7 +30,7 @@
   // 종목: 가격 소수 자리(dp). 서버 KLINE_SYMBOLS와 맞춘다.
   const SYMS = { BTCUSDT: { dp: 1 }, ETHUSDT: { dp: 2 }, SOXLUSDT: { dp: 2 }, NVDAUSDT: { dp: 2 } };
   const BASE = { symbol: "BTCUSDT", interval: "15m", days: 7, show_long: true, show_short: true,
-    use_stop: true, stop_pct: 3, use_tp: false, tp_pct: 3 };
+    use_stop: true, stop_pct: 3, use_tp: true, tp_pct: 3, tp_default: 3 };
   const defaults = () => Object.assign({}, core ? core.DEFAULTS : {}, BASE);
 
   const num = (v, d = 1) => U.num(v, d);
@@ -60,6 +60,12 @@
       if (saved.use_tp === undefined && "tp_pct" in saved) {
         saved.use_tp = Number(saved.tp_pct) > 0;
         if (!saved.use_tp) saved.tp_pct = BASE.tp_pct;
+      }
+      // 실전 엔진과 같게 익절 +3%를 기본으로 켠 날(2026-11-14) 전에 저장된 값은 한 번만 바꿔 준다.
+      if (saved.tp_default !== BASE.tp_default) {
+        saved.use_tp = true;
+        saved.tp_pct = BASE.tp_pct;
+        saved.tp_default = BASE.tp_default;
       }
       cfg = Object.assign(cfg, saved);
     }
@@ -263,7 +269,7 @@
     return `<div class="mini" style="margin:4px 0 8px">📐 <b>${stTxt} · ${tpTxt} · ${LEV}배 단순 계산</b> (거친 추정): 보이는 신호로 롱↔숏 갈아타기 →
       거래 ${r.trades}번 · 이익 ${r.wins} · 손절 ${r.stops} · 익절 ${r.tps}${r.liqs ? ` · <span class="down">강제 청산 ${r.liqs}</span>` : ""} · 누적 <b>${pct(r.ret)}</b> · 최대 낙폭 −${num(r.mdd, 1)}%${r.holding ? " · 마지막 포지션은 종가로 정리" : ""}${openTxt}<br>
       신호 다음 봉 시가 진입, 반대 신호에 뒤집기, 진입가 기준 손절·익절선에 봉 고가·저가가 닿으면 청산 후 다음 신호까지 쉼(한 봉에서 둘 다 닿으면 손절로 침), 수수료 0.05%/편도.
-      손절을 끄면 진입가 ±${num(100 / LEV, 1)}%(${LEV}배 청산가, 유지증거금 무시)에서 강제 청산으로 쳐요. 슬리피지·펀딩비 없음. 실전 엔진은 진입마다 AI가 손절·익절을 따로 정하니 결과가 달라요.</div>`;
+      손절을 끄면 진입가 ±${num(100 / LEV, 1)}%(${LEV}배 청산가, 유지증거금 무시)에서 강제 청산으로 쳐요. 슬리피지·펀딩비 없음. 실전 엔진도 손절 3%·익절 +3%로 같지만, 7종목 중 하나만 들고 승률 45% 미만·신호가 1% 넘게 벌어진 진입은 건너뛰고 휴장 1시간 전에 정리해서 결과가 달라요.</div>`;
   };
   const KIND = { stop: "손절", tp: "익절", flip: "뒤집기", end: "보유 중", liq: "강제 청산" };
   const outcome = (r, sim) => {

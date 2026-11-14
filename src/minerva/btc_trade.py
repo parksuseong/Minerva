@@ -111,6 +111,14 @@ UNAVAILABLE_MS = 24 * 3_600_000
 TRADFI = "TRADIFI_PERPETUAL"
 # exchangeInfo underlyingType → tradingSchedule 시장 키. 모르는 종류는 막지 않는다
 SESSION_KEYS = ("EQUITY", "KR_EQUITY", "HK_EQUITY", "CN_EQUITY", "COMMODITY", "FX")
+# 휴장 전 정리(사용자 2026-11-14 "b방식으로 해"): TradFi 포지션은 그 시장의 긴 휴장(주말·공휴일,
+# NO_TRADING이 PRE_CLOSE_GAP_MS 이상) 시작 PRE_CLOSE_MS 전부터 지정가 추격으로 닫고, 그 사이엔
+# 새로 들어가지 않는다. 월요일 갭을 피하는 보험이다: 6개월 백테스트에서 주말 갭이 손절보다 크게
+# 잃은 적은 없었고 수익 차이(+36.7 → +61.5%)는 주말 10번 중 3건이 만들었다(레드팀 조건부).
+# 시간은 바이낸스 시간표 그대로라 서머타임·공휴일이 반영된다. 이미 휴장 중이면 건드리지 않는다.
+PRE_CLOSE = True
+PRE_CLOSE_MS = 60 * 60_000
+PRE_CLOSE_GAP_MS = 6 * 3_600_000
 INTERVAL = "15m"
 BAR_MS = 15 * 60_000
 LEVERAGE = 3
@@ -1296,6 +1304,7 @@ def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None,
         "tp": "익절 체결",
         "manual": "수동·강제 청산",
         "protect": "손절 실패로 청산",
+        "weekend": "휴장 전 정리",
     }.get(why, why)
     sym = pos_symbol(pos)
     px = _px(exit_px) if exit_px else "?"
@@ -2347,8 +2356,9 @@ def mark_unavailable(ctx: Ctx, state: dict, err: Rejected) -> None:
         )
 
 
-def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
-    """반대 신호 청산: reduceOnly 지정가 추격(지금 호가, 다 될 때까지 다시 걸기) → 청산 확인 →
+def close_position(ctx: Ctx, state: dict, bar: int | None, why: str = "signal") -> bool:
+    """반대 신호 청산(why로 다른 사유도, bar가 None이면 비상 청산 ID): reduceOnly 지정가
+    추격(지금 호가, 다 될 때까지 다시 걸기) → 청산 확인 →
     엔진 손절·익절 취소. 손절·익절은 닫힐 때까지 그대로 둔다. 닫혔으면 True.
     실행 안에 다 못 닫으면 지정가를 걸어 둔 채 False(다음 실행이 이어서 쫓는다, 진입하지 않는다)."""
     pos = state["position"]
@@ -2371,15 +2381,16 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
                 "qty": pos["qty"],
                 "price": px,
                 "type": "LIMIT GTC reduceOnly(호가 추격)",
-                "cid": _cid(bar, "c", ctx.symbol),
+                "cid": _cid(bar, "c", ctx.symbol) if bar is not None else _pos_cid(pos, "x", 0),
                 "cancel": [x for x in (pos.get("stop_id"), pos.get("tp_id")) if x],
             },
         )
         state["position"] = None
-        _record_close(ctx, pos, px, pnl, "signal")
+        _record_close(ctx, pos, px, pnl, why)
         return True
     try:
-        res = close_engine(ctx, state, "signal", base=_cid(bar, "c", ctx.symbol))
+        base = _cid(bar, "c", ctx.symbol) if bar is not None else None
+        res = close_engine(ctx, state, why, base=base)
     except (Rejected, NetworkError, RuntimeError) as e:
         try:
             gone = position_amt(ctx.client) == 0
@@ -2387,7 +2398,7 @@ def close_position(ctx: Ctx, state: dict, bar: int) -> bool:
             gone = False
         if gone:
             ctx.event(event="close_error_but_flat", error=str(e))
-            _finish_close(ctx, state, "signal")
+            _finish_close(ctx, state, why)
             return True
         ctx.say(
             f"❌ {_who(ctx.symbol, pos['side'])} 청산 실패: {e} → 손절·익절은 그대로 두고 "
@@ -3359,6 +3370,23 @@ def market_closed(ctx: Ctx, state: dict, flt: dict) -> str:
     key = flt.get("underlying")
     if key not in SESSION_KEYS:
         return ""
+    soon = closing_soon(ctx, flt)
+    if soon:
+        at = _hm(int(soon["startTime"]))
+        return f"{key} 시장 휴장({at} KST부터) 1시간 전이라 새로 들어가지 않음"
+    for ses in _sessions(ctx, key):
+        try:
+            if int(ses["startTime"]) <= ctx.now_ms < int(ses["endTime"]):
+                if ses.get("type") == "NO_TRADING":
+                    return f"{key} 시장이 쉬는 시간(NO_TRADING)이라 새로 들어가지 않음"
+                return ""
+        except (KeyError, TypeError, ValueError):
+            continue
+    return ""
+
+
+def _sessions(ctx: Ctx, key: str) -> list:
+    """그 시장의 tradingSchedule 구간(실행마다 한 번 받는다). 못 받으면 빈 목록."""
     sched = ctx.shared.get("schedule")
     if sched is None:
         try:
@@ -3369,15 +3397,57 @@ def market_closed(ctx: Ctx, state: dict, flt: dict) -> str:
             ctx.event(event="schedule_error", error=f"{type(e).__name__}: {e}"[:200])
             sched = {}
         ctx.shared["schedule"] = sched
-    for ses in (sched.get(key) or {}).get("sessions") or []:
+    return (sched.get(key) or {}).get("sessions") or []
+
+
+def _hm(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, KST).strftime("%m-%d %H:%M")
+
+
+def closing_soon(ctx: Ctx, flt: dict) -> dict | None:
+    """TradFi 종목 시장의 긴 휴장(PRE_CLOSE_GAP_MS 이상)이 PRE_CLOSE_MS 안에 시작하면 그 구간.
+    TradFi가 아니거나 종류·시간표를 모르면 None(막지도 닫지도 않는다)."""
+    if not PRE_CLOSE or flt.get("contract") != TRADFI:
+        return None
+    key = flt.get("underlying")
+    if key not in SESSION_KEYS:
+        return None
+    for ses in _sessions(ctx, key):
         try:
-            if int(ses["startTime"]) <= ctx.now_ms < int(ses["endTime"]):
-                if ses.get("type") == "NO_TRADING":
-                    return f"{key} 시장이 쉬는 시간(NO_TRADING)이라 새로 들어가지 않음"
-                return ""
+            start, end = int(ses["startTime"]), int(ses["endTime"])
         except (KeyError, TypeError, ValueError):
             continue
-    return ""
+        if (
+            ses.get("type") == "NO_TRADING"
+            and end - start >= PRE_CLOSE_GAP_MS
+            and start - PRE_CLOSE_MS <= ctx.now_ms < start
+        ):
+            return ses
+    return None
+
+
+def pre_close(ctx: Ctx, state: dict) -> bool:
+    """들고 있는 TradFi 포지션의 시장이 곧 길게 쉬면 지정가 추격으로 닫는다. 닫기를 시작했으면
+    True(다 못 닫았으면 지정가를 걸어 두고 다음 실행이 이어서 쫓는다)."""
+    pos = state["position"]
+    sym = pos_symbol(pos)
+    c = ctx.at(sym)
+    try:
+        flt = filters(c.client)
+    except (NetworkError, Rejected, OSError, ValueError, KeyError) as e:
+        ctx.event(event="pre_close_error", symbol=sym, error=f"{type(e).__name__}: {e}"[:200])
+        return False
+    ses = closing_soon(ctx, flt)
+    if not ses:
+        return False
+    start, end = int(ses["startTime"]), int(ses["endTime"])
+    ctx.event(event="pre_close", symbol=sym, start=_hm(start), end=_hm(end))
+    ctx.say(
+        f"🌙 {_name(sym)} 시장이 {_hm(start)}~{_hm(end)} KST 쉬어요 → 휴장 갭을 피하려고 "
+        f"{_who(sym, pos['side'])} 포지션을 지정가로 정리해요"
+    )
+    close_position(c, state, None, why="weekend")
+    return True
 
 
 def live_entry_problem(c: Ctx, state: dict) -> str:
@@ -4034,6 +4104,11 @@ def run(
     if live and state.get("liq_recheck"):
         # 강제 청산인지 확인될 때까지 신규 진입만 쉰다(반대 신호 청산·손절은 그대로)
         halts.append("강제 청산 기록 확인 중(" + ", ".join(map(_name, state["liq_recheck"])) + ")")
+    p = state.get("position")
+    if can_trade and p and not state.get("closing") and pre_close(ctx, state):
+        _save(state_file, state)
+        if state.get("position"):
+            halts.append(f"{_name(pos_symbol(p))} 휴장 전 정리 중")
 
     sigs: dict[str, dict] = {}
     for sym in rows_by:

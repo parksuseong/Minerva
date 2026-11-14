@@ -4239,3 +4239,83 @@ def test_f6_unconfirmed_stop_reused_not_stacked(env, monkeypatch):
     p = state()["position"]
     live_stops = [a for a in ex.algos.values() if a["algoStatus"] == "NEW"]
     assert len(live_stops) == 1 and p["stop_id"] == live_stops[0]["clientAlgoId"]
+
+
+def soon_sched(now_ms, start_in_ms, hours):
+    """now_ms + start_in_ms부터 hours시간 쉬는 EQUITY 시간표(앞은 정규장)."""
+    start = now_ms + start_in_ms
+    return {"EQUITY": {"sessions": [
+        {"startTime": start - 6 * 3_600_000, "endTime": start, "type": "REGULAR"},
+        {"startTime": start, "endTime": start + hours * 3_600_000, "type": "NO_TRADING"},
+    ]}}  # fmt: skip
+
+
+def test_market_closed_before_long_closure(env, monkeypatch):
+    tf = {"contract": bt.TRADFI, "underlying": "EQUITY"}
+
+    def why(start_in_ms, hours):
+        sched = soon_sched(NOW_MS, start_in_ms, hours)
+        monkeypatch.setattr(bt, "_public", lambda url, timeout=15: {"marketSchedules": sched})
+        ctx = bt.Ctx(MultiExchange(), MultiMarket(), env["send"], NOW, False)
+        return bt.market_closed(ctx, {}, tf)
+
+    assert "1시간 전" in why(30 * 60_000, 48)
+    assert why(30 * 60_000, 2) == ""  # 짧은 쉬는 시간은 그대로
+    assert why(90 * 60_000, 48) == ""  # 아직 1시간보다 멀다
+    assert "NO_TRADING" in why(-30 * 60_000, 48)  # 이미 쉬는 중(예전 규칙)
+
+
+def preclose_setup(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    monkeypatch.setitem(
+        FLTS, "NVDAUSDT", {**FLTS["NVDAUSDT"], "contract": bt.TRADFI, "underlying": "EQUITY"}
+    )
+    sched = {"s": {}}
+    monkeypatch.setattr(bt, "_public", lambda url, timeout=15: {"marketSchedules": sched["s"]})
+    signals(monkeypatch, multi, {"NVDAUSDT": "long"})
+    mrun(env, ex, multi)
+    assert state()["position"]["symbol"] == "NVDAUSDT"
+    return ex, sched
+
+
+def test_tradfi_position_closed_an_hour_before_weekend(env, multi, monkeypatch):
+    ex, sched = preclose_setup(env, multi, monkeypatch)
+    later = NOW.replace(minute=45)
+    sched["s"] = soon_sched(int(later.timestamp() * 1000), 45 * 60_000, 48)
+    # 같은 방향 신호가 다시 나도 휴장 직전이라 다시 들어가지 않는다
+    signals(monkeypatch, multi, {"NVDAUSDT": "long"}, bar=BAR + bt.BAR_MS)
+    bt.run(now=later, client=ex, market_=multi, send=env["send"])
+    assert ex.amts["NVDAUSDT"] == 0 and state().get("position") is None
+    last = jsonl("closed.jsonl")[-1]
+    assert last["symbol"] == "NVDAUSDT" and last["why"] == "weekend"
+    assert any("🌙" in m and "휴장 갭" in m for m in env["sent"])
+    assert any("휴장 전 정리" in m for m in env["sent"])
+    assert not (bt.DIR / "NO_ENTRY").exists()  # 정지가 아니다
+    closes = [x for m, p, x in ex.writes if p == "/fapi/v1/order" and x.get("reduceOnly")]
+    assert closes and all(x["type"] == "LIMIT" for x in closes)  # 지정가로만
+
+
+def test_tradfi_position_kept_when_already_closed_or_far(env, multi, monkeypatch):
+    ex, sched = preclose_setup(env, multi, monkeypatch)
+    later = NOW.replace(minute=45)
+    lms = int(later.timestamp() * 1000)
+    for start_in in (-30 * 60_000, 2 * 3_600_000):  # 이미 쉬는 중 / 아직 멀다
+        sched["s"] = soon_sched(lms, start_in, 48)
+        signals(monkeypatch, multi, {})
+        bt.run(now=later, client=ex, market_=multi, send=env["send"])
+        assert state()["position"]["symbol"] == "NVDAUSDT"
+    assert not any("🌙" in m for m in env["sent"])
+
+
+def test_crypto_position_not_closed_before_weekend(env, multi, monkeypatch):
+    live(env)
+    ex = MultiExchange()
+    sched = soon_sched(NOW_MS, 30 * 60_000, 48)
+    monkeypatch.setattr(bt, "_public", lambda url, timeout=15: {"marketSchedules": sched})
+    signals(monkeypatch, multi, {"BTCUSDT": "long"})
+    mrun(env, ex, multi)
+    signals(monkeypatch, multi, {})
+    bt.run(now=NOW.replace(minute=45), client=ex, market_=multi, send=env["send"])
+    assert state()["position"]["symbol"] == "BTCUSDT"
+    assert not any("🌙" in m for m in env["sent"])

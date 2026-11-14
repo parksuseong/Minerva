@@ -76,5 +76,24 @@ window.MinervaUI = (() => {
     return { times, guide };
   };
 
-  return { esc, num, pad, css, kst, scrChart, scrFill };
+  // 긴 표 나눠 보기(사용자 2026-11-14): 처음 PAGE줄만 보이고 "더 보기"로 PAGE줄씩 더.
+  // 행은 다 그리되 넘는 행에 hidden을 붙인다. 1분 갱신으로 다시 그려도 표(key)마다 펼친 줄 수를 기억한다.
+  const PAGE = 20;
+  const shown = {};
+  const limit = (key) => shown[key] || PAGE;
+  const pgAttr = (key, i) => ` data-pg="${esc(key)}"${i >= limit(key) ? " hidden" : ""}`;
+  const moreBtn = (key, total) => (total > limit(key)
+    ? `<button type="button" class="more-btn" data-more="${esc(key)}">더 보기 (${total - limit(key)}줄 더 있음)</button>` : "");
+  if (document.addEventListener) document.addEventListener("click", (e) => {
+    const b = e.target.closest ? e.target.closest(".more-btn") : null;
+    if (!b) return;
+    const key = b.dataset.more;
+    shown[key] = limit(key) + PAGE;
+    const rows = [...document.querySelectorAll("tr[data-pg]")].filter((r) => r.dataset.pg === key);
+    rows.forEach((r, i) => { r.hidden = i >= shown[key]; });
+    const left = rows.length - shown[key];
+    if (left > 0) b.textContent = `더 보기 (${left}줄 더 있음)`; else b.remove();
+  });
+
+  return { esc, num, pad, css, kst, scrChart, scrFill, pgAttr, moreBtn };
 })();

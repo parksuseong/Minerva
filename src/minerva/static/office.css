@@ -100,3 +100,5 @@
   border: 3px solid var(--ink); background: var(--card); color: var(--ink); }
 .of-locked button { font: inherit; padding: 8px 14px; border: 3px solid #222; background: var(--accent);
   color: #222; cursor: pointer; }
+/* 긴 표 "더 보기" (MinervaUI.moreBtn) */
+.more-btn { margin: 6px 0 2px; padding: 4px 12px; font-size: 13px; cursor: pointer; }

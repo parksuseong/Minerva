@@ -115,6 +115,19 @@ def test_account_tab_after_start_live(files, monkeypatch):
     assert series["seed"] == 815.53
     v = TestClient(app).get("/api/btc/engine").json()
     assert v["mode"] == "live" and v["live_since"] == since
+    assert v["live_totals"] == {"n": 0, "wins": 0, "pnl": 0}
+
+    # 합계·승률은 표 상한(MAX_TRADES)과 상관없이 실전 시작 뒤 전체 기록으로
+    rows = [{"at": "2000-01-01 00:00:00", "mode": "live", "pnl": 99.0}]
+    rows += [{"at": since + f":{i % 60:02d}", "mode": "live", "pnl": 1.0 if i % 2 else -0.5}
+             for i in range(btc_view.MAX_TRADES + 10)]
+    rows += [{"at": since + ":59", "mode": "dry", "pnl": 7.0}]
+    (bt.DIR / "closed.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    v = TestClient(app).get("/api/btc/engine").json()
+    n = btc_view.MAX_TRADES + 10
+    assert v["live_totals"]["n"] == n and v["live_totals"]["wins"] == n // 2
+    assert v["live_totals"]["pnl"] == pytest.approx(n // 2 * 1.0 - (n - n // 2) * 0.5)
+    assert len(v["trades"]) == btc_view.MAX_TRADES
 
 
 # ---- 지금 매매하는 종목(신호 가까운 순·바이낸스 종목 버튼·봉 허용 종목) ----

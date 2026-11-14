@@ -124,3 +124,18 @@ console.log(JSON.stringify({
     assert got["candleLines"] == [[2.5, "진입", 1]]
     # 두 번째 채우기는 앞서 그은 7개(기준선 6 + 진입선)를 지우고 기준선 6개만 다시 긋는다
     assert sum(got["removed"]) == 7 and got["tracked"] == 6
+
+
+def test_paging_helpers(tmp_path):
+    if not bun():
+        pytest.skip("bun 없음")
+    got = run_js(tmp_path, """
+console.log(JSON.stringify({
+  first: U.pgAttr("t", 0), last: U.pgAttr("t", 19), over: U.pgAttr("t", 20),
+  none: U.moreBtn("t", 20), more: U.moreBtn("t", 45), bad: U.pgAttr('a"b', 0),
+}));
+""")
+    assert got["first"] == ' data-pg="t"' and got["last"] == ' data-pg="t"'
+    assert got["over"] == ' data-pg="t" hidden'
+    assert got["none"] == "" and "25줄 더 있음" in got["more"] and 'data-more="t"' in got["more"]
+    assert got["bad"] == ' data-pg="a&quot;b"'

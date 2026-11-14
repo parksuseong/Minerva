@@ -21,12 +21,15 @@
     return op === "get" ? mem : "";
   };
 
-  function table(cols, items) {
+  // key를 주면 20줄씩 나눠 보인다(MinervaUI.pgAttr·moreBtn)
+  function table(cols, items, key) {
     if (!items || !items.length) return "없음";
+    const UI = window.MinervaUI;
     const head = cols.map(([, t]) => `<th>${esc(t)}</th>`).join("");
-    const body = items.map((r) => `<tr>${cols.map(([k, , f]) =>
+    const body = items.map((r, i) => `<tr${key ? UI.pgAttr(key, i) : ""}>${cols.map(([k, , f]) =>
       `<td>${f ? f(r[k], r) : typeof r[k] === "number" ? num(r[k]) : esc(r[k])}</td>`).join("")}</tr>`).join("");
-    return `<table class="acct"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    return `<table class="acct"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`
+      + (key ? UI.moreBtn(key, items.length) : "");
   }
 
   function lock(msg) {
@@ -77,7 +80,7 @@
       d.orders);
     $("acct-trades").innerHTML = `<div class="mini">최근 ${esc(d.trade_days)}일</div>` +
       table([["time", "시각"], ["name", "종목"], ["side", "구분"], ["qty", "수량"],
-        ["price", "체결가"]], d.trades);
+        ["price", "체결가"]], d.trades, "acct-trades");
   }
 
   const usdt = (v) => (v == null ? "-" : `${num(v)} USDT`);
@@ -149,13 +152,13 @@
       ["equity", "마감 순평가액", (v, x) => usdt(v) + (x.date === d.updated_at.slice(0, 10) ? " (진행 중)" : "")],
       ["realized", "실현손익", (v) => opt(v, (x) => signed(x, num(x)))],
       ["commission", "낸 수수료", (v) => opt(v, num)],
-      ["funding", "펀딩비", (v) => opt(v, (x) => signed(x, num(x)))]], d.daily)
+      ["funding", "펀딩비", (v) => opt(v, (x) => signed(x, num(x)))]], d.daily, "bn-daily")
       + `<div class="mini">수익률 = 그날 마감 순평가액 ÷ 전날 마감(첫날은 시드) − 1. 순평가액은 낸 수수료·펀딩비가 이미 빠진
         지갑 + 미실현손익에서 지금 닫을 때 수수료(테이커)까지 뺀 값이에요. 입출금은 빼고 계산해요.</div>` : "없음";
     $("bn-orders").innerHTML = table([["time", "시각"], ["symbol", "종목"], ["side", "구분"],
       ["type", "유형"], ["qty", "수량"], ["price", "가격"], ["status", "상태"]], d.orders);
     $("bn-trades").innerHTML = table([["time", "시각"], ["symbol", "종목", (v) => esc(String(v || "").replace(/USDT$/, ""))], ["side", "구분"], ["qty", "수량"],
-      ["price", "체결가"], ["realized", "실현손익", (v) => signed(v, num(v))], ["fee", "수수료"]], d.trades);
+      ["price", "체결가"], ["realized", "실현손익", (v) => signed(v, num(v))], ["fee", "수수료"]], d.trades, "bn-trades");
   }
 
   // 자산 차트: 시드 위는 상승색, 아래는 하락색. 시각은 서버가 KST로 옮겨 둔다(UTC로 그린다).

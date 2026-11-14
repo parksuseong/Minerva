@@ -17,7 +17,7 @@
   const short = (sym) => esc(String(sym || "BTCUSDT").replace(/USDT$/, ""));
   const isBtc = (x) => symOf(x) === "BTCUSDT";
   const who = (x, side) => `${short(symOf(x))} ${SIDE[side] || "-"}`;
-  const WHY = { signal: "반대 신호", stop: "손절", tp: "익절", manual: "수동·강제", protect: "손절 실패 정리" };
+  const WHY = { signal: "반대 신호", stop: "손절", tp: "익절", manual: "수동·강제", protect: "손절 실패 정리", weekend: "휴장 전 정리" };
   // 차트 시각은 KST 벽시계를 UTC 자리에 둔 초(U.kst). 엔진 기록 "YYYY-MM-DD HH:MM:SS"(KST)도 같은 방식으로 바꾼다.
   const wall = (s) => {
     const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(s || "");

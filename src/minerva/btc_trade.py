@@ -3412,17 +3412,23 @@ def closing_soon(ctx: Ctx, flt: dict) -> dict | None:
     key = flt.get("underlying")
     if key not in SESSION_KEYS:
         return None
+    spans: list[list[int]] = []  # 붙어 있는 NO_TRADING 구간은 하나로 본다(레드팀 2026-11-14)
+    rows = []
     for ses in _sessions(ctx, key):
         try:
-            start, end = int(ses["startTime"]), int(ses["endTime"])
+            rows.append((int(ses["startTime"]), int(ses["endTime"]), ses.get("type")))
         except (KeyError, TypeError, ValueError):
             continue
-        if (
-            ses.get("type") == "NO_TRADING"
-            and end - start >= PRE_CLOSE_GAP_MS
-            and start - PRE_CLOSE_MS <= ctx.now_ms < start
-        ):
-            return ses
+    for start, end, kind in sorted(rows):
+        if kind != "NO_TRADING":
+            continue
+        if spans and start <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([start, end])
+    for start, end in spans:
+        if end - start >= PRE_CLOSE_GAP_MS and start - PRE_CLOSE_MS <= ctx.now_ms < start:
+            return {"startTime": start, "endTime": end, "type": "NO_TRADING"}
     return None
 
 
@@ -3430,6 +3436,8 @@ def pre_close(ctx: Ctx, state: dict) -> bool:
     """들고 있는 TradFi 포지션의 시장이 곧 길게 쉬면 지정가 추격으로 닫는다. 닫기를 시작했으면
     True(다 못 닫았으면 지정가를 걸어 두고 다음 실행이 이어서 쫓는다)."""
     pos = state["position"]
+    if pos.get("manual"):
+        return False  # 손으로 연 포지션(이어받음)은 사용자가 주말을 넘기려는 것일 수 있다
     sym = pos_symbol(pos)
     c = ctx.at(sym)
     try:

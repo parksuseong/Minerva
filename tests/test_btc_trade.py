@@ -4319,3 +4319,40 @@ def test_crypto_position_not_closed_before_weekend(env, multi, monkeypatch):
     bt.run(now=NOW.replace(minute=45), client=ex, market_=multi, send=env["send"])
     assert state()["position"]["symbol"] == "BTCUSDT"
     assert not any("🌙" in m for m in env["sent"])
+
+
+def test_closure_split_into_adjacent_pieces_still_counts(env, monkeypatch):
+    start = NOW_MS + 30 * 60_000
+    sched = {"EQUITY": {"sessions": [
+        {"startTime": start, "endTime": start + 3_600_000, "type": "NO_TRADING"},
+        {"startTime": start + 3_600_000, "endTime": start + 40 * 3_600_000, "type": "NO_TRADING"},
+    ]}}  # fmt: skip
+    monkeypatch.setattr(bt, "_public", lambda url, timeout=15: {"marketSchedules": sched})
+    ctx = bt.Ctx(MultiExchange(), MultiMarket(), env["send"], NOW, False)
+    ses = bt.closing_soon(ctx, {"contract": bt.TRADFI, "underlying": "EQUITY"})
+    assert ses and ses["endTime"] == start + 40 * 3_600_000
+
+
+def test_manual_adopted_tradfi_position_not_closed(env, multi, monkeypatch):
+    ex, sched = preclose_setup(env, multi, monkeypatch)
+    st = state()
+    st["position"]["manual"] = True
+    bt._save(bt.DIR / "state.json", st)
+    later = NOW.replace(minute=45)
+    sched["s"] = soon_sched(int(later.timestamp() * 1000), 45 * 60_000, 48)
+    signals(monkeypatch, multi, {})
+    bt.run(now=later, client=ex, market_=multi, send=env["send"])
+    assert state()["position"]["symbol"] == "NVDAUSDT"
+    assert not any("🌙" in m for m in env["sent"])
+
+
+def test_schedule_down_neither_closes_nor_blocks(env, multi, monkeypatch):
+    ex, _ = preclose_setup(env, multi, monkeypatch)
+
+    def down(url, timeout=15):
+        raise OSError("down")
+
+    monkeypatch.setattr(bt, "_public", down)
+    signals(monkeypatch, multi, {})
+    bt.run(now=NOW.replace(minute=45), client=ex, market_=multi, send=env["send"])
+    assert state()["position"]["symbol"] == "NVDAUSDT"

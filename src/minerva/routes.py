@@ -24,6 +24,7 @@ import json
 import os
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
@@ -112,7 +113,33 @@ KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
 # 봉을 내줄 수 있는 선물 종목(공개 시세). SOXL은 종목 분석 > SOXL 탭(보기만, 2026-11-11).
 KLINE_SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOXLUSDT", "NVDAUSDT")
 KLINE_TRADED_MAX = 16  # 엔진 범위 파일이 이상해도 더 열리는 종목 수의 상한
-KLINE_TRADED_DAYS = 14  # 고정 네 종목 밖은 최근 14일까지만(레드팀 2026-11-13, 같은 IP 무게)
+# 매매 종목도 실험실에서 1년까지(사용자 2026-11-14 "Scr 실험실에 현재 매매가능한 것들도"). 예전엔
+# 14일로 막았다(레드팀 2026-11-13, 같은 IP 무게). 대신 화면이 바이낸스에 보내는 봉 요청 무게를
+# 1분 KLINE_WEIGHT_PER_MIN까지로 묶고, 바이낸스가 알려 준 이 IP의 1분 무게가 KLINE_IP_WEIGHT_MAX를
+# 넘으면 그 분 동안 새로 받지 않는다(엔진 몫을 남긴다, 한도 2400).
+KLINE_WEIGHT_PER_MIN = 300
+KLINE_IP_WEIGHT_MAX = 1000
+_kline_spent: list[tuple[float, int]] = []
+_kline_ip_busy_until = 0.0
+
+
+class KlineBusy(Exception):
+    """화면 봉 요청이 1분 상한에 닿았다(실전 엔진과 같은 IP)."""
+
+
+def _kline_weight(limit: int) -> int:
+    return 1 if limit < 100 else 2 if limit < 500 else 5 if limit <= 1000 else 10
+
+
+def _kline_take(weight: int) -> None:
+    """바이낸스에 봉을 받기 직전에 부른다. 상한이면 KlineBusy(받지 않는다)."""
+    now = _mono()
+    if now < _kline_ip_busy_until:
+        raise KlineBusy("ip")
+    _kline_spent[:] = [(t, w) for t, w in _kline_spent if now - t < 60]
+    if sum(w for _, w in _kline_spent) + weight > KLINE_WEIGHT_PER_MIN:
+        raise KlineBusy("budget")
+    _kline_spent.append((now, weight))
 
 
 def kline_symbols() -> set[str]:
@@ -141,7 +168,8 @@ LAB_WARMUP = 300
 LAB_CHUNK = 1500
 LAB_TTL = 45.0  # 아직 끝나지 않은 마지막 덩어리
 LAB_OLD_TTL = 6 * 3600.0  # 다 끝난 덩어리(봉이 더 바뀌지 않는다)
-LAB_MAX_CHUNKS = 80  # 15분봉 1년 25개 + 5분봉 90일 18개 + 나머지, 봉 약 12만 개 이하
+# 15분봉 1년 25개 × 여러 종목 + 5분봉 90일 18개 + 나머지(덩어리 하나 약 0.3MB)
+LAB_MAX_CHUNKS = 160
 _kline_cache: OrderedDict = OrderedDict()
 _kline_lock = threading.Lock()
 
@@ -151,8 +179,18 @@ def _get_klines(interval: str, start_ms: int, limit: int, symbol: str = "BTCUSDT
         {"symbol": symbol, "interval": interval, "startTime": start_ms, "limit": limit}
     )
     req = urllib.request.Request(f"{KLINE_URL}?{query}", headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.load(r)
+    global _kline_ip_busy_until
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            used = r.headers.get("X-MBX-USED-WEIGHT-1M")
+            if used and used.isdigit() and int(used) > KLINE_IP_WEIGHT_MAX:
+                _kline_ip_busy_until = _mono() + 60
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code in (418, 429):
+            # 바이낸스가 이 IP를 막았다: 엔진을 위해 화면 요청을 길게 쉰다
+            _kline_ip_busy_until = _mono() + 600
+        raise
 
 
 def _mono() -> float:
@@ -170,6 +208,7 @@ def _chunk(interval: str, k: int, now_ms: int, symbol: str = "BTCUSDT") -> list[
             if _mono() - at < (LAB_OLD_TTL if done else LAB_TTL):
                 _kline_cache.move_to_end(key)
                 return rows
+    _kline_take(_kline_weight(LAB_CHUNK))
     page = (
         _get_klines(interval, k * span, LAB_CHUNK)
         if symbol == "BTCUSDT"
@@ -231,10 +270,11 @@ def btc_klines(
         raise HTTPException(status_code=400, detail="봉은 5m·15m·30m·1h·4h·1d 중 하나예요")
     want = max(1, int(days))
     days = min(want, LAB_MAX_DAYS, LAB_DAY_CAP.get(interval, LAB_MAX_DAYS))
-    if symbol not in KLINE_SYMBOLS:
-        days = min(days, KLINE_TRADED_DAYS)  # 화면은 7일만 쓴다: 넓힌 종목은 무게 큰 요청을 막는다
     try:
         data = lab_klines(interval, days, _now_ms(), symbol)
+    except KlineBusy as exc:
+        msg = "요청이 많아 잠시 쉬어요(실전 매매와 같은 IP). 1분 뒤 다시 눌러 주세요"
+        raise HTTPException(status_code=429, detail=msg) from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=502, detail="바이낸스 시세를 받지 못했어요") from exc
     data["capped"] = days < want

@@ -1,5 +1,6 @@
 // 🧪 SCR 실험실: SCR 숫자를 바꿔 가며 BTCUSDT 롱·숏 열림 신호를 바로 다시 그린다 (사용자 요청 2026-11-08).
 // 종목 버튼으로 SOXLUSDT 선물도 본다(2026-11-11). 종목은 "기본값으로"를 눌러도 그대로 둔다.
+// 엔진이 지금 매매하는 종목(/api/btc/traded)도 버튼으로 붙는다(사용자 2026-11-14).
 // 봉은 /api/btc/klines(바이낸스 선물 공개 시세), 계산은 전부 화면에서(scrlab_core.js). 주문과 연결되지 않는다.
 // 서버에 브라우저가 없어 화면은 직접 못 보고 만들었다 — 값이 이상하면 화면을 그리지 않고 안내만 한다.
 (() => {
@@ -34,7 +35,14 @@
 
   const num = (v, d = 1) => U.num(v, d);
   // 지금 보는 종목의 가격 소수 자리(받은 봉 기준, 없으면 고른 종목)
-  const dp = () => (SYMS[(data && data.symbol) || cfg.symbol] || SYMS.BTCUSDT).dp;
+  const dpOf = (px) => (px == null ? 2 : px >= 1000 ? 1 : px >= 1 ? 2 : px >= 0.01 ? 4 : 6);
+  const dp = () => {
+    const known = SYMS[(data && data.symbol) || cfg.symbol];
+    if (known) return known.dp;
+    const bars = data && data.bars;
+    return dpOf(bars && bars.length ? bars[bars.length - 1][4] : null);
+  };
+  const SYM_RE = /^[A-Z0-9]{2,20}USDT$/;
   const pct = (v) => (v == null ? "-"
     : `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "+" : ""}${num(v, 2)}%</span>`);
   // 차트 시각은 KST 벽시계를 UTC 자리에 둔 초(U.kst)라 표시는 UTC 필드로 읽는다.
@@ -56,7 +64,7 @@
       cfg = Object.assign(cfg, saved);
     }
   } catch (e) { /* 저장된 값이 없거나 막혀도 기본값으로 연다 */ }
-  if (!SYMS[cfg.symbol]) cfg.symbol = BASE.symbol;
+  if (typeof cfg.symbol !== "string" || !SYM_RE.test(cfg.symbol)) cfg.symbol = BASE.symbol;
   if (!MIN[cfg.interval]) cfg.interval = BASE.interval;
   if (!DAYS.includes(Number(cfg.days))) cfg.days = BASE.days;
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) { /* 기억만 못 한다 */ } };
@@ -64,16 +72,34 @@
   let data = null, chart = null, series = null, started = false, timer = null, loading = 0;
 
   // ---- 조작 ----
+  const bindPick = (b) => {
+    b.onclick = () => {
+      if (b.dataset.sym) cfg.symbol = b.dataset.sym;
+      else if (b.dataset.tf) cfg.interval = b.dataset.tf; else cfg.days = Number(b.dataset.days);
+      save(); syncControls(); load(true);
+    };
+  };
+  // 엔진이 지금 매매하는 종목을 버튼으로 붙인다(이미 있는 버튼은 그대로). 못 받으면 고정 버튼만.
+  const addTraded = () => fetch("/api/btc/traded").then((r) => (r.ok ? r.json() : null)).catch(() => null).then((d) => {
+    if (!d || d.status !== "ok" || !Array.isArray(d.symbols) || !$("lab-sym")) return;
+    for (const row of d.symbols) {
+      const sym = row && row.symbol;
+      if (typeof sym !== "string" || !SYM_RE.test(sym) || document.querySelector(`#lab-sym button[data-sym="${sym}"]`)) continue;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset.sym = sym;
+      const rate = typeof row.winrate === "number" ? ` ${num(row.winrate, 0)}%` : "";
+      b.textContent = `${row.held ? "📌 " : ""}${sym.replace(/USDT$/, "")}${rate}`;
+      b.title = row.held ? "엔진 보유 종목" : row.tradable ? "엔진 매매 종목(백테스트 승률)" : "관심 종목";
+      bindPick(b);
+      $("lab-sym").appendChild(b);
+    }
+    syncControls();
+  });
   const buildControls = () => {
     $("lab-params").innerHTML = FIELDS.map(([k, name, lo, hi, int]) =>
       `<label>${esc(name)}<input data-k="${k}" type="number" inputmode="decimal" min="${lo}" max="${hi}" step="${int ? 1 : "any"}"></label>`).join("");
-    document.querySelectorAll("#lab-sym button, #lab-tf button, #lab-days button").forEach((b) => {
-      b.onclick = () => {
-        if (b.dataset.sym) cfg.symbol = b.dataset.sym;
-        else if (b.dataset.tf) cfg.interval = b.dataset.tf; else cfg.days = Number(b.dataset.days);
-        save(); syncControls(); load(true);
-      };
-    });
+    document.querySelectorAll("#lab-sym button, #lab-tf button, #lab-days button").forEach(bindPick);
     $("lab-exits").innerHTML = EXIT_FIELDS.map(([k, name, lo, hi, on]) =>
       `<label><input type="checkbox" data-on="${on}"> ${esc(name)}<input data-k="${k}" type="number" inputmode="decimal" min="${lo}" max="${hi}" step="0.1"></label>`).join("");
     $("lab-exits").addEventListener("input", (e) => {
@@ -155,7 +181,13 @@
         data = d;
         recompute(fit);
       })
-      .catch(() => { if (ticket === loading) $("lab-status").textContent = "봉을 받지 못했어요. 잠시 뒤 다시 열어 주세요."; });
+      .catch((e) => {
+        if (ticket !== loading) return;
+        const code = e && e.message;
+        $("lab-status").textContent = code === "429" ? "요청이 많아 잠시 쉬어요(실전 매매와 같은 IP). 1분 뒤 다시 눌러 주세요."
+          : code === "400" ? "이 종목은 지금 매매 종목이 아니라 볼 수 없어요. 다른 종목을 골라 주세요."
+            : "봉을 받지 못했어요. 잠시 뒤 다시 열어 주세요.";
+      });
   };
 
   // ---- 차트 ----
@@ -289,7 +321,7 @@
     if (started || !panel || panel.hidden) return;
     started = true;
     if (!core) { $("lab-status").textContent = "계산 도구를 불러오지 못했어요"; return; }
-    buildControls(); syncControls(); load(true);
+    buildControls(); syncControls(); load(true); addTraded();
     setInterval(() => { if (!panel.hidden) load(false); }, 60000);
   };
   window.addEventListener("hashchange", start);

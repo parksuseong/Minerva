@@ -29,7 +29,7 @@
     return `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
   };
 
-  let eng = null, bars = null, gate = null, chart = null, series = null;
+  let eng = null, bars = null, gate = null, chart = null, series = null, acct = null;
   const lev = () => (eng && eng.params && eng.params.leverage) || 3;
 
   const modeChip = (d) => {
@@ -111,6 +111,23 @@
       <td><span class="chip ${r.side === "long" ? "good" : "warn"}">${who(r, r.side)}</span></td>
       <td>${num(r.entry)} → ${num(r.exit)}</td><td>${pct(r.pct)} <span class="mini">×${lev()} ${pct(r.pct == null ? null : r.pct * lev())}</span></td>
       <td>${r.pnl == null ? "-" : `${r.pnl > 0 ? "+" : ""}${num(r.pnl, 2)}`}</td><td>${esc(WHY[r.why] || r.why)}</td></tr>`).join("");
+  // 들고 있는 포지션을 거래 표 맨 위에 "보유 중"으로 (사용자 2026-11-14). 지금 가격·평가손익은
+  // 계좌 조회(/api/account/binance, 1분마다, 마크 가격)에서, 없으면 BTC만 이 화면 봉 종가로.
+  const holdRow = (p) => {
+    if (!p) return "";
+    const live = p.mode !== "dry";
+    const ap = live && acct && (acct.positions || []).find((x) => x.symbol === symOf(p));
+    const now = ap ? ap.mark : (isBtc(p) ? lastClose() : null);
+    const sign = p.side === "long" ? 1 : -1;
+    const u = now && p.entry ? (now / p.entry - 1) * 100 * sign : null;
+    const pnl = ap ? ap.pnl : (u == null ? null : (now - p.entry) * sign * p.qty);
+    return `<tr><td><b>보유 중</b></td>
+      <td><span class="chip ${p.side === "long" ? "good" : "warn"}">${who(p, p.side)}</span></td>
+      <td>${num(p.entry)} → ${now == null ? "-" : `지금 ${num(now)}`}</td>
+      <td>${pct(u)} <span class="mini">×${lev()} ${pct(u == null ? null : u * lev())}</span></td>
+      <td>${pnl == null ? "-" : `${pnl > 0 ? "+" : ""}${num(pnl, 2)}`}</td>
+      <td>평가 중 <span class="mini">${esc((p.opened_at || "").slice(5, 16))} 진입 · 수수료 빼기 전</span></td></tr>`;
+  };
   const TRADE_HEAD = "<thead><tr><th>청산</th><th>종목·방향</th><th>진입 → 청산</th><th>가격 변화</th><th>손익 USDT</th><th>이유</th></tr></thead>";
 
   const renderTrades = () => {
@@ -118,7 +135,8 @@
     const dry = eng.mode === "dry";
     const rows = eng.trades || [];
     let html = dry ? '<div class="regime"><span class="chip">🧪 드라이런 — 가상 거래예요 (주문 없음)</span></div>' : "";
-    html += rows.length ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${tradeRows(rows)}</tbody></table></div>`
+    const hold = holdRow(eng.position);
+    html += rows.length || hold ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${hold}${tradeRows(rows)}</tbody></table></div>`
       : '<p class="placeholder">끝난 거래가 아직 없어요</p>';
     if (dry && (eng.dry_orders || []).length) {
       html += `<h3 style="margin:10px 0 4px;font-size:14px">드라이런 주문 기록 (냈을 주문)</h3><div style="overflow-x:auto"><table class="acct">
@@ -142,7 +160,7 @@
     const wins = rows.filter((r) => (r.pnl || 0) > 0).length;
     $("bte-acct").innerHTML = `<div class="detail">실전 시작 ${esc(eng.live_since)} KST 이후 ${rows.length}번 · 이긴 ${wins}번 · 합계 <b>${sum > 0 ? "+" : ""}${num(sum, 2)} USDT</b> (수수료 포함)</div>
       <div class="detail">지금: ${posHtml(eng.position)}</div>
-      ${rows.length ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${tradeRows(rows)}</tbody></table></div>` : ""}`;
+      ${rows.length || eng.position ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${holdRow(eng.position)}${tradeRows(rows)}</tbody></table></div>` : ""}`;
   };
 
   // ---- 지표·추격 한도 ----
@@ -229,10 +247,14 @@
     if (!$("an-bn").hidden && !$("bn-btc").hidden && !$("tab-analysis").hidden) renderChart(res, p, from);
   };
 
-  const get = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  const load = () => Promise.all([get("/api/btc/engine"), get("/api/btc/klines?interval=15m&days=7"), get("/api/btc")])
-    .then(([e, k, g]) => {
+  const get = (url, headers) => fetch(url, { headers }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  // 계좌 탭과 같은 토큰(잠갔을 때만 필요). 못 읽으면 보유 줄의 지금 가격만 빠진다.
+  const token = () => { try { return localStorage.getItem("minerva-account-token") || ""; } catch (e) { return ""; } };
+  const load = () => Promise.all([get("/api/btc/engine"), get("/api/btc/klines?interval=15m&days=7"), get("/api/btc"),
+    get("/api/account/binance", { "X-Minerva-Token": token() })])
+    .then(([e, k, g, a]) => {
       eng = e || { status: "error" };
+      acct = a && a.status === "ok" ? a : null;
       if (k && k.bars && k.bars.length) { bars = k.bars; bars.showFrom = k.show_from; }
       gate = g;
       // 한 조각이 이상한 자료로 실패해도 나머지 조각은 그린다

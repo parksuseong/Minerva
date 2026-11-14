@@ -482,3 +482,37 @@ def test_binance_api_has_daily(tmp_path, monkeypatch):
     daily = TestClient(app).get("/api/account/binance").json()["daily"]
     got = [(r["date"], round(r["pnl"], 2)) for r in daily]
     assert got == [("2026-11-08", -51.0), ("2026-11-07", -50.0)]
+
+
+def test_daily_returns_gap_day_and_unknown_income():
+    """기록 빠진 날: 입출금을 다음 행에서 빼고 여러 날치로 표시. 조회 범위 밖 수수료는 None."""
+    from minerva import perf
+
+    cap = {"since": "2026-11-10", "base": 100.0,
+           "deposits": [{"date": "2026-11-11", "amount": 20.0}]}
+    hist = {"2026-11-10": 100.0, "2026-11-12": 130.0}
+    rows = perf.daily_returns(hist, cap, "2026-11-13", 130.0, {}, ["2026-11-12", "2026-11-13"])
+    by = {r["date"]: r for r in rows}
+    assert by["2026-11-12"]["days"] == 2 and by["2026-11-12"]["pnl"] == pytest.approx(10.0)
+    assert by["2026-11-12"]["deposit"] == 20.0
+    assert by["2026-11-10"]["commission"] is None  # 조회 시작 전
+    assert by["2026-11-12"]["commission"] == 0.0
+    assert by["2026-11-13"]["realized"] is None  # 끝까지 못 받은 마지막 날
+
+
+def test_fetch_income_pages_until_short_page(monkeypatch):
+    calls = []
+
+    def fake_get(cfg, path, **p):
+        calls.append(p["startTime"])
+        n = binance.INCOME_PAGE if len(calls) == 1 else 3
+        return [{"time": p["startTime"] + i, "incomeType": "COMMISSION", "asset": "USDT",
+                 "income": "-0.1"} for i in range(n)]
+
+    monkeypatch.setattr(binance, "_get", fake_get)
+    rows, done = binance.fetch_income(CFG, 1000)
+    assert done and len(rows) == binance.INCOME_PAGE + 3
+    assert calls == [1000, 1000 + binance.INCOME_PAGE]
+    monkeypatch.setattr(binance, "INCOME_MAX_PAGES", 1)
+    calls.clear()
+    assert binance.fetch_income(CFG, 1000)[1] is False

@@ -401,6 +401,7 @@ def binance_account(x_minerva_token: str = Header("")) -> dict:
             data["updated_at"][:10],
             net["equity"],
             data.get("income_daily"),
+            data.get("income_range"),
         )
     return data
 

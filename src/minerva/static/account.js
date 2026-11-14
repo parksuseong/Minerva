@@ -141,13 +141,15 @@
     d.positions);
     // 일별: 순평가액 = 지갑 + 미실현 − 지금 닫을 때 수수료. 수익 = 전날 마감(첫날은 시드) 대비, 입출금 제외
     const pctTxt = (v) => v == null ? "-" : `${v > 0 ? "+" : ""}${num(v)}%`;
-    $("bn-daily").innerHTML = (d.daily || []).length ? table([["date", "날짜"],
+    const opt = (v, f) => v == null ? "-" : f(v);
+    $("bn-daily").innerHTML = (d.daily || []).length ? table([["date", "날짜",
+        (v, x) => esc(v) + (x.days > 1 ? ` <span class="mini">(${x.days}일치, 기록 빠짐)</span>` : "")],
       ["pct", "수익률", (v) => signed(v, pctTxt(v))],
       ["pnl", "손익 (USDT)", (v) => signed(v, num(v))],
       ["equity", "마감 순평가액", (v, x) => usdt(v) + (x.date === d.updated_at.slice(0, 10) ? " (진행 중)" : "")],
-      ["realized", "실현손익", (v) => signed(v, num(v))],
-      ["commission", "낸 수수료", (v) => num(v)],
-      ["funding", "펀딩비", (v) => signed(v, num(v))]], d.daily)
+      ["realized", "실현손익", (v) => opt(v, (x) => signed(x, num(x)))],
+      ["commission", "낸 수수료", (v) => opt(v, num)],
+      ["funding", "펀딩비", (v) => opt(v, (x) => signed(x, num(x)))]], d.daily)
       + `<div class="mini">수익률 = 그날 마감 순평가액 ÷ 전날 마감(첫날은 시드) − 1. 순평가액은 낸 수수료·펀딩비가 이미 빠진
         지갑 + 미실현손익에서 지금 닫을 때 수수료(테이커)까지 뺀 값이에요. 입출금은 빼고 계산해요.</div>` : "없음";
     $("bn-orders").innerHTML = table([["time", "시각"], ["symbol", "종목"], ["side", "구분"],

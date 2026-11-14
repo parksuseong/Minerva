@@ -190,6 +190,22 @@ def sum_income(rows: list[dict]) -> dict:
     return out
 
 
+INCOME_PAGE = 1000
+INCOME_MAX_PAGES = 5  # 무게 30 × 5. 보통은 한 번(1000건 미만)으로 끝난다
+
+
+def fetch_income(cfg: dict, start: int) -> tuple[list[dict], bool]:
+    """startTime부터 오래된 순 1000건씩. 다 받았으면 done=True."""
+    rows: list[dict] = []
+    for _ in range(INCOME_MAX_PAGES):
+        page = _get(cfg, "/fapi/v1/income", startTime=start, limit=INCOME_PAGE)
+        rows += page
+        if len(page) < INCOME_PAGE:
+            return rows, True
+        start = int(page[-1]["time"]) + 1
+    return rows, False
+
+
 def daily_income(rows: list[dict]) -> dict:
     """날짜(KST)별 실현손익·펀딩·수수료(USDT). 수수료·펀딩은 낸 만큼 음수다."""
     out: dict = {}
@@ -304,9 +320,14 @@ def snapshot(cfg: dict, now: datetime, capital: dict | None = None) -> dict:
     if since is not None:
         # 최근 7일 이전 시작이면 바이낸스가 기간을 나눠 달라고 하므로 3개월 이내만 담는다
         start = max(since, int(now.timestamp() * 1000) - 89 * 86400_000)
-        income = _get(cfg, "/fapi/v1/income", startTime=start, limit=1000)
+        income, done = fetch_income(cfg, start)
         data["income"] = sum_income(income)
         data["income_daily"] = daily_income(income)
+        # 날짜별 칸을 믿을 수 있는 범위(KST 날짜). 범위 밖 날은 화면에 "-".
+        # 89일 창으로 잘린 첫날과 끝까지 못 받은 마지막 날은 일부만 있어 뺀다.
+        first = _ms(start)[:10] if start == since else _ms(start + 86_400_000)[:10]
+        last = _ms(income[-1]["time"])[:10] if income and not done else None
+        data["income_range"] = [first, last]
     return data
 
 

@@ -395,6 +395,14 @@ def binance_account(x_minerva_token: str = Header("")) -> dict:
         returns.pop("bot", None)
         returns.pop("bot_pct", None)
         data["returns"] = returns
+        data["daily"] = perf.daily_returns(
+            history,
+            capital,
+            data["updated_at"][:10],
+            net["equity"],
+            data.get("income_daily"),
+            data.get("income_range"),
+        )
     return data
 
 

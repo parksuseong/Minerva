@@ -82,7 +82,7 @@
 
   const usdt = (v) => (v == null ? "-" : `${num(v)} USDT`);
   const ugain = (v, p) => signed(v, `${v > 0 ? "+" : ""}${usdt(v)} (${pct(p)})`);
-  const BN = ["bn-positions", "bn-orders", "bn-trades"];
+  const BN = ["bn-daily", "bn-positions", "bn-orders", "bn-trades"];
 
   function renderBinance(d) {
     if (d.status !== "ok" && !d.updated_at) {
@@ -139,6 +139,19 @@
       ["leverage", "레버리지", (v, x) => `${v}배 ${esc(x.margin_type)}`],
       ["pnl", "미실현손익", (v, x) => signed(v, `${num(v)} (${x.pnl_pct == null ? "-" : num(x.pnl_pct)}%)`)]],
     d.positions);
+    // 일별: 순평가액 = 지갑 + 미실현 − 지금 닫을 때 수수료. 수익 = 전날 마감(첫날은 시드) 대비, 입출금 제외
+    const pctTxt = (v) => v == null ? "-" : `${v > 0 ? "+" : ""}${num(v)}%`;
+    const opt = (v, f) => v == null ? "-" : f(v);
+    $("bn-daily").innerHTML = (d.daily || []).length ? table([["date", "날짜",
+        (v, x) => esc(v) + (x.days > 1 ? ` <span class="mini">(${x.days}일치, 기록 빠짐)</span>` : "")],
+      ["pct", "수익률", (v) => signed(v, pctTxt(v))],
+      ["pnl", "손익 (USDT)", (v) => signed(v, num(v))],
+      ["equity", "마감 순평가액", (v, x) => usdt(v) + (x.date === d.updated_at.slice(0, 10) ? " (진행 중)" : "")],
+      ["realized", "실현손익", (v) => opt(v, (x) => signed(x, num(x)))],
+      ["commission", "낸 수수료", (v) => opt(v, num)],
+      ["funding", "펀딩비", (v) => opt(v, (x) => signed(x, num(x)))]], d.daily)
+      + `<div class="mini">수익률 = 그날 마감 순평가액 ÷ 전날 마감(첫날은 시드) − 1. 순평가액은 낸 수수료·펀딩비가 이미 빠진
+        지갑 + 미실현손익에서 지금 닫을 때 수수료(테이커)까지 뺀 값이에요. 입출금은 빼고 계산해요.</div>` : "없음";
     $("bn-orders").innerHTML = table([["time", "시각"], ["symbol", "종목"], ["side", "구분"],
       ["type", "유형"], ["qty", "수량"], ["price", "가격"], ["status", "상태"]], d.orders);
     $("bn-trades").innerHTML = table([["time", "시각"], ["symbol", "종목", (v) => esc(String(v || "").replace(/USDT$/, ""))], ["side", "구분"], ["qty", "수량"],

@@ -155,6 +155,54 @@ def account_returns(account: dict, history: dict, capital: dict, bot: float) -> 
     return out
 
 
+def daily_returns(
+    history: dict,
+    capital: dict,
+    today: str,
+    now_value: float,
+    income: dict | None = None,
+    income_range: list | None = None,
+) -> list[dict]:
+    """일별 수익률(최신이 위). 값은 그날 마지막 순평가액(낸 수수료·펀딩 반영 + 지금 닫을 때
+    수수료 추정 차감). 첫날은 시드와, 나머지는 바로 앞 기록일 마감과 비교하고 그 사이 입출금은 뺀다.
+
+    history: {날짜: 그날 마지막 순평가액}. 오늘 값은 now_value(최신 스냅숏)로 덮는다.
+    기록이 빠진 날이 있으면 다음 행이 여러 날치다(`days`).
+    income: {날짜: {"realized", "funding", "commission"}} (바이낸스 income, 참고 칸).
+    income_range: [첫 날, 마지막 날 또는 None]. 범위 밖 날은 None(모름)으로 둔다.
+    """
+    since = capital.get("since")
+    if not since:
+        return []
+    days = {d: v for d, v in history.items() if since <= d <= today}
+    days[today] = now_value
+    deps = capital.get("deposits", [])
+    lo, hi = (list(income_range or []) + [None, None])[:2]
+    out, prev, prev_day = [], capital["base"], None
+    for d in sorted(days):
+        added = sum(x["amount"] for x in deps if (prev_day is None or x["date"] > prev_day)
+                    and x["date"] <= d)
+        start = prev + added
+        pnl = days[d] - start
+        span = 1 if prev_day is None else (
+            datetime.strptime(d, "%Y-%m-%d") - datetime.strptime(prev_day, "%Y-%m-%d")
+        ).days
+        known = income is not None and (lo is None or d >= lo) and (hi is None or d < hi)
+        inc = (income or {}).get(d, {})
+        out.append({
+            "date": d,
+            "days": span,
+            "equity": days[d],
+            "pnl": pnl,
+            "pct": pnl / start * 100 if start > 0 else None,
+            "deposit": added,
+            **{k: (inc.get(k, 0.0) if known else None)
+               for k in ("realized", "commission", "funding")},
+        })
+        prev, prev_day = days[d], d
+    return out[::-1]
+
+
 def _summary(rows: list[dict]) -> str:
     if not rows:
         return "청산 0건"

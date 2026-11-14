@@ -403,30 +403,85 @@ def test_klines_whitelist_stays_four_symbols(fake_binance, monkeypatch, tmp_path
     assert client.get("/api/btc/klines?symbol=ETHUSDT").status_code == 200
 
 
-def test_traded_symbol_gets_a_full_year(fake_binance, monkeypatch):
-    # 사용자 2026-11-14 "Scr 실험실에 현재 매매가능한 것들도": 매매 종목도 1년까지
-    monkeypatch.setattr(routes, "kline_symbols", lambda: set(routes.KLINE_SYMBOLS) | {"BNBUSDT"})
+def test_klines_traded_symbol_days_capped(fake_binance, monkeypatch):
+    # 고정 네 종목 밖(매매 종목)은 최근 14일까지만(사용자 2026-11-14 "14일치로")
+    monkeypatch.setattr(routes, "kline_symbols", lambda: {"BTCUSDT", "BNBUSDT"})
     d = TestClient(app).get("/api/btc/klines?symbol=BNBUSDT&interval=15m&days=365").json()
-    assert d["symbol"] == "BNBUSDT" and d["days"] == 365 and d["capped"] is False
+    assert d["capped"] is True
+    assert d["bars"][-1][0] - d["show_from"] <= 14 * 86_400_000
 
 
 def test_kline_weight_budget_per_minute(fake_binance, monkeypatch):
-    syms = {"BNBUSDT", "TSLAUSDT"}
-    monkeypatch.setattr(routes, "kline_symbols", lambda: set(routes.KLINE_SYMBOLS) | syms)
     client = TestClient(app)
-    assert client.get("/api/btc/klines?symbol=BNBUSDT&interval=15m&days=365").status_code == 200
+    assert client.get("/api/btc/klines?symbol=BTCUSDT&interval=15m&days=365").status_code == 200
     n = len(fake_binance)
-    r = client.get("/api/btc/klines?symbol=TSLAUSDT&interval=15m&days=365")
+    r = client.get("/api/btc/klines?symbol=ETHUSDT&interval=15m&days=365")
     assert r.status_code == 429 and "1분 뒤" in r.json()["detail"]
     spent = sum(w for _, w in routes._kline_spent)
     assert spent <= routes.KLINE_WEIGHT_PER_MIN and len(fake_binance) - n < 25
     fake_binance.fake.mono += 61  # 1분 지나면 이어서(받은 덩어리는 캐시)
-    assert client.get("/api/btc/klines?symbol=TSLAUSDT&interval=15m&days=365").status_code == 200
+    assert client.get("/api/btc/klines?symbol=ETHUSDT&interval=15m&days=365").status_code == 200
     # 캐시된 것은 상한과 상관없다
-    assert client.get("/api/btc/klines?symbol=BNBUSDT&interval=15m&days=365").status_code == 200
+    assert client.get("/api/btc/klines?symbol=BTCUSDT&interval=15m&days=365").status_code == 200
 
 
 def test_kline_pauses_when_binance_ip_weight_high(fake_binance, monkeypatch):
     monkeypatch.setattr(routes, "_kline_ip_busy_until", fake_binance.fake.mono + 30)
     r = TestClient(app).get("/api/btc/klines?interval=1h&days=3")
     assert r.status_code == 429 and not fake_binance
+
+
+def test_kline_budget_holds_under_threads(fake_binance):
+    import threading as th
+
+    ok, busy = [], []
+
+    def take():
+        try:
+            routes._kline_take(10)
+            ok.append(1)
+        except routes.KlineBusy:
+            busy.append(1)
+
+    ts = [th.Thread(target=take) for _ in range(80)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(ok) == routes.KLINE_WEIGHT_PER_MIN // 10 and len(busy) == 80 - len(ok)
+
+
+def test_kline_pause_keeps_the_longer_wait(fake_binance):
+    routes._kline_pause(600)
+    routes._kline_pause(60)  # 뒤에 온 짧은 쉼이 418·429의 긴 쉼을 줄이지 않는다
+    assert routes._kline_ip_busy_until == fake_binance.fake.mono + 600
+
+
+def test_kline_ip_weight_header_and_ban_pause(monkeypatch, fake_binance):
+    import io
+    import urllib.error
+
+    monkeypatch.undo()  # 진짜 _get_klines를 쓰고 urlopen만 바꾼다
+    monkeypatch.setattr(routes, "_mono", lambda: 1000.0)
+    monkeypatch.setattr(routes, "_kline_ip_busy_until", 0.0)
+
+    class Resp(io.BytesIO):
+        headers = {"X-MBX-USED-WEIGHT-1M": "1500"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(routes.urllib.request, "urlopen", lambda req, timeout=10: Resp(b"[]"))
+    assert routes._get_klines("15m", 0, 10) == []
+    assert routes._kline_ip_busy_until == 1060.0
+
+    def ban(req, timeout=10):
+        raise urllib.error.HTTPError("u", 418, "banned", {}, None)
+
+    monkeypatch.setattr(routes.urllib.request, "urlopen", ban)
+    with pytest.raises(urllib.error.HTTPError):
+        routes._get_klines("15m", 0, 10)
+    assert routes._kline_ip_busy_until == 1600.0

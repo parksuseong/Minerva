@@ -1,6 +1,6 @@
 // 🧪 SCR 실험실: SCR 숫자를 바꿔 가며 BTCUSDT 롱·숏 열림 신호를 바로 다시 그린다 (사용자 요청 2026-11-08).
 // 종목 버튼으로 SOXLUSDT 선물도 본다(2026-11-11). 종목은 "기본값으로"를 눌러도 그대로 둔다.
-// 엔진이 지금 매매하는 종목(/api/btc/traded)도 버튼으로 붙는다(사용자 2026-11-14).
+// 엔진이 지금 매매하는 종목(/api/btc/traded)도 버튼으로 붙는다(사용자 2026-11-14, 14일까지).
 // 봉은 /api/btc/klines(바이낸스 선물 공개 시세), 계산은 전부 화면에서(scrlab_core.js). 주문과 연결되지 않는다.
 // 서버에 브라우저가 없어 화면은 직접 못 보고 만들었다 — 값이 이상하면 화면을 그리지 않고 안내만 한다.
 (() => {
@@ -128,7 +128,12 @@
     };
   };
 
+  // 고정 네 종목 밖(매매 종목)은 서버가 14일까지만 준다(사용자 2026-11-14 "14일치로")
+  const TRADED_DAYS = 14;
+  const maxDays = () => (SYMS[cfg.symbol] ? 365 : TRADED_DAYS);
   const syncControls = () => {
+    if (Number(cfg.days) > maxDays()) cfg.days = maxDays();
+    document.querySelectorAll("#lab-days button").forEach((b) => { b.disabled = Number(b.dataset.days) > maxDays(); });
     document.querySelectorAll("#lab-sym button").forEach((b) => b.classList.toggle("on", b.dataset.sym === cfg.symbol));
     if ($("lab-sym-name")) $("lab-sym-name").textContent = cfg.symbol;
     document.querySelectorAll("#lab-tf button").forEach((b) => b.classList.toggle("on", b.dataset.tf === cfg.interval));
@@ -184,8 +189,9 @@
       .catch((e) => {
         if (ticket !== loading) return;
         const code = e && e.message;
+        if (code === "400" && cfg.symbol !== BASE.symbol) { cfg.symbol = BASE.symbol; save(); syncControls(); }
         $("lab-status").textContent = code === "429" ? "요청이 많아 잠시 쉬어요(실전 매매와 같은 IP). 1분 뒤 다시 눌러 주세요."
-          : code === "400" ? "이 종목은 지금 매매 종목이 아니라 볼 수 없어요. 다른 종목을 골라 주세요."
+          : code === "400" ? "이 종목은 지금 매매 종목이 아니라 볼 수 없어요. 비트코인으로 돌려 놨어요."
             : "봉을 받지 못했어요. 잠시 뒤 다시 열어 주세요.";
       });
   };

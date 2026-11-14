@@ -206,6 +206,46 @@ def _since_ms(capital: dict | None) -> int | None:
     return int(at.replace(tzinfo=KST).timestamp() * 1000)
 
 
+STOP_TYPES = ("STOP", "STOP_MARKET")
+TP_TYPES = ("TAKE_PROFIT", "TAKE_PROFIT_MARKET")
+
+
+def attach_exits(position: dict, algos: list[dict]) -> None:
+    """걸려 있는 조건부 주문(손절·익절)의 발동가와 진입가 대비 %를 포지션에 붙인다.
+
+    포지션을 닫는 쪽(롱이면 SELL, 숏이면 BUY) 주문만 본다. 같은 종류가 여럿이면 진입가에
+    가장 가까운 것(먼저 닿는 것)을 쓴다. % 는 가격 변화이고 증거금 손익이 아니다.
+    """
+    entry = float(position.get("entry") or 0)
+    close_side = "SELL" if position.get("side") == "롱" else "BUY"
+    for key, types in (("stop", STOP_TYPES), ("tp", TP_TYPES)):
+        prices = []
+        for a in algos:
+            if a.get("side") != close_side:
+                continue
+            if (a.get("orderType") or a.get("type")) not in types:
+                continue
+            try:
+                px = float(a.get("triggerPrice") or a.get("stopPrice") or 0)
+            except (TypeError, ValueError):
+                continue
+            if px > 0:
+                prices.append(px)
+        if not prices or not entry:
+            position[key] = position[f"{key}_pct"] = None
+            continue
+        px = min(prices, key=lambda x: abs(x - entry))
+        position[key] = px
+        position[f"{key}_pct"] = (px / entry - 1) * 100
+
+
+def open_algos(cfg: dict, symbol: str) -> list[dict]:
+    rows = _get(cfg, "/fapi/v1/openAlgoOrders", symbol=symbol)
+    if isinstance(rows, dict):  # 응답 모양이 바뀌어도 목록만 꺼낸다
+        rows = rows.get("orders") or rows.get("rows") or []
+    return [r for r in rows if isinstance(r, dict)]
+
+
 def snapshot(cfg: dict, now: datetime, capital: dict | None = None) -> dict:
     acct = _get(cfg, "/fapi/v2/account")
     risk = [r for r in _get(cfg, "/fapi/v2/positionRisk") if float(r["positionAmt"])]
@@ -217,6 +257,15 @@ def snapshot(cfg: dict, now: datetime, capital: dict | None = None) -> dict:
         **parse_account(acct, risk),
         "orders": parse_orders(_get(cfg, "/fapi/v1/openOrders")),
     }
+    # 조건부 주문은 openOrders에 안 나온다(2025-12 Algo Service).
+    # 보유 종목만 종목별로 묻는다(무게 1).
+    for p in data["positions"]:
+        try:
+            algos = open_algos(cfg, p["symbol"])
+        except Exception as e:  # 표시용이라 실패해도 스냅숏은 그대로 남긴다
+            log.warning("openAlgoOrders %s failed: %s", p["symbol"], e)
+            continue  # 칸을 비워 두면 화면은 "없음"이 아니라 "-"로 보인다
+        attach_exits(p, algos)
     rate = _get(cfg, "/fapi/v1/commissionRate", symbol=SYMBOL)
     data["fee_rate"] = {
         "maker": float(rate["makerCommissionRate"]),

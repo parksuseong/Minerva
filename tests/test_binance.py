@@ -438,3 +438,47 @@ def test_snapshot_reads_exits_per_position_and_survives_failure(monkeypatch):
     monkeypatch.setattr(binance, "_get", broken)
     data = binance.snapshot(CFG, NOW, None)
     assert data["status"] == "ok" and "stop" not in data["positions"][0]
+
+
+def test_daily_income_groups_by_kst_day():
+    t = binance._since_ms({"since": "2026-11-13"})
+    rows = [
+        {"incomeType": "COMMISSION", "asset": "USDT", "income": "-0.5", "time": t + 1000},
+        {"incomeType": "REALIZED_PNL", "asset": "USDT", "income": "10", "time": t + 2000},
+        {"incomeType": "COMMISSION", "asset": "USDT", "income": "-0.25", "time": t - 1000},
+        {"incomeType": "TRANSFER", "asset": "USDT", "income": "100", "time": t + 3000},
+    ]
+    out = binance.daily_income(rows)
+    assert out["2026-11-13"] == {"realized": 10.0, "funding": 0.0, "commission": -0.5}
+    assert out["2026-11-12"]["commission"] == -0.25
+
+
+def test_daily_returns_vs_prev_close_and_deposits():
+    from minerva import perf
+
+    dep = [{"date": "2026-11-13", "amount": 50.0}]
+    cap = {"since": "2026-11-12", "base": 100.0, "deposits": dep}
+    hist = {"2026-11-11": 90.0, "2026-11-12": 110.0, "2026-11-13": 150.0, "2026-11-14": 1.0}
+    rows = perf.daily_returns(hist, cap, "2026-11-14", 165.0, {"2026-11-14": {"commission": -1.0}})
+    assert [r["date"] for r in rows] == ["2026-11-14", "2026-11-13", "2026-11-12"]
+    first, dep, today = rows[2], rows[1], rows[0]
+    assert first["pnl"] == pytest.approx(10.0) and first["pct"] == pytest.approx(10.0)
+    assert dep["pnl"] == pytest.approx(-10.0) and dep["pct"] == pytest.approx(-10 / 160 * 100)
+    assert today["equity"] == 165.0 and today["pct"] == pytest.approx(10.0)
+    assert today["commission"] == -1.0 and dep["commission"] == 0.0
+
+
+def test_binance_api_has_daily(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_ACCOUNT_OUT", str(tmp_path / "latest.json"))
+    monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(tmp_path / "none"))
+    monkeypatch.delenv("MINERVA_ACCOUNT_TOKEN", raising=False)
+    (tmp_path / "binance.json").write_text(json.dumps({
+        "status": "ok", "updated_at": "2026-11-08 10:00", "equity": 900.0, "net_equity": 899.0,
+    }))
+    (tmp_path / "binance_capital.json").write_text(
+        json.dumps({"since": "2026-11-07", "base": 1000.0, "deposits": []})
+    )
+    (tmp_path / "binance_equity.json").write_text(json.dumps({"2026-11-07": 950.0}))
+    daily = TestClient(app).get("/api/account/binance").json()["daily"]
+    got = [(r["date"], round(r["pnl"], 2)) for r in daily]
+    assert got == [("2026-11-08", -51.0), ("2026-11-07", -50.0)]

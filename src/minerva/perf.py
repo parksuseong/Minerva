@@ -155,6 +155,42 @@ def account_returns(account: dict, history: dict, capital: dict, bot: float) -> 
     return out
 
 
+def daily_returns(
+    history: dict, capital: dict, today: str, now_value: float, income: dict | None = None
+) -> list[dict]:
+    """일별 수익률(최신이 위). 값은 그날 마지막 순평가액(낸 수수료·펀딩 반영 + 지금 닫을 때
+    수수료 추정 차감). 첫날은 시드와, 나머지는 전날 마감과 비교하고 그날 입출금(deposits)은 뺀다.
+
+    history: {날짜: 그날 마지막 순평가액}. 오늘 값은 now_value(최신 스냅숏)로 덮는다.
+    income: {날짜: {"realized", "funding", "commission"}} (바이낸스 income, 참고 칸)
+    """
+    since = capital.get("since")
+    if not since:
+        return []
+    days = {d: v for d, v in history.items() if since <= d <= today}
+    days[today] = now_value
+    deposits: dict = {}
+    for dep in capital.get("deposits", []):
+        deposits[dep["date"]] = deposits.get(dep["date"], 0.0) + dep["amount"]
+    out, prev = [], capital["base"]
+    for d in sorted(days):
+        start = prev + deposits.get(d, 0.0)
+        pnl = days[d] - start
+        inc = (income or {}).get(d, {})
+        out.append({
+            "date": d,
+            "equity": days[d],
+            "pnl": pnl,
+            "pct": pnl / start * 100 if start > 0 else None,
+            "deposit": deposits.get(d, 0.0),
+            "realized": inc.get("realized", 0.0),
+            "commission": inc.get("commission", 0.0),
+            "funding": inc.get("funding", 0.0),
+        })
+        prev = days[d]
+    return out[::-1]
+
+
 def _summary(rows: list[dict]) -> str:
     if not rows:
         return "청산 0건"

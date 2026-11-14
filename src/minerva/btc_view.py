@@ -16,7 +16,7 @@ from minerva import btc_universe
 from minerva.kis import KST
 from minerva.strategy import soxl
 
-MAX_TRADES = 50
+MAX_TRADES = 500  # 화면 표는 20줄씩 나눠 보인다. 합계는 live_totals(전체)
 
 
 def tail_jsonl(path: Path, n: int) -> list[dict]:
@@ -166,8 +166,16 @@ def engine_view(now: datetime | None = None) -> dict:
     keys = ("at", "mode", "side", "bar", "used", "fallback", "secs")
     ai = [{k: e.get(k) for k in keys} for e in events if e.get("event") == "ai_exits"]
     ai = [a for a in ai if a.get("mode") == mode][-10:]
-    closed = [r for r in _tail("closed.jsonl", 500) if r.get("mode") == mode]
+    every = [r for r in tail_jsonl(bt.DIR / "closed.jsonl", 10**9) if r.get("mode") == mode]
+    closed = every[-MAX_TRADES:]
     capital = bt._load(bt.CAPITAL_FILE, {}) or {}
+    since_at = capital.get("since_at") if capital.get("live") else None
+    live_rows = [r for r in every if since_at and (r.get("at") or "") >= since_at]
+    live_totals = {
+        "n": len(live_rows),
+        "wins": sum((r.get("pnl") or 0) > 0 for r in live_rows),
+        "pnl": sum(r.get("pnl") or 0 for r in live_rows),
+    }
     seed = bt.seed(mode, state)
     n, wins = bt.winrate(mode, now)
     equity = last_run.get("equity") if last_run else None
@@ -177,7 +185,8 @@ def engine_view(now: datetime | None = None) -> dict:
         "mode": mode,
         "halt": bt.halted(),
         "no_entry": no_entry,
-        "live_since": capital.get("since_at") if capital.get("live") else None,
+        "live_since": since_at,
+        "live_totals": live_totals if since_at else None,
         "params": {
             "scr": bt.SCR_PARAMS,
             "interval": bt.INTERVAL,
@@ -206,6 +215,6 @@ def engine_view(now: datetime | None = None) -> dict:
             "winrate_min_trades": bt.WINRATE_MIN_TRADES,
             "winrate_days": bt.WINRATE_DAYS,
         },
-        "trades": list(reversed(closed[-MAX_TRADES:])),
+        "trades": list(reversed(closed)),
         "dry_orders": list(reversed(_tail("dry.jsonl", 30))) if mode == "dry" else [],
     }

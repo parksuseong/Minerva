@@ -107,7 +107,7 @@
       답이 없거나 틀리면 손절 ${num(eng.params.default_stop_pct, 0)}%·익절 없음(⚙️). AI가 정한 청산 폭은 백테스트할 수 없어요.</p>`;
   };
 
-  const tradeRows = (rows) => rows.map((r) => `<tr><td>${esc((r.at || "").slice(5, 16))}</td>
+  const tradeRows = (rows, key) => rows.map((r, i) => `<tr${window.MinervaUI.pgAttr(key, i)}><td>${esc((r.at || "").slice(5, 16))}</td>
       <td><span class="chip ${r.side === "long" ? "good" : "warn"}">${who(r, r.side)}</span></td>
       <td>${num(r.entry)} → ${num(r.exit)}</td><td>${pct(r.pct)} <span class="mini">×${lev()} ${pct(r.pct == null ? null : r.pct * lev())}</span></td>
       <td>${r.pnl == null ? "-" : `${r.pnl > 0 ? "+" : ""}${num(r.pnl, 2)}`}</td><td>${esc(WHY[r.why] || r.why)}</td></tr>`).join("");
@@ -136,7 +136,7 @@
     const rows = eng.trades || [];
     let html = dry ? '<div class="regime"><span class="chip">🧪 드라이런 — 가상 거래예요 (주문 없음)</span></div>' : "";
     const hold = holdRow(eng.position);
-    html += rows.length || hold ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${hold}${tradeRows(rows)}</tbody></table></div>`
+    html += rows.length || hold ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${hold}${tradeRows(rows, "bte-trades")}</tbody></table>${window.MinervaUI.moreBtn("bte-trades", rows.length)}</div>`
       : '<p class="placeholder">끝난 거래가 아직 없어요</p>';
     if (dry && (eng.dry_orders || []).length) {
       html += `<h3 style="margin:10px 0 4px;font-size:14px">드라이런 주문 기록 (냈을 주문)</h3><div style="overflow-x:auto"><table class="acct">
@@ -156,11 +156,13 @@
       return;
     }
     const rows = (eng.trades || []).filter((r) => (r.at || "") >= eng.live_since);
-    const sum = rows.reduce((a, r) => a + (r.pnl || 0), 0);
-    const wins = rows.filter((r) => (r.pnl || 0) > 0).length;
-    $("bte-acct").innerHTML = `<div class="detail">실전 시작 ${esc(eng.live_since)} KST 이후 ${rows.length}번 · 이긴 ${wins}번 · 합계 <b>${sum > 0 ? "+" : ""}${num(sum, 2)} USDT</b> (수수료 포함)</div>
+    // 합계·승률은 서버가 전체 기록으로 센 값(표는 최근 MAX_TRADES건만 온다)
+    const t = eng.live_totals || { n: rows.length, wins: rows.filter((r) => (r.pnl || 0) > 0).length,
+      pnl: rows.reduce((a, r) => a + (r.pnl || 0), 0) };
+    const sum = t.pnl, wins = t.wins;
+    $("bte-acct").innerHTML = `<div class="detail">실전 시작 ${esc(eng.live_since)} KST 이후 ${t.n}번 · 이긴 ${wins}번 · 합계 <b>${sum > 0 ? "+" : ""}${num(sum, 2)} USDT</b> (수수료 포함)</div>
       <div class="detail">지금: ${posHtml(eng.position)}</div>
-      ${rows.length || eng.position ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${holdRow(eng.position)}${tradeRows(rows)}</tbody></table></div>` : ""}`;
+      ${rows.length || eng.position ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${holdRow(eng.position)}${tradeRows(rows, "bte-acct")}</tbody></table>${window.MinervaUI.moreBtn("bte-acct", rows.length)}</div>` : ""}`;
   };
 
   // ---- 지표·추격 한도 ----

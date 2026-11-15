@@ -1,0 +1,14 @@
+# 자동매매 일일 복기: 전날(KST) 엔진 기록·계좌 손익 + Claude 복기글 → ~/.minerva/btc_trade/reviews/<날짜>.json. 읽기 전용, 주문 없음.
+# 설치: sudo cp deploy/minerva-btc-review.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-btc-review.timer
+[Unit]
+Description=Minerva auto-trading daily review (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.btc_review
+TimeoutStartSec=600

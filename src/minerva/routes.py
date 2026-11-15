@@ -33,7 +33,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException, Response
 
-from minerva import btc_view, perf
+from minerva import btc_review, btc_view, perf
 from minerva.strategy import soxl
 
 router = APIRouter()
@@ -404,6 +404,15 @@ def binance_account(x_minerva_token: str = Header("")) -> dict:
             data.get("income_range"),
         )
     return data
+
+
+@router.get("/api/btc/reviews")
+def btc_reviews(x_minerva_token: str = Header("")) -> dict:
+    """일일 복기(`btc_review`가 매일 04:05에 쓴 것, 최신이 위).
+
+    계좌 손익이 있어 계좌 토큰으로 잠근다."""
+    _check_account_token(x_minerva_token)
+    return {"reviews": btc_review.load_all()}
 
 
 @router.get("/api/account/binance/series")

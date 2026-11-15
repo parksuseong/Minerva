@@ -1,9 +1,9 @@
-# 매일 00:15 KST: 엔진 00:15:20 실행과 겹쳐도 읽기만 한다(공개 시세 15분봉, 거래마다 1번).
+# 매일 04:05 KST: 늦은 밤 거래의 청산 뒤 4시간까지 보이게. 엔진 :00:20·:15:20 실행과 겹치지 않게(claude 동시 실행 피함).
 [Unit]
-Description=Write Minerva auto-trading daily review at 00:15 KST
+Description=Write Minerva auto-trading daily review at 04:05 KST
 
 [Timer]
-OnCalendar=*-*-* 00:15:00 Asia/Seoul
+OnCalendar=*-*-* 04:05:00 Asia/Seoul
 Persistent=true
 
 [Install]

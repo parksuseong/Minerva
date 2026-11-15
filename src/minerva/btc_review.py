@@ -1,7 +1,7 @@
 """자동매매 일일 복기(사용자 요청 2026-11-15 "일일 복기 페이지도 만들어라 너가 복기해봐").
 
 하루(KST 0시~24시)의 엔진 기록을 모아 `reviews/<날짜>.json`에 쓰고, 웹 "📝 복기" 탭이 보여준다.
-매일 00:15 KST에 전날 것을 쓴다(`minerva-btc-review.timer`).
+매일 04:05 KST에 전날 것을 쓴다(`minerva-btc-review.timer`, 늦은 밤 거래의 청산 뒤 4시간까지 보이게)
 
 읽는 것: 엔진 파일(closed.jsonl·events.jsonl, 키 없음), 계좌 스냅숏(binance.json 등, 키 없음),
 공개 시세 15분봉(GET, 거래한 종목만, 거래마다 1번). 주문·키 없음.
@@ -34,6 +34,7 @@ from minerva.kis import KST, _write_private
 MODEL = os.environ.get("MINERVA_REVIEW_MODEL", "opus")
 TIMEOUT = 240
 BUDGET_USD = "1.00"
+CAP = 30  # 목록마다 상한(질문은 명령줄 한 줄로 넘어가서 너무 길면 실패한다)
 KEEP = 60  # 화면에 보내는 최근 복기 수
 AFTER_BARS = 16  # 청산 뒤 4시간(15분봉 16개)
 FMT = "%Y-%m-%d %H:%M:%S"
@@ -87,10 +88,16 @@ def _ms(kst: str) -> int:
 
 
 def fetch_bars(symbol: str, start_ms: int, end_ms: int) -> list[list]:
-    """15분봉(공개 시세). 최대 1500개(약 15일)."""
+    """15분봉(공개 시세). 엔진과 같은 IP라 필요한 만큼만(499개 이하 무게 2, 1000개 무게 5).
+
+    1000개(약 10일)보다 긴 보유는 앞쪽이 잘린다. 429·418은 HTTPError로 올라가 그 거래만 빈칸."""
+    need = (end_ms - start_ms) // bt.BAR_MS + 2
+    limit = 499 if need <= 499 else 1000
+    if need > limit:
+        start_ms = end_ms - (limit - 1) * bt.BAR_MS
     url = (
         f"{bt.BASE}/fapi/v1/klines?symbol={symbol}&interval=15m"
-        f"&startTime={start_ms}&endTime={end_ms}&limit=1500"
+        f"&startTime={start_ms}&endTime={end_ms}&limit={limit}"
     )
     req = urllib.request.Request(url, headers={"User-Agent": "minerva-review"})
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -100,43 +107,45 @@ def fetch_bars(symbol: str, start_ms: int, end_ms: int) -> list[list]:
 def excursion(trade: dict, bars: list[list]) -> dict:
     """들고 있는 동안 가장 좋았던·나빴던 가격(진입가 대비 %, 내 방향 기준)과 청산 뒤 4시간.
 
-    청산 시각은 엔진이 기록한 때라 실제 체결보다 늦을 수 있다. 그래서 진입 뒤 청산가에
-    처음 닿은 봉까지를 보유 구간으로 본다. 닿은 봉을 못 찾으면 기록 시각까지 본다.
+    청산 시각은 엔진이 기록한 때라 손절·익절 실제 체결보다 늦을 수 있다. 그래서 손절·익절은
+    진입 뒤 청산가에 처음 닿은 봉까지(청산가를 지난 움직임은 세지 않음)를 보유 구간으로 본다.
+    그 밖의 청산(신호·수동 등)과 못 닿은 손절·익절은 기록 시각 전에 마감한 봉까지 본다
+    (엔진은 봉 마감 20초 뒤에 청산하므로 기록 시각이 든 봉은 청산 뒤다).
     """
     entry, exit_px = float(trade["entry"]), float(trade["exit"])
     sign = 1 if trade["side"] == "long" else -1
     start, rec = _ms(trade["opened_at"]), _ms(trade["at"])
+    by_level = trade.get("why") in ("stop", "tp")
     held = [b for b in bars if int(b[0]) + bt.BAR_MS > start]
     best = worst = 0.0
-    end_i = None
+    after_i = len(held)  # 청산 뒤 첫 봉
     for i, b in enumerate(held):
+        # 엔진은 봉 마감 20초 뒤에 돌아 기록하므로, 기록 1분 안에 마감한 봉까지가 보유 구간이다
+        if int(b[0]) + bt.BAR_MS > rec + 60_000:
+            after_i = i
+            break
         hi, lo = float(b[2]), float(b[3])
         good = ((hi if sign > 0 else lo) / entry - 1) * sign * 100
         bad = ((lo if sign > 0 else hi) / entry - 1) * sign * 100
-        touched = i > 0 and lo <= exit_px <= hi
+        touched = by_level and i > 0 and lo <= exit_px <= hi
         if touched:
-            # 청산가를 지난 움직임은 이미 나온 뒤라 세지 않는다
             got = (exit_px / entry - 1) * sign * 100
             good, bad = (got, bad) if got > 0 else (good, got)
         best, worst = max(best, good), min(worst, bad)
         if touched:
-            end_i = i
-            break
-        if int(b[0]) >= rec:
-            end_i = i
+            after_i = i + 1
             break
     out = {"mfe_pct": round(best, 2), "mae_pct": round(worst, 2), "after": None}
-    if end_i is not None:
-        nxt = held[end_i + 1 : end_i + 1 + AFTER_BARS]
-        if len(nxt) == AFTER_BARS:
-            hi = max(float(b[2]) for b in nxt)
-            lo = min(float(b[3]) for b in nxt)
-            last = float(nxt[-1][4])
-            out["after"] = {
-                "high_pct": round((hi / exit_px - 1) * 100, 2),
-                "low_pct": round((lo / exit_px - 1) * 100, 2),
-                "close_pct": round((last / exit_px - 1) * 100, 2),
-            }
+    nxt = held[after_i : after_i + AFTER_BARS]
+    if len(nxt) == AFTER_BARS:
+        hi = max(float(b[2]) for b in nxt)
+        lo = min(float(b[3]) for b in nxt)
+        last = float(nxt[-1][4])
+        out["after"] = {
+            "high_pct": round((hi / exit_px - 1) * 100, 2),
+            "low_pct": round((lo / exit_px - 1) * 100, 2),
+            "close_pct": round((last / exit_px - 1) * 100, 2),
+        }
     return out
 
 
@@ -190,8 +199,7 @@ def facts(
         for e in events
         if e.get("event") == "ai_choose"
     ]
-    entries = [{"at": e["at"], "decision": e.get("decision")} for e in runs
-               if "진입" in str(e.get("decision", ""))]
+    entries = [{"at": e["at"], "decision": e.get("decision")} for e in runs if _entered(e)]
     wins = sum(1 for t in trades if (t["pnl"] or 0) > 0)
     return {
         "day": day,
@@ -207,15 +215,26 @@ def facts(
         # 계좌 탭과 같은 값: 전날 마감 순평가액 대비라 전날 열린 포지션의 평가손익 변화도 들어간다
         "account": account_day(day, folder),
         "trades": trades,
-        "entries": entries,
-        "choices": choices,
-        "skipped": skipped,
+        "entries": entries[:CAP],
+        "choices": choices[:CAP],
+        "skipped": skipped[:CAP],
+        "skipped_total": len(skipped),
         "passed": dict(passed.most_common(15)),
         "passed_total": sum(passed.values()),
         "runs": len(runs),
         "halts": sorted({h for e in runs for h in (e.get("halts") or [])}),
         "end_position": runs[-1].get("position") if runs else None,
     }
+
+
+ENTERED = re.compile(r"^\S+ (롱|숏) 진입$")
+
+
+def _entered(run: dict) -> bool:
+    """실제로 들어간 실행만: 엔진이 진입을 확인했을 때 쓰는 "<종목> <방향> 진입"(btc_trade).
+    "… 신호, 진입 안 함"·"진입 못 함" 같은 문구는 맞지 않는다."""
+    head = str(run.get("decision") or "").split(" · ")[0]
+    return bool(ENTERED.match(head))
 
 
 def _reason(raw) -> str | None:
@@ -276,7 +295,9 @@ def parse(raw: str) -> dict | None:
 
 
 def ask(data: dict, caller: Callable[[str], str] | None = None) -> tuple[dict | None, str | None]:
-    caller = caller or (lambda p: btc_ai.call_claude(p, TIMEOUT, model=MODEL, budget=BUDGET_USD))
+    caller = caller or (lambda p: btc_ai.call_claude(
+        p, TIMEOUT, cwd=bt.DIR, model=MODEL, budget=BUDGET_USD
+    ))
     try:
         raw = caller(PROMPT + json.dumps(data, ensure_ascii=False))
     except subprocess.TimeoutExpired:

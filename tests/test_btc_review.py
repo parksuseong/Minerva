@@ -32,7 +32,7 @@ def files(tmp_path, monkeypatch):
     monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(tmp_path / "none"))
     monkeypatch.delenv("MINERVA_ACCOUNT_TOKEN", raising=False)
     closed = [
-        {"at": "2026-11-15 10:15:20", "mode": "live", "symbol": "BTCUSDT", "side": "long",
+        {"at": "2026-11-15 10:30:20", "mode": "live", "symbol": "BTCUSDT", "side": "long",
          "qty": 0.03, "entry": 100.0, "exit": 97.0, "pnl": -9.0, "pct": -3.0, "why": "stop",
          "opened_at": "2026-11-15 10:00:20"},
         {"at": "2026-11-14 10:15:20", "mode": "live", "symbol": "BTCUSDT", "side": "long",
@@ -79,8 +79,8 @@ def bars_stop():
 
 
 def test_excursion_clamps_at_exit_and_reads_after():
-    t = {"side": "long", "entry": 100.0, "exit": 97.0,
-         "opened_at": "2026-11-15 10:00:20", "at": "2026-11-15 10:15:20"}
+    t = {"side": "long", "entry": 100.0, "exit": 97.0, "why": "stop",
+         "opened_at": "2026-11-15 10:00:20", "at": "2026-11-15 10:30:20"}
     got = btc_review.excursion(t, bars_stop())
     assert got["mfe_pct"] == 1.5 and got["mae_pct"] == -3.0
     assert got["after"]["high_pct"] == pytest.approx(round((100.5 / 97 - 1) * 100, 2))
@@ -88,8 +88,8 @@ def test_excursion_clamps_at_exit_and_reads_after():
 
 
 def test_excursion_short_tp_and_short_after():
-    t = {"side": "short", "entry": 100.0, "exit": 97.0,
-         "opened_at": "2026-11-15 10:00:20", "at": "2026-11-15 10:15:20"}
+    t = {"side": "short", "entry": 100.0, "exit": 97.0, "why": "tp",
+         "opened_at": "2026-11-15 10:00:20", "at": "2026-11-15 10:30:20"}
     bars = [bar("2026-11-15 10:00:00", 100, 102, 99, 100),
             bar("2026-11-15 10:15:00", 99, 99, 94, 95)]
     got = btc_review.excursion(t, bars)
@@ -106,7 +106,7 @@ def test_facts_day_filter_and_fields(files):
 
     f = btc_review.facts("2026-11-15", now, fetch)
     assert [t["why_ko"] for t in f["trades"]] == ["손절"]  # 다른 날·드라이런 제외
-    assert f["trades"][0]["hold_min"] == 15 and f["trades"][0]["mae_pct"] == -3.0
+    assert f["trades"][0]["hold_min"] == 30 and f["trades"][0]["mae_pct"] == -3.0
     assert calls == ["BTCUSDT"]
     assert f["totals"] == {"n": 1, "wins": 0, "pnl": -9.0}
     assert f["partial"] is False
@@ -187,3 +187,56 @@ def test_call_claude_model_override(monkeypatch):
     cmd = seen["cmd"]
     assert cmd[cmd.index("--model") + 1] == "opus"
     assert cmd[cmd.index("--max-budget-usd") + 1] == "1.00"
+
+
+def test_excursion_signal_exit_counts_whole_hold():
+    # 신호 청산 101: 다음 봉에서 101을 지나 110까지 갔다 돌아와도 보유 중 최고는 +10%
+    t = {"side": "long", "entry": 100.0, "exit": 101.0, "why": "signal",
+         "opened_at": "2026-11-15 10:00:20", "at": "2026-11-15 10:45:20"}
+    bars = [bar("2026-11-15 10:00:00", 100, 100.5, 99.5, 100),
+            bar("2026-11-15 10:15:00", 100, 110, 100, 109),
+            bar("2026-11-15 10:30:00", 109, 109, 101, 101),
+            bar("2026-11-15 10:45:00", 101, 130, 70, 101)]
+    got = btc_review.excursion(t, bars)
+    assert got["mfe_pct"] == 10.0 and got["mae_pct"] == -0.5
+
+
+def test_excursion_untouched_stop_ignores_later_bars():
+    # 손절 95가 기록 전 한 번도 안 닿음(슬리피지): 기록 뒤 봉(70~130)은 세지 않는다
+    t = {"side": "long", "entry": 100.0, "exit": 95.0, "why": "stop",
+         "opened_at": "2026-11-15 11:00:20", "at": "2026-11-15 11:30:20"}
+    bars = [bar("2026-11-15 11:00:00", 100, 100.3, 99.8, 100),
+            bar("2026-11-15 11:15:00", 100, 100.2, 99.9, 100),
+            bar("2026-11-15 11:45:00", 100, 130, 70, 100)]
+    got = btc_review.excursion(t, bars)
+    assert got["mfe_pct"] == 0.3 and got["mae_pct"] == -0.2
+
+
+def test_entered_only_confirmed_entries():
+    ok = {"decision": "BTC 롱 진입 · 다른 신호 3개는 후보 아님(ETH)"}
+    assert btc_review._entered(ok)
+    assert btc_review._entered({"decision": "XAG 숏 진입"})
+    for d in ("BTC 롱 신호, 진입 안 함", "BTC 롱 신호, 진입 안 함: 추격 한도",
+              "대기", "다른 신호 1개는 후보 아님(SOL) · BTC 롱 진입", None):
+        assert not btc_review._entered({"decision": d})
+
+
+def test_fetch_bars_limit(monkeypatch):
+    urls = []
+
+    class R:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    monkeypatch.setattr(btc_review.urllib.request, "urlopen",
+                        lambda req, timeout: urls.append(req.full_url) or R())
+    btc_review.fetch_bars("BTCUSDT", 0, 40 * M)
+    btc_review.fetch_bars("BTCUSDT", 0, 3000 * M)
+    assert "limit=499" in urls[0] and "startTime=0&" in urls[0]
+    assert "limit=1000" in urls[1] and f"startTime={(3000 - 999) * M}&" in urls[1]

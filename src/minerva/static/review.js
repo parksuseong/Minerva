@@ -1,4 +1,4 @@
-// "📝 복기" 탭. /api/btc/reviews (minerva.btc_review가 매일 00:15에 쓴 하루 복기)를 그린다.
+// "📝 복기" 탭. /api/btc/reviews (minerva.btc_review가 매일 04:05에 쓴 하루 복기)를 그린다.
 // 계좌 손익이 들어 있어 계좌 탭과 같은 열람 토큰(이 기기에 기억된 값)을 보낸다.
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -19,7 +19,7 @@
     if (!rows.length) return "<p class=\"mini\">이날 닫힌 거래 없음</p>";
     const body = rows.map((t) => {
       const a = t.after;
-      return `<tr><td>${esc(t.symbol.replace(/USDT$/, ""))} ${esc(SIDE[t.side] || t.side)}</td>
+      return `<tr><td>${esc(String(t.symbol || "").replace(/USDT$/, ""))} ${esc(SIDE[t.side] || t.side)}</td>
         <td>${esc(String(t.opened_at).slice(5, 16))}<br>${esc(String(t.closed_at).slice(5, 16))}</td>
         <td>${num(t.entry, 4)}<br>${num(t.exit, 4)}</td>
         <td>${esc(t.why_ko || t.why)}</td>
@@ -49,14 +49,14 @@
         ${rv.rule_check ? `<h3>📏 규칙대로 했나</h3><p>${esc(rv.rule_check)}</p>` : ""}
         ${list("👀 다음에 볼 것", rv.tomorrow)}${list("💡 생각해 볼 것 (검증 안 됨, 규칙 아님)", rv.ideas)}` : ""}
       <p class="mini">AI 종목 선택: ${choices.length ? esc(choices.join(" / ")) : "없음"}<br>
-      못 들어간 신호(장 쉬는 시간 등): ${(r.skipped || []).length}개 · 후보 아닌 종목 신호: ${r.passed_total || 0}개${passedTop ? ` (${esc(passedTop)})` : ""}<br>
+      못 들어간 신호(장 쉬는 시간 등): ${r.skipped_total ?? (r.skipped || []).length}개 · 후보 아닌 종목 신호: ${r.passed_total || 0}개${passedTop ? ` (${esc(passedTop)})` : ""}<br>
       ${esc(r.generated_at || "")}에 씀 · 보유 중 최고·최저는 진입가 대비 내 방향 기준</p>
     </section>`;
   }
 
   function render(d) {
     const rows = d.reviews || [];
-    $("rv-status").textContent = rows.length ? "" : "아직 복기가 없어요 (매일 00:15에 전날 것을 써요)";
+    $("rv-status").textContent = rows.length ? "" : "아직 복기가 없어요 (매일 04:05에 전날 것을 써요)";
     $("rv-list").innerHTML = rows.map(card).join("") + UI.moreBtn("rv", rows.length);
   }
 

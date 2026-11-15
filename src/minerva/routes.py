@@ -408,7 +408,7 @@ def binance_account(x_minerva_token: str = Header("")) -> dict:
 
 @router.get("/api/btc/reviews")
 def btc_reviews(x_minerva_token: str = Header("")) -> dict:
-    """일일 복기(`btc_review`가 매일 00:15에 쓴 것, 최신이 위).
+    """일일 복기(`btc_review`가 매일 04:05에 쓴 것, 최신이 위).
 
     계좌 손익이 있어 계좌 토큰으로 잠근다."""
     _check_account_token(x_minerva_token)

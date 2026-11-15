@@ -222,21 +222,29 @@ def parse(text: str) -> tuple[dict | None, str]:
     }, ""
 
 
-def call_claude(prompt: str, timeout: float = TIMEOUT, cwd: Path | None = None) -> str:
-    """`claude -p` 한 번. 도구 없음, MCP 없음, 세션 저장 없음. 실패하면 예외."""
+def call_claude(
+    prompt: str,
+    timeout: float = TIMEOUT,
+    cwd: Path | None = None,
+    model: str | None = None,
+    budget: str | None = None,
+) -> str:
+    """`claude -p` 한 번. 도구 없음, MCP 없음, 세션 저장 없음. 실패하면 예외.
+
+    model·budget은 일일 복기(`btc_review`)가 바꿔 쓴다. 엔진은 기본값 그대로."""
     cmd = [
         CLAUDE,
         "-p",
         prompt,
         "--model",
-        MODEL,
+        model or MODEL,
         "--permission-mode",
         "dontAsk",
         "--strict-mcp-config",
         "--disallowedTools",
         *BLOCKED_TOOLS,
         "--max-budget-usd",
-        BUDGET_USD,
+        budget or BUDGET_USD,
         "--no-session-persistence",
         "--output-format",
         "text",

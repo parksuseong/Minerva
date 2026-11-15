@@ -1,0 +1,10 @@
+# 매일 00:15 KST: 엔진 00:15:20 실행과 겹쳐도 읽기만 한다(공개 시세 15분봉, 거래마다 1번).
+[Unit]
+Description=Write Minerva auto-trading daily review at 00:15 KST
+
+[Timer]
+OnCalendar=*-*-* 00:15:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

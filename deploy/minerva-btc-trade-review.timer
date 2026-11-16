@@ -1,10 +1,11 @@
-# 15분마다 :07·:22·:37·:52 KST: 엔진 :00:20·:15:20 실행과 겹치지 않게(claude 동시 실행 피함). 놓친 실행은 다음 회차가 이어서 쓴다.
+# 매일 09:20 KST: 전날까지 닫힌 실전 거래를 청산 뒤 움직임(최대 24시간)까지 보고 복기한다
+# (사용자 2026-11-16 "복기는 매번하지말고 다음날하자"). 엔진 :15:20 실행과 겹치지 않는다.
 [Unit]
-Description=Write Minerva per-trade reviews every 15 minutes
+Description=Write Minerva per-trade reviews the next morning 09:20 KST
 
 [Timer]
-OnCalendar=*-*-* *:07,22,37,52:00 Asia/Seoul
-Persistent=false
+OnCalendar=*-*-* 09:20:00 Asia/Seoul
+Persistent=true
 
 [Install]
 WantedBy=timers.target

@@ -1,5 +1,5 @@
 // "📝 복기" 탭. /api/btc/reviews (minerva.btc_review가 매일 04:05에 쓴 하루 복기,
-// minerva.btc_trade_review가 청산 1시간 뒤에 쓴 거래별 복기)를 그린다.
+// minerva.btc_trade_review가 다음 날 아침 09:20에 쓴 거래별 복기)를 그린다.
 // 계좌 손익이 들어 있어 계좌 탭과 같은 열람 토큰(이 기기에 기억된 값)을 보낸다.
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -91,7 +91,7 @@
     $("rv-list").innerHTML = rows.map(card).join("") + UI.moreBtn("rv", rows.length);
     const tr = d.trades || [];
     if ($("rv-trades")) {
-      $("rv-trades-status").textContent = tr.length ? "" : "아직 거래별 복기가 없어요 (청산 1시간 뒤에 써요)";
+      $("rv-trades-status").textContent = tr.length ? "" : "아직 거래별 복기가 없어요 (다음 날 아침 09:20에 써요)";
       $("rv-trades").innerHTML = tr.map(tradeCard).join("");
     }
   }

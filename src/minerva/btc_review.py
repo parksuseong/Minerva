@@ -42,6 +42,7 @@ DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 WHY = {
     "signal": "반대 신호",
     "stop": "손절",
+    "trail": "따라간 손절",
     "tp": "익절",
     "manual": "수동·강제",
     "protect": "손절 실패 정리",
@@ -115,7 +116,7 @@ def excursion(trade: dict, bars: list[list]) -> dict:
     entry, exit_px = float(trade["entry"]), float(trade["exit"])
     sign = 1 if trade["side"] == "long" else -1
     start, rec = _ms(trade["opened_at"]), _ms(trade["at"])
-    by_level = trade.get("why") in ("stop", "tp")
+    by_level = trade.get("why") in ("stop", "trail", "tp")
     held = [b for b in bars if int(b[0]) + bt.BAR_MS > start]
     best = worst = 0.0
     after_i = len(held)  # 청산 뒤 첫 봉
@@ -208,7 +209,8 @@ def facts(
         "rules": {
             "leverage": bt.LEVERAGE,
             "stop_pct": bt.STOP_PCT * 100,
-            "tp_pct": bt.FIXED_TP_PCT,
+            "tp_pct": bt.fixed_tp_pct(),
+            "exit_rule": "trail" if bt.trail_rule() else "fixed",
         },
         "totals": {"n": len(trades), "wins": wins,
                    "pnl": round(sum(t["pnl"] or 0 for t in trades), 2)},
@@ -245,7 +247,9 @@ def _reason(raw) -> str | None:
 
 
 PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 하루를 복기하는 트레이더다.
-엔진 규칙(바꾸지 않음): 15분봉 SCR ① 신호, 3배, 손절 진입가 -3%, 익절 +3%, 한 번에 한 포지션,
+엔진 규칙(바꾸지 않음): 15분봉 SCR ① 신호, 3배, 손절 진입가 -3%, 익절 +3%
+(2026-11-16부터: 익절 없이 +3% 닿으면 손절을 본전으로, 그 뒤 최고가에서 3% 따라감, why=trail),
+한 번에 한 포지션,
 반대 신호면 바꿈, 백테스트 승률 45% 미만·손실 종목은 신호만 표시.
 자료(JSON) 칸: trades(그날 닫힌 거래, mfe_pct=들고 있는 동안 가장 좋았던 %, mae_pct=가장 나빴던 %,
 after=청산 뒤 4시간 가격 변화 %), account(수수료·펀딩 차감 일 손익, 전날 마감 대비라

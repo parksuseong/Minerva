@@ -24,6 +24,7 @@ SIDE = {"long": "롱", "short": "숏"}
 WHY = {
     "signal": "반대 신호",
     "stop": "손절",
+    "trail": "따라간 손절",
     "tp": "익절",
     "manual": "수동·강제",
     "protect": "손절 실패 정리",
@@ -68,12 +69,18 @@ def brief_text(v: dict, now: datetime, price: float | None, ways: dict, since: s
     if p:
         sign = 1 if p["side"] == "long" else -1
         u = (price / p["entry"] - 1) * 100 * sign if price else None
-        tp = (
-            f" · 익절 {bt._px(p['tp'])} (+{p.get('tp_pct', 0):g}%)"
-            if p.get("tp")
-            else " · 익절 없음"
-        )
         prm = v.get("params") or {}
+        if p.get("tp"):
+            tp = f" · 익절 {bt._px(p['tp'])} (+{p.get('tp_pct') or 0:g}%)"
+        elif p.get("trail"):
+            tp = f" · 따라가는 중 (최고 {bt._px(p.get('best') or p['entry'])})"
+        elif prm.get("trail"):
+            r = prm["trail"]
+            tp = (
+                f" · 익절 없음 · +{r['activate_pct']:g}% 닿으면 본전 → {r['trail_pct']:g}% 따라감"
+            )
+        else:
+            tp = " · 익절 없음"
         lev = prm.get("leverage", 3)
         ux = u * lev if u is not None else None
         now_px = f" · 지금 {bt._px(price)} ({_pct(u)}, {lev}배 {_pct(ux)})" if price else ""

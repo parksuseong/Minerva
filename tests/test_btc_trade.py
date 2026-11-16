@@ -1133,6 +1133,7 @@ def test_ai_exits_used_for_live_orders(env, monkeypatch):
 
 def test_fixed_exits_skip_ai_and_use_3pct_tp3(env, monkeypatch):
     monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "fixed")  # 옛 고정 익절 규칙(되돌림 스위치)
     live(env)
     AI_ANSWER["text"] = '{"stop_pct": 1.0, "tp_pct": 1.0, "reason": "좁게"}'
     ex = FakeExchange()
@@ -1157,6 +1158,7 @@ def test_fixed_exits_skip_ai_and_use_3pct_tp3(env, monkeypatch):
 def test_fixed_tp_backfilled_once_on_open_position(env, monkeypatch):
     """고정 익절 전에 연 포지션(익절 없음)에 다음 실행에서 +3% 익절을 한 번 건다."""
     monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "fixed")  # 옛 고정 익절 규칙(되돌림 스위치)
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
@@ -1198,6 +1200,7 @@ def _engine_long_tp10(ex: FakeExchange) -> dict:
 def test_fixed_tp_retargets_open_position_once(env, monkeypatch):
     """익절 값이 10%→3%로 바뀌면 보유 포지션의 옛 익절을 취소하고 새 값으로 건다(한 번만)."""
     monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "fixed")  # 옛 고정 익절 규칙(되돌림 스위치)
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
@@ -1218,6 +1221,7 @@ def test_fixed_tp_retargets_open_position_once(env, monkeypatch):
 def test_fixed_tp_retarget_past_price_takes_profit_with_limit(env, monkeypatch):
     """새 익절가를 이미 지났으면(-2021) 지정가 추격으로 익절하고 '익절'로 기록한다."""
     monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "fixed")  # 옛 고정 익절 규칙(되돌림 스위치)
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
@@ -3861,6 +3865,7 @@ def test_migration_places_new_limit_stop_before_cancelling_old(env, monkeypatch)
     """배포 직후: 옛 STOP_MARKET·TAKE_PROFIT_MARKET(closePosition) 포지션은 첫 실행에서 새 지정가
     손절을 먼저 걸고 걸린 것을 본 뒤 옛 손절을 취소, 옛 익절을 취소하고 새 지정가 익절을 건다."""
     monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "fixed")  # 옛 고정 익절 규칙(되돌림 스위치)
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
@@ -3933,6 +3938,7 @@ def test_stop_order_market_switch(env, monkeypatch):
     """STOP_ORDER = "market"이면 손절만 예전 STOP_MARKET(closePosition), 익절은 지정가 그대로."""
     monkeypatch.setattr(bt, "STOP_ORDER", "market")
     monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "fixed")  # 옛 고정 익절 규칙(되돌림 스위치)
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
@@ -4108,6 +4114,7 @@ def test_f4_triggered_tp_below_entry_stays_normal_position(env, monkeypatch):
     """익절이 걸렸는데 호가가 진입가보다 나쁘면 닫지 않는다: 남은 익절 주문을 지우고 평소
     포지션으로 둔다(손절 그대로, 익절은 다시 걸고, 알림 한 번, 매매 멈추지 않음)."""
     monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "fixed")  # 옛 고정 익절 규칙(되돌림 스위치)
     live(env)
     ex = FakeExchange()
     ex.leverage = 3
@@ -4356,3 +4363,352 @@ def test_schedule_down_neither_closes_nor_blocks(env, multi, monkeypatch):
     signals(monkeypatch, multi, {})
     bt.run(now=NOW.replace(minute=45), client=ex, market_=multi, send=env["send"])
     assert state()["position"]["symbol"] == "NVDAUSDT"
+
+
+# ------------------------------------------ 따라가는 손절 (사용자 2026-11-16 "B안")
+
+
+@pytest.fixture
+def trail(monkeypatch):
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "trail")
+
+
+def _bar(mk: FakeMarket, i: int, high=None, low=None, close=None) -> None:
+    r = mk.rows[i]
+    if high is not None:
+        r[2] = high
+    if low is not None:
+        r[3] = low
+    if close is not None:
+        r[4] = close
+
+
+def _new_algos(ex) -> list[dict]:
+    return [a for a in ex.algos.values() if a["algoStatus"] == "NEW"]
+
+
+def engine_short(ex: FakeExchange, qty=0.029, entry=100_000.0) -> dict:
+    ex.amt = -qty
+    bar = BAR - bt.BAR_MS * 8
+    sid = f"mnv-{bar // 60000}-s"
+    ex.algos[sid] = {
+        "clientAlgoId": sid,
+        "algoStatus": "NEW",
+        "triggerPrice": "103000.0",
+        "type": "STOP",
+        "side": "BUY",
+        "price": "103515.0",
+        "quantity": str(qty),
+    }
+    pos = {
+        "side": "short",
+        "qty": qty,
+        "entry": entry,
+        "stop": 103000.0,
+        "stop_id": sid,
+        "bar": bar,
+        "entry_ms": NOW_MS - 3_600_000,
+        "opened_at": "2026-11-08 21:30:20",
+        "mode": "live",
+        "order_style": bt.order_style(),
+    }
+    bt._save(bt.DIR / "state.json", {"position": pos, "last_bar": bar})
+    return pos
+
+
+def _rewind_trail(bar: int) -> None:
+    """다음 봉이 새로 마감한 것처럼: 이미 본 봉 표시를 되돌린다."""
+    st = state()
+    st["position"]["trail_ms"] = bar
+    bt._save(bt.DIR / "state.json", st)
+
+
+def test_trail_stop_math_and_rounding():
+    # 롱: +3% 닿으면 본전(틱 올림), 그 뒤 최고가 −3%. 숏은 반대(틱 내림)
+    assert bt.trail_stop("long", 100_000.0, 102_999.0, False, "0.10") == (False, None)
+    assert bt.trail_stop("long", 100_000.03, 103_000.1, False, "0.10") == (True, 100_000.1)
+    assert bt.trail_stop("long", 100_000.0, 106_000.0, True, "0.10") == (True, 102_820.0)
+    assert bt.trail_stop("short", 100_000.0, 97_000.0, False, "0.10") == (True, 99_910.0)
+    assert bt.trail_stop("short", 100_000.0, 101_000.0, True, "0.10") == (True, 100_000.0)
+
+
+def test_trail_entry_places_no_tp(env, trail, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    algos = [x for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
+    assert [(a["type"], a["triggerPrice"]) for a in algos] == [("STOP", "97000.0")]
+    pos = state()["position"]
+    assert pos["tp"] is None and pos.get("tp_id") is None and pos["tp_pct"] is None
+    assert any("3% 따라감" in m for m in env["sent"])
+
+
+def test_trail_activation_moves_stop_to_entry(env, trail, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    old = pos["stop_id"]
+    mk = FakeMarket()
+    _bar(mk, -1, high=103_000.0, close=102_500.0)
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    p = state()["position"]
+    assert p["trail"] and p["best"] == 103_000.0 and p["stop"] == 100_000.0
+    # 새 손절을 먼저 걸고 그다음 옛 손절 취소
+    w = [(m, x.get("clientAlgoId")) for m, path, x in ex.writes if path == "/fapi/v1/algoOrder"]
+    assert w == [("POST", p["stop_id"]), ("DELETE", old)]
+    assert len(p["stop_id"]) <= 36 and p["stop_id"] != old
+    new = ex.algos[p["stop_id"]]
+    assert new["type"] == "STOP" and new["triggerPrice"] == "100000.0"
+    assert new["price"] == "99500.0" and new["quantity"] == "0.029"
+    assert ex.algos[old]["algoStatus"] == "CANCELED"
+    assert any("+3% 도달" in m and "본전" in m for m in env["sent"])
+
+
+def test_trail_raises_and_never_loosens_long(env, trail, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    mk = FakeMarket()
+    _bar(mk, -1, high=103_000.0, close=102_500.0)
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    _rewind_trail(BAR - bt.BAR_MS)
+    _bar(mk, -1, high=106_000.0, close=105_000.0)
+    run(env, ex, mk)
+    p = state()["position"]
+    assert p["stop"] == 102_820.0 and p["best"] == 106_000.0
+    assert [a["triggerPrice"] for a in _new_algos(ex)] == ["102820.0"]
+    assert any("따라 올림" in m for m in env["sent"])
+    n = len(ex.writes)
+    _rewind_trail(BAR - bt.BAR_MS)
+    _bar(mk, -1, high=104_000.0, close=103_500.0)  # 내려와도 손절은 그대로
+    run(env, ex, mk)
+    assert state()["position"]["stop"] == 102_820.0 and len(ex.writes) == n
+
+
+def test_trail_short_moves_down_and_never_loosens(env, trail, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_short(ex)
+    mk = FakeMarket()
+    _bar(mk, -1, low=97_000.0, close=97_500.0)
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    assert state()["position"]["stop"] == 99_910.0  # 최저가 +3%가 본전보다 좋다
+    _rewind_trail(BAR - bt.BAR_MS)
+    _bar(mk, -1, low=95_000.0, close=95_500.0)
+    run(env, ex, mk)
+    assert state()["position"]["stop"] == 97_850.0
+    n = len(ex.writes)
+    _rewind_trail(BAR - bt.BAR_MS)
+    _bar(mk, -1, low=96_000.0, close=96_500.0)
+    run(env, ex, mk)
+    assert state()["position"]["stop"] == 97_850.0 and len(ex.writes) == n
+    assert [(a["side"], a["triggerPrice"]) for a in _new_algos(ex)] == [("BUY", "97850.0")]
+
+
+def test_trail_stop_fill_recorded_as_trail(env, trail, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    mk = FakeMarket()
+    _bar(mk, -1, high=106_000.0, close=105_000.0)
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    p = state()["position"]
+    ex.trigger_stop(p["stop_id"], 102_820.0)
+    run(env, ex, mk)
+    c = jsonl("closed.jsonl")[-1]
+    assert c["why"] == "trail" and c["exit"] == 102_820.0
+    assert state()["position"] is None and not bt.entries_blocked()
+    assert any("따라간 손절 체결" in m for m in env["sent"])
+
+
+def test_trail_move_past_price_chases_close(env, trail, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    mk = FakeMarket()
+    _bar(mk, -1, high=103_000.0, close=99_800.0)  # 닿은 봉 종가가 벌써 본전 아래
+    ex.reject_stop = True  # 새 손절가를 이미 지나 거래소가 -2021로 거부
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    assert ex.amt == 0 and state()["position"] is None
+    assert jsonl("closed.jsonl")[-1]["why"] == "trail"
+    assert any("이미 지났어요" in m for m in env["sent"])
+
+
+def test_trail_tp_custom_position_untouched(env, trail, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    tid = f"mnv-{pos['bar'] // 60000}-t"
+    ex.algos[tid] = {
+        "clientAlgoId": tid,
+        "algoStatus": "NEW",
+        "triggerPrice": "104800.0",
+        "type": "TAKE_PROFIT",
+        "side": "SELL",
+        "price": "104800.0",
+        "quantity": "0.029",
+    }
+    st = state()
+    st["position"].update(tp=104_800.0, tp_id=tid, tp_pct=3.0, tp_custom=True)
+    bt._save(bt.DIR / "state.json", st)
+    mk = FakeMarket()
+    _bar(mk, -1, high=104_000.0, close=103_900.0)
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    p = state()["position"]
+    assert not ex.writes
+    assert p["tp"] == 104_800.0 and p["tp_id"] == tid and p["stop"] == 97_000.0
+    assert not p.get("trail") and ex.algos[tid]["algoStatus"] == "NEW"
+
+
+def _legacy_tp(ex, pos, tp: float) -> str:
+    tid = f"mnv-{pos['bar'] // 60000}-t"
+    ex.algos[tid] = {
+        "clientAlgoId": tid,
+        "algoStatus": "NEW",
+        "triggerPrice": str(tp),
+        "type": "TAKE_PROFIT",
+        "side": "SELL",
+        "price": str(tp),
+        "quantity": "0.029",
+    }
+    st = state()
+    st["position"].update(tp=tp, tp_id=tid, tp_pct=3.0)
+    bt._save(bt.DIR / "state.json", st)
+    return tid
+
+
+def test_trail_legacy_tp_position_converted(env, trail, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    tid = _legacy_tp(ex, pos, 103_000.0)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    p = state()["position"]
+    assert p["tp"] is None and p["tp_id"] is None and not p["trail"]
+    assert ex.algos[tid]["algoStatus"] == "CANCELED"
+    assert [a["type"] for a in _new_algos(ex)] == ["STOP"]
+    assert any("익절" in m and "새 규칙" in m for m in env["sent"])
+    n = len(ex.writes)
+    run(env, ex)  # 다음 실행: 익절을 다시 걸지 않는다
+    assert len(ex.writes) == n
+
+
+def test_trail_hand_edited_tp_is_kept_as_custom(env, trail, monkeypatch):
+    # tp_custom 표시가 없어도 익절가가 엔진 계산값(+3%)이 아니면 사용자 값으로 보고 둔다
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    tid = _legacy_tp(ex, pos, 104_500.0)
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    p = state()["position"]
+    assert p["tp_custom"] and p["tp"] == 104_500.0 and p["tp_id"] == tid
+    assert ex.algos[tid]["algoStatus"] == "NEW" and not ex.writes
+
+
+def test_trail_guard_keeps_fixed_tp(env, trail, multi, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = MultiExchange()
+    held_btc_long(ex)
+    ex.amts["ETHUSDT"] = 0.5
+    signals(monkeypatch, multi, {})
+    mrun(env, ex, multi)
+    g = state()["guards"]["ETHUSDT"]
+    assert g["stop"] == 2910.0 and g["tp"] == 3090.0
+    eth = [a for a in ex.algos.values() if a["clientAlgoId"] in (g["stop_id"], g["tp_id"])]
+    assert sorted(a["type"] for a in eth) == ["STOP", "TAKE_PROFIT"]
+
+
+def test_trail_adopted_manual_position_has_no_tp(env, trail, monkeypatch):
+    monkeypatch.setattr(bt, "MANUAL_ADOPT", True)
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    ex.amt = 0.02
+    ex.entry_px = 100_000.0
+    with_signal(monkeypatch, None)
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["manual"] and pos["stop"] == 97000.0 and pos["tp"] is None
+    assert [a["type"] for a in _new_algos(ex)] == ["STOP"]
+    assert any("이어받아" in m and "따라감" in m for m in env["sent"])
+
+
+def test_trail_dry_run_mirrors_live(env, trail, monkeypatch):
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long", bar=BAR - bt.BAR_MS * 3)
+    mk = FakeMarket()
+    run(env, ex, mk)
+    p = state()["position"]
+    assert p["tp"] is None and p["stop"] == 97_000.0
+    _bar(mk, -2, high=103_500.0, close=103_000.0)  # +3% 닿음 → 본전
+    # 손절 = max(본전, 103500 × 0.97 = 100395). 다음 봉 시가 100000이 이미 아래 → 시가에 체결
+    _bar(mk, -1, low=99_000.0)
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    c = jsonl("closed.jsonl")[-1]
+    assert c["why"] == "trail" and c["exit"] == 100_000.0 and state()["position"] is None
+    acts = [d["action"] for d in jsonl("dry.jsonl")]
+    assert "trail_move" in acts and "trail_fill" in acts
+    assert not ex.writes
+
+
+def test_trail_dry_activation_bar_close_beyond_stop_closes(env, trail, monkeypatch):
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long", bar=BAR - bt.BAR_MS * 3)
+    mk = FakeMarket()
+    run(env, ex, mk)
+    _bar(mk, -2, high=103_500.0, close=99_900.0)
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    c = jsonl("closed.jsonl")[-1]
+    # 손절 = max(본전, 103500 × 0.97 = 100395): 그 봉 종가가 밖이라 새 손절가에서 닫는다
+    assert c["why"] == "trail" and c["exit"] == 100_395.0
+
+
+def test_exit_rule_fixed_restores_tp(env, monkeypatch):
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "fixed")
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    assert state()["position"]["tp"] == 103_000.0
+    assert sorted(a["type"] for a in _new_algos(ex)) == ["STOP", "TAKE_PROFIT"]
+
+
+def test_trail_unconfirmed_move_reused_next_run(env, trail, monkeypatch):
+    # 새 손절 확인이 늦으면 옛 손절을 두고, 다음 실행에서 걸려 있던 새 손절을 다시 쓴다(쌓지 않음)
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    old = pos["stop_id"]
+    mk = FakeMarket()
+    _bar(mk, -1, high=103_000.0, close=102_500.0)
+    real = bt.stop_placed
+    lag = {"on": True}
+    monkeypatch.setattr(bt, "stop_placed", lambda c, r, cid: not lag["on"] and real(c, r, cid))
+    with_signal(monkeypatch, None)
+    run(env, ex, mk)
+    p = state()["position"]
+    assert p["stop_id"] == old and p["stop"] == 97_000.0 and p["trail"]
+    assert ex.algos[old]["algoStatus"] == "NEW"
+    lag["on"] = False
+    n_posts = sum(1 for m, path, _ in ex.writes if m == "POST")
+    run(env, ex, mk)
+    p = state()["position"]
+    assert p["stop"] == 100_000.0 and ex.algos[old]["algoStatus"] == "CANCELED"
+    assert sum(1 for m, path, _ in ex.writes if m == "POST") == n_posts
+    assert [a["triggerPrice"] for a in _new_algos(ex)] == ["100000.0"]

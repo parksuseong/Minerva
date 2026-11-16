@@ -133,6 +133,19 @@ AI_EXITS = False
 # 2026-11-13 19:50 사용자 "익절도 손절과 동일하게 하자, 10프로(3배니까 30프로)는 너무 과하다" → 3%.
 # 지금 매매 7종목 백테스트: 최근 6개월 중간값 +69%(10%) → +21%(3%), 1년 평균은 +17% → +16%로 비슷.
 FIXED_TP_PCT = 3.0
+# 엔진 포지션 청산 규칙(사용자 2026-11-16 18:22 "B안"). "trail"이면 익절 주문 없이 손절 3%만 걸고,
+# 진입 뒤 마감한 15분봉의 최고가(숏은 최저가)가 진입가 +TRAIL_ACTIVATE_PCT%에 닿으면 손절을
+# 진입가 +TRAIL_LOCK_PCT%(본전)로 올리고, 그 뒤로는 최고가에서 TRAIL_PCT% 뒤를 따라 올린다(내리지
+# 않음). 실행마다(15분) 새 손절을 먼저 걸고 확인한 뒤 옛 손절을 취소한다(trail_live).
+# 백테스트(7종목 최근 6개월): 트레일 +238% vs 고정 +3% 익절 +60%. 다만 그 전 구간은 더 나빴다
+# (장세 의존, 사용자가 알고 고름). "fixed"로 바꾸면 예전 고정 익절(FIXED_TP_PCT)로 돌아간다.
+# 사용자가 손으로 정한 익절(포지션 tp_custom)은 어느 규칙이든 그대로 둔다. 지킴(guards)은 늘 고정.
+# 손절을 옮길 때 새 손절을 먼저 걸고 옛 것을 지우므로 지정가 손절(STOP_ORDER = "limit")이어야 한다
+# (시장가 closePosition 손절은 같은 방향 두 개를 못 걸어 -4130으로 옮기지 못하고 옛 손절이 남는다).
+EXIT_RULE = "trail"
+TRAIL_ACTIVATE_PCT = 3.0
+TRAIL_LOCK_PCT = 0.0
+TRAIL_PCT = 3.0
 # 수동 포지션 이어받기(사용자 2026-11-13 "수동으로 포지션 정리하거나 사면 주기적으로
 # 확인해. 수동으로 샀어도 알아서 손절과 익절해야 해"). 실행마다(15분) 계좌 전체를 본다.
 # - 엔진이 빈손인데 포지션이 보이면 이어받아 손절 3%·익절(FIXED_TP_PCT)을 걸고
@@ -671,6 +684,53 @@ def tp_price(side: str, entry: float, tick: str, pct: float) -> Decimal:
     if side == "long":
         return _round(round(entry * (1 + pct), 10), tick, ROUND_CEILING)
     return _round(round(entry * (1 - pct), 10), tick, ROUND_FLOOR)
+
+
+def trail_rule() -> bool:
+    """엔진 포지션이 고정 익절 대신 따라가는 손절을 쓰나(AI 청산이 켜져 있으면 쓰지 않는다)."""
+    return EXIT_RULE == "trail" and not AI_EXITS
+
+
+def fixed_tp_pct() -> float | None:
+    """새 엔진 포지션의 고정 익절 %(따라가는 손절이면 None)."""
+    return None if trail_rule() else (FIXED_TP_PCT or None)
+
+
+def trails(pos: dict | None) -> bool:
+    """이 포지션이 따라가는 손절 규칙을 따르나: 규칙이 켜져 있고, 익절이 없고, 손으로 정한 익절이
+    아니다(옛 익절 주문이 남은 포지션은 _to_trail이 먼저 거둔다)."""
+    return bool(pos) and trail_rule() and not pos.get("tp_custom") and not pos.get("tp")
+
+
+def trail_text() -> str:
+    return (
+        f"익절 없음 · +{TRAIL_ACTIVATE_PCT:g}% 닿으면 본전"
+        + (f"+{TRAIL_LOCK_PCT:g}%" if TRAIL_LOCK_PCT else "")
+        + f" → {TRAIL_PCT:g}% 따라감"
+    )
+
+
+def trail_stop(side: str, entry: float, best: float, on: bool, tick: str | None):
+    """(켜짐, 따라가는 손절가 또는 None). best는 진입 뒤 가장 좋았던 가격(롱 최고가, 숏 최저가).
+    켜지면 손절 = max(진입가 +잠금%, best −TRAIL_PCT%)(숏은 반대). 틱은 계산값보다 느슨해지지
+    않게(롱 올림, 숏 내림) 맞춘다: 본전 잠금이 진입가 아래로 한 틱 밀리지 않는다.
+    tick이 None이면 맞추지 않는다(드라이런에서 거래 규칙을 못 읽을 때)."""
+    long_ = side == "long"
+    sign = 1 if long_ else -1
+    act = entry * (1 + sign * TRAIL_ACTIVATE_PCT / 100)
+    on = on or (best >= act if long_ else best <= act)
+    if not on:
+        return False, None
+    lock = entry * (1 + sign * TRAIL_LOCK_PCT / 100)
+    follow = best * (1 - sign * TRAIL_PCT / 100)
+    raw = max(lock, follow) if long_ else min(lock, follow)
+    if tick is None:
+        return True, raw
+    return True, float(_round(round(raw, 10), tick, ROUND_CEILING if long_ else ROUND_FLOOR))
+
+
+def _tighter(side: str, new: float, old: float) -> bool:
+    return new > old + 1e-12 if side == "long" else new < old - 1e-12
 
 
 def position_amt(client) -> float:
@@ -1301,6 +1361,7 @@ def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None,
     label = {
         "signal": "반대 신호 청산",
         "stop": "손절 체결",
+        "trail": "따라간 손절 체결",
         "tp": "익절 체결",
         "manual": "수동·강제 청산",
         "protect": "손절 실패로 청산",
@@ -1317,23 +1378,87 @@ def _triggered(st: dict | None) -> bool:
     return bool(st) and st.get("algoStatus") not in ("NEW", "CANCELED", "EXPIRED", "REJECTED")
 
 
+def _tick_or_none(ctx: Ctx) -> str | None:
+    try:
+        return filters(ctx.client)["tick"]
+    except (Rejected, NetworkError, OSError, ValueError, KeyError):
+        return None
+
+
+def _trail_bar(pos: dict, h: float, lo: float, tick: str | None) -> float | None:
+    """봉 하나로 best·켜짐을 고치고, 손절이 더 좋아지면 그 값(아니면 None).
+    손절가 자체는 바꾸지 않는다."""
+    long_ = pos["side"] == "long"
+    best = float(pos.get("best") or pos["entry"])
+    best = max(best, h) if long_ else min(best, lo)
+    pos["best"] = best
+    on, new = trail_stop(pos["side"], float(pos["entry"]), best, bool(pos.get("trail")), tick)
+    if on and not pos.get("trail"):
+        pos["trail"] = True
+        pos["trail_on_best"] = best
+    if new is not None and _tighter(pos["side"], new, float(pos["stop"])):
+        return new
+    return None
+
+
+def _trail_move_text(ctx: Ctx, pos: dict, old: float, new: float, first: bool) -> str:
+    name = _name(pos_symbol(pos))
+    if first:
+        lock = abs(new / float(pos["entry"]) - 1) * 100 <= TRAIL_LOCK_PCT + 0.05
+        where = "본전 " if lock and not TRAIL_LOCK_PCT else ""
+        return (
+            f"🪜 {name} +{TRAIL_ACTIVATE_PCT:g}% 도달 → 손절을 {where}{_px(new)}로 "
+            f"(전 {_px(old)}, 최고 {_px(pos['best'])})"
+        )
+    return f"🪜 {name} 손절 따라 올림 {_px(old)} → {_px(new)} (최고 {_px(pos['best'])})"
+
+
 def reconcile_dry(ctx: Ctx, state: dict, rows15: list[list], now_ms: int) -> None:
     """드라이런 가상 포지션의 손절·익절: 진입 뒤 마감된 봉의 고가·저가가 닿았나.
-    한 봉에 둘 다 닿으면 손절로 본다(보수적)."""
+    한 봉에 둘 다 닿으면 손절로 본다(보수적). 따라가는 손절(trails)은 백테스트와 같은 순서:
+    봉마다 지금 손절을 먼저 보고, 그다음 최고가(숏은 최저가)로 손절을 옮기고, 그 봉 종가가 이미
+    새 손절 밖이면 새 손절가에서 닫는다."""
     pos = state.get("position")
     if not pos:
         return
     sign = 1 if pos["side"] == "long" else -1
     tp = pos.get("tp")
+    follow = trails(pos)
+    tick = _tick_or_none(ctx) if follow else None
+    moved: tuple[float, float, bool] | None = None
     for r in rows15:
         if int(r[0]) <= pos["bar"] or int(r[6]) >= now_ms or int(r[0]) <= pos.get("checked", 0):
             continue
-        o, h, lo = float(r[1]), float(r[2]), float(r[3])
+        o, h, lo, c = float(r[1]), float(r[2]), float(r[3]), float(r[4])
         pos["checked"] = int(r[0])
+        stop_why = "trail" if pos.get("trail") else "stop"
         if (lo <= pos["stop"]) if sign > 0 else (h >= pos["stop"]):
-            px, why = (min(o, pos["stop"]) if sign > 0 else max(o, pos["stop"])), "stop"
+            px, why = (min(o, pos["stop"]) if sign > 0 else max(o, pos["stop"])), stop_why
         elif tp and ((h >= tp) if sign > 0 else (lo <= tp)):
             px, why = (max(o, tp) if sign > 0 else min(o, tp)), "tp"
+        elif follow:
+            first = not pos.get("trail")
+            new = _trail_bar(pos, h, lo, tick)
+            if new is None:
+                continue
+            old = float(pos["stop"])
+            moved = (moved[0] if moved else old, new, bool(moved and moved[2]) or first)
+            pos["stop"] = new
+            _append(
+                "dry.jsonl",
+                {
+                    "at": _now_iso(ctx.now),
+                    "symbol": pos_symbol(pos),
+                    "action": "trail_move",
+                    "old": old,
+                    "stop": new,
+                    "best": pos["best"],
+                    "bar": _bar_txt(int(r[0])),
+                },
+            )
+            if not ((c <= new) if sign > 0 else (c >= new)):
+                continue
+            px, why = new, "trail"
         else:
             continue
         pnl = sign * pos["qty"] * (px - pos["entry"]) - pos["qty"] * (pos["entry"] + px) * TAKER_FEE
@@ -1351,6 +1476,8 @@ def reconcile_dry(ctx: Ctx, state: dict, rows15: list[list], now_ms: int) -> Non
         state["position"] = None
         _record_close(ctx, pos, px, pnl, why)
         return
+    if moved:
+        ctx.say(_trail_move_text(ctx, pos, moved[0], moved[1], moved[2]))
 
 
 def _reuse_open_stop(ctx: Ctx, pos: dict, algos: list[dict], qty: float) -> str | None:
@@ -1442,7 +1569,7 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True, qty: float | None =
                     f"✂️ {_name(ctx.symbol)} 이미 손절가 {_px(pos['stop'])}를 지났어요 "
                     "→ 지정가로 닫아요"
                 )
-                protect_close(ctx, state, "stop")
+                protect_close(ctx, state, "trail" if pos.get("trail") else "stop")
             else:
                 ctx.say(f"❌ 손절 재설정 실패({why}) → 지정가로 닫아요")
                 protect_close(ctx, state, "protect")
@@ -1736,10 +1863,14 @@ def protect_close(ctx: Ctx, state: dict, why: str) -> None:
     _finish_close(ctx, state, (state.get("closing") or {}).get("why") or why)
 
 
-def _manual_levels(ctx: Ctx, side: str, entry: float) -> tuple[float, float | None]:
+def _manual_levels(
+    ctx: Ctx, side: str, entry: float, with_tp: bool = True
+) -> tuple[float, float | None]:
+    """손절 3%·고정 익절. with_tp=False면 익절 없음(이어받은 엔진 포지션의 따라가는 손절)."""
     tick = filters(ctx.client)["tick"]
     stop = float(stop_price(side, entry, tick, STOP_PCT))
-    tp = float(tp_price(side, entry, tick, FIXED_TP_PCT / 100)) if FIXED_TP_PCT else None
+    pct = FIXED_TP_PCT if with_tp else None
+    tp = float(tp_price(side, entry, tick, pct / 100)) if pct else None
     return stop, tp
 
 
@@ -1813,7 +1944,7 @@ def adopt_manual(ctx: Ctx, state: dict, row: dict, why: str) -> dict | None:
     side = "long" if row["amt"] > 0 else "short"
     entry = float(row["entry"])
     try:
-        stop, tp = _manual_levels(ctx, side, entry)
+        stop, tp = _manual_levels(ctx, side, entry, with_tp=not trail_rule())
     except (Rejected, NetworkError, OSError, ValueError, KeyError):
         return None
     minute = ctx.now_ms - ctx.now_ms % 60_000
@@ -1827,7 +1958,7 @@ def adopt_manual(ctx: Ctx, state: dict, row: dict, why: str) -> dict | None:
         "stop_pct": STOP_PCT * 100,
         "tp": tp,
         "tp_id": None,
-        "tp_pct": FIXED_TP_PCT or None,
+        "tp_pct": FIXED_TP_PCT if tp else None,
         "ai_reason": "수동 포지션 이어받음",
         "bar": minute,
         # 손절·익절 ID가 신호 진입(시도 1~3)·앞 이어받기와 겹치지 않게(같은 분에 다시 해도)
@@ -1853,6 +1984,8 @@ def adopt_manual(ctx: Ctx, state: dict, row: dict, why: str) -> dict | None:
         event="adopt_manual", symbol=ctx.symbol, side=side, qty=pos["qty"], entry=entry, why=why
     )
     tp_txt = f", 익절 {_px(tp)}(+{FIXED_TP_PCT:g}%)" if tp else ""
+    if trails(pos):
+        tp_txt = f", {trail_text()}"
     ctx.say(
         f"🤝 {why}: {_who(ctx.symbol, side)} {pos['qty']} {_name(ctx.symbol)} @ {_px(entry)}를 "
         f"이어받아 관리해요. 손절 {_px(stop)}(−{STOP_PCT * 100:g}%){tp_txt}"
@@ -1946,6 +2079,8 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
                 why = "stop"
             elif pos.get("tp") and abs(px / pos["tp"] - 1) < 0.005:
                 why = "tp"
+        if why == "stop" and pos.get("trail"):
+            why = "trail"  # 따라 올린 손절이 체결됐다
         state["position"] = None
         state.pop("pending", None)
         state.pop("closing", None)
@@ -1996,6 +2131,8 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
                 f"⚡ {_who(ctx.symbol, pos['side'])} {name} 지정가가 걸렸는데 포지션이 남아 "
                 f"있어요({amt:+}) → 지금 호가로 쫓아 닫아요"
             )
+            if label == "stop" and pos.get("trail"):
+                label = "trail"
             protect_close(ctx, state, label)
             return state.get("position") is None
     cancel_engine_entries(c)  # 남은 진입 지정가가 체결되면 수량이 어긋난다
@@ -2050,6 +2187,7 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
         return False
     state.pop("foreign_key", None)
     _migrate_exits(ctx, state)
+    _to_trail(ctx, state)
     _backfill_tp(ctx, state)
     _retarget_tp(ctx, state)
     return ensure_stop(ctx, state)
@@ -2157,11 +2295,166 @@ def _migrate_exits(ctx: Ctx, state: dict) -> None:
     )
 
 
+def _engine_tp(pos: dict, tick: str) -> bool:
+    """익절가가 엔진 규칙으로 계산한 값(진입가 × tp_pct)인가. 아니면 사용자가 손으로 바꾼 값으로
+    본다(tp_custom 표시가 빠져 있어도 사용자 익절을 지우지 않게)."""
+    pct = pos.get("tp_pct")
+    if not pct or not pos.get("tp"):
+        return False
+    want = float(tp_price(pos["side"], float(pos["entry"]), tick, float(pct) / 100))
+    return abs(want - float(pos["tp"])) <= float(tick) * 1.01
+
+
+def _to_trail(ctx: Ctx, state: dict) -> None:
+    """따라가는 손절 규칙 전에 연 엔진 포지션(고정 익절 주문 있음)을 새 규칙으로 바꾼다: 익절 주문을
+    취소하고 익절을 지운다(다음 trail_live가 진입 뒤 봉으로 손절을 옮긴다). tp_custom(사용자가
+    정한 익절)은 그대로 둔다. 익절가가 엔진 계산값이 아니면 손으로 정한 것으로 보고 tp_custom을
+    붙여 그대로 둔다. 취소가 거부·통신 실패면 다음 실행에서 다시."""
+    pos = state["position"]
+    if not trail_rule() or pos.get("tp_custom") or not pos.get("tp"):
+        return
+    try:
+        tick = filters(ctx.client)["tick"]
+    except (Rejected, NetworkError, OSError, ValueError, KeyError):
+        return
+    name = _name(pos_symbol(pos))
+    if not _engine_tp(pos, tick):
+        pos["tp_custom"] = True
+        _save(DIR / "state.json", state)
+        ctx.event(event="tp_custom_kept", symbol=pos_symbol(pos), tp=pos["tp"])
+        ctx.say(f"🎯 {name} 익절 {_px(pos['tp'])}은 손으로 정한 값으로 보고 그대로 둬요")
+        return
+    tid = pos.get("tp_id")
+    if tid:
+        try:
+            _delete(ctx.client, "/fapi/v1/algoOrder", {"clientAlgoId": tid})
+            _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel": tid})
+        except Rejected as e:
+            if e.code not in NOT_FOUND:
+                ctx.event(event="to_trail_cancel_failed", cid=tid, error=str(e))
+                return
+        except NetworkError as e:
+            ctx.event(event="to_trail_cancel_failed", cid=tid, error=str(e))
+            return
+    was = pos["tp"]
+    pos.update(tp=None, tp_id=None, tp_pct=None, trail=bool(pos.get("trail")))
+    pos.setdefault("best", float(pos["entry"]))
+    _save(DIR / "state.json", state)
+    ctx.event(event="to_trail", symbol=pos_symbol(pos), old_tp=was, tp_id=tid)
+    ctx.say(f"🪜 {name} 익절 {_px(was)} 주문을 거두고 새 규칙으로: {trail_text()}")
+
+
+def _move_stop(ctx: Ctx, state: dict, new: float, first: bool) -> None:
+    """손절을 new로 옮긴다: 새 지정가 손절을 먼저 걸고 걸린 것을 확인한 뒤에만 옛 손절을 취소한다
+    (손절 없는 틈을 만들지 않음, _migrate_exits와 같은 순서). 앞 실행이 걸었지만 확인 못 한 같은
+    값의 손절이 있으면 그걸 쓴다(_reuse_open_stop). 새 손절가를 이미 지났으면(-2021·-4142) 지정가
+    추격으로 닫는다. 다른 실패면 옛 손절을 두고 다음 실행에서 다시."""
+    pos = state["position"]
+    c = ctx.client
+    old_id, old_px = pos.get("stop_id"), float(pos["stop"])
+    qty = pos["qty"]
+    cid = None
+    algos: list[dict] = []
+    try:
+        algos = [a for a in open_algos(c) if a.get("clientAlgoId") != old_id]
+        cid = _reuse_open_stop(ctx, {**pos, "stop": new}, algos, qty)
+        ok = bool(cid)
+        if not cid:
+            n = pos.get("stop_n", 0) + 1
+            cid = _pos_cid(pos, "s", n)
+            pos["stop_n"] = n
+            _save(DIR / "state.json", state)
+            r = place_stop(c, pos["side"], Decimal(str(new)), cid, STOP_KIND, qty)
+            ok = stop_placed(c, r, cid)
+    except Rejected as e:
+        if e.code in WOULD_TRIGGER:
+            why = "trail" if pos.get("trail") else "stop"
+            ctx.event(event="trail_would_trigger", symbol=pos_symbol(pos), stop=new, old=old_px)
+            ctx.say(
+                f"🪜 {_name(pos_symbol(pos))} 새 손절가 {_px(new)}를 이미 지났어요 "
+                f"(최고 {_px(pos.get('best') or pos['entry'])}) → 지정가로 닫아요"
+            )
+            protect_close(ctx, state, why)
+            return
+        ctx.event(event="trail_move_failed", symbol=pos_symbol(pos), stop=new, error=str(e))
+        return
+    except NetworkError as e:
+        try:
+            ok = bool(cid) and stop_is_open(c, cid)
+        except (Rejected, NetworkError):
+            ok = False
+        if not ok:
+            ctx.event(event="trail_move_failed", symbol=pos_symbol(pos), stop=new, error=str(e))
+            return
+    if not ok:
+        ctx.event(event="trail_move_unconfirmed", symbol=pos_symbol(pos), cid=cid, stop=new)
+        return
+    pos.update(stop=new, stop_id=cid)
+    _save(DIR / "state.json", state)
+    # 옛 손절과, 앞 실행에서 확인 못 한 채 남은 이 포지션의 다른 손절(<봉>-s…)을 거둔다
+    prefix = _cid(pos["bar"], "s", pos_symbol(pos))
+    stale = [old_id] + [
+        a.get("clientAlgoId")
+        for a in algos
+        if str(a.get("clientAlgoId", "")).startswith(prefix)
+        and (a.get("algoStatus") or "NEW") == "NEW"
+    ]
+    for sid in dict.fromkeys(x for x in stale if x and x not in ("user", cid)):
+        try:
+            _delete(c, "/fapi/v1/algoOrder", {"clientAlgoId": sid})
+            _append("orders.jsonl", {"at": _now_iso(datetime.now(KST)), "cancel": sid})
+        except Rejected as e:
+            if e.code not in NOT_FOUND:
+                ctx.event(event="trail_cancel_failed", cid=sid, error=str(e))
+        except NetworkError as e:
+            # 남아도 더 느슨한 reduceOnly 손절이라 위험하지 않고, 청산 뒤 거둔다
+            ctx.event(event="trail_cancel_failed", cid=sid, error=str(e))
+    ctx.event(
+        event="trail_move", symbol=pos_symbol(pos), old=old_px, stop=new, best=pos.get("best")
+    )
+    ctx.say(_trail_move_text(ctx, pos, old_px, new, first))
+
+
+def trail_live(ctx: Ctx, state: dict) -> None:
+    """실전 엔진 포지션의 따라가는 손절(실행마다 한 번, 대사 뒤). 진입 뒤 마감한 15분봉 고가·저가로
+    best와 켜짐을 고치고, 손절이 더 좋아지면 거래소 손절을 옮긴다. 지금 손절에 닿았는지는 거래소
+    손절이 본다(체결되면 대사가 trail로 적는다). 봉은 체결가 기준, 손절 발동은 마크 가격
+    기준이다."""
+    pos = state.get("position")
+    if not trails(pos) or state.get("closing"):
+        return
+    tick = _tick_or_none(ctx)
+    if tick is None:
+        return  # 틱을 모르면 옮기지 않는다(다음 실행에서)
+    first = not pos.get("trail")
+    new = None
+    seen = int(pos.get("trail_ms") or pos["bar"])
+    for r in ctx.rows15:
+        if int(r[0]) <= seen or int(r[6]) >= ctx.now_ms:
+            continue
+        got = _trail_bar(pos, float(r[2]), float(r[3]), tick)
+        new = got if got is not None else new
+        pos["trail_ms"] = int(r[0])
+    if pos.get("trail") and new is None:
+        # 앞 실행에서 못 옮긴 값(실패·미확인)이면 지금 best로 다시 계산해 다시 건다
+        _, again = trail_stop(pos["side"], float(pos["entry"]), float(pos["best"]), True, tick)
+        if again is not None and _tighter(pos["side"], again, float(pos["stop"])):
+            new = again
+    _save(DIR / "state.json", state)
+    if new is None:
+        return
+    if first and pos.get("trail"):
+        ctx.event(event="trail_on", symbol=pos_symbol(pos), best=pos["best"], entry=pos["entry"])
+    _move_stop(ctx, state, new, first)
+
+
 def _backfill_tp(ctx: Ctx, state: dict) -> None:
     """고정 익절이 생기기 전에 연 엔진 포지션에 익절가를 한 번 정해 둔다(ensure_stop이 건다).
     실패해 지워져도 다시 하지 않는다(tp_backfilled)."""
     pos = state["position"]
-    if AI_EXITS or not FIXED_TP_PCT or pos.get("tp") or pos.get("tp_backfilled"):
+    if AI_EXITS or trail_rule() or not FIXED_TP_PCT or pos.get("tp") or pos.get("tp_backfilled"):
+        return
+    if pos.get("tp_custom"):
         return
     try:
         tick = filters(ctx.client)["tick"]
@@ -2183,8 +2476,10 @@ def _retarget_tp(ctx: Ctx, state: dict) -> None:
     ensure_stop이 지정가 추격으로 익절한다. 취소가 통신 실패면 다음 실행에서 다시 한다."""
     pos = state["position"]
     old = pos.get("tp_pct")
-    if AI_EXITS or not FIXED_TP_PCT or not pos.get("tp") or old is None:
+    if AI_EXITS or trail_rule() or not FIXED_TP_PCT or not pos.get("tp") or old is None:
         return
+    if pos.get("tp_custom"):
+        return  # 사용자가 손으로 정한 익절은 건드리지 않는다
     if float(old) == FIXED_TP_PCT:
         return
     try:
@@ -2447,12 +2742,13 @@ def market_kind(flt: dict) -> str | None:
 def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
     """Claude에게 손절·익절 폭을 묻는다. 무엇이 잘못돼도 기본값(3%, 익절 없음)."""
     if not AI_EXITS:
-        tp_pct = FIXED_TP_PCT or None
-        reason = (
-            f"고정 규칙(손절 3%·익절 +{tp_pct:g}%, 증거금 약 +{tp_pct * LEVERAGE:g}%)"
-            if tp_pct
-            else "고정 규칙(손절 3%·익절 없음)"
-        )
+        tp_pct = fixed_tp_pct()
+        if tp_pct:
+            reason = f"고정 규칙(손절 3%·익절 +{tp_pct:g}%, 증거금 약 +{tp_pct * LEVERAGE:g}%)"
+        elif trail_rule():
+            reason = f"고정 규칙(손절 3%·{trail_text()})"
+        else:
+            reason = "고정 규칙(손절 3%·익절 없음)"
         used = {"stop_pct": STOP_PCT * 100, "tp_pct": tp_pct, "reason": reason}
         # 화면의 손절·익절 결정 목록이 옛 AI 답만 보이지 않게 고정 규칙도 같은 이벤트로 남긴다
         ctx.event(
@@ -2992,7 +3288,12 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
 
     def exits_text(stop: float, tp: float | None) -> str:
         t = f"손절 {_px(stop)} (−{used['stop_pct']:g}%)"
-        t += f" · 익절 {_px(tp)} (+{used['tp_pct']:g}%)" if tp else " · 익절 없음(반대 신호까지)"
+        if tp:
+            t += f" · 익절 {_px(tp)} (+{used['tp_pct']:g}%)"
+        elif trail_rule():
+            t += f" · {trail_text()}"
+        else:
+            t += " · 익절 없음(반대 신호까지)"
         return t
 
     def fill_line(f: dict) -> str:
@@ -4062,6 +4363,7 @@ def run(
         state["position"] = None
 
     can_trade = True
+    rec_ok = False
     held = held_symbol(state)
     if live:
         # 시세가 막혀도 손절 확인·체결 대사는 먼저 한다
@@ -4074,7 +4376,8 @@ def run(
             # 대사보다 먼저 봐서 이번 실행에 새로 생긴 것은 다음 실행부터 센다
             if state.get("liq_recheck"):
                 check_liq_rechecks(ctx, state)
-            can_trade = reconcile_live(ctx.at(held), state)
+            rec_ok = reconcile_live(ctx.at(held), state)
+            can_trade = rec_ok
             # 엔진은 한 종목만 든다: 다른 종목 포지션이 보이면 짐작하지 않고 신규 진입을 멈춘다
             if not check_strays(ctx, state, held):
                 can_trade = False
@@ -4091,6 +4394,13 @@ def run(
     hctx = ctx.at(held)
     if not live:
         reconcile_dry(hctx, state, hctx.rows15, now_ms)
+    elif rec_ok and state.get("position"):
+        # 따라가는 손절은 봉을 받은 뒤에 옮긴다(대사가 수량·손절을 맞춘 다음)
+        try:
+            trail_live(ctx.at(pos_symbol(state["position"])), state)
+        except (Rejected, NetworkError) as e:
+            # 옛 손절이 그대로 지키고 있다: 다음 실행에서 다시
+            ctx.event(event="trail_error", error=str(e))
     _save(state_file, state)
 
     acct = _get(client, "/fapi/v2/account")
@@ -4168,7 +4478,9 @@ def run(
         "close": sig.get("close"),
         "signals": {s: g["dir"] for s, g in sigs.items() if g.get("dir")},
         "decision": decision,
-        "position": {k: p.get(k) for k in ("symbol", "side", "qty", "entry", "stop", "tp")}
+        "position": {
+            k: p.get(k) for k in ("symbol", "side", "qty", "entry", "stop", "tp", "trail", "best")
+        }
         if p
         else None,
         "halts": halts,

@@ -2382,6 +2382,13 @@ def _to_trail(ctx: Ctx, state: dict) -> None:
     ctx.say(f"🪜 {name} 익절 {_px(was)} 주문을 거두고 새 규칙으로: {trail_text()}")
 
 
+def _first_move(pos: dict) -> bool:
+    """이번 이동이 켜짐(+활성% → 본전) 알림인가: 켜짐 이동이 성공해 알린 적이 없고 손절도 아직
+    진입가 −손절% 그대로다. 켜짐 표시(trail)를 적은 뒤 이동이 실패해도 다음 이동이 켜짐으로 알린다
+    (레드팀 2026-11-17). 이 표시가 없던 옛 포지션은 손절 위치(_stop_why)로 판단한다."""
+    return not pos.get("trail_announced") and _stop_why({**pos, "trail": True}) == "stop"
+
+
 def _move_stop(ctx: Ctx, state: dict, new: float, first: bool) -> None:
     """손절을 new로 옮긴다: 새 지정가 손절을 먼저 걸고 걸린 것을 확인한 뒤에만 옛 손절을 취소한다
     (손절 없는 틈을 만들지 않음, _migrate_exits와 같은 순서). 앞 실행이 걸었지만 확인 못 한 같은
@@ -2429,6 +2436,8 @@ def _move_stop(ctx: Ctx, state: dict, new: float, first: bool) -> None:
         ctx.event(event="trail_move_unconfirmed", symbol=pos_symbol(pos), cid=cid, stop=new)
         return
     pos.update(stop=new, stop_id=cid)
+    if first:
+        pos["trail_announced"] = True
     _save(DIR / "state.json", state)
     # 옛 손절과, 앞 실행에서 확인 못 한 채 남은 이 포지션의 다른 손절(<봉>-s…)을 거둔다
     prefix = _cid(pos["bar"], "s", pos_symbol(pos))
@@ -2451,7 +2460,9 @@ def _move_stop(ctx: Ctx, state: dict, new: float, first: bool) -> None:
     ctx.event(
         event="trail_move", symbol=pos_symbol(pos), old=old_px, stop=new, best=pos.get("best")
     )
-    ctx.say(_trail_move_text(ctx, pos, old_px, new, first))
+    if first or ctx.source != "guard":
+        # 1분 지킴이의 보통 이동은 기록만(매분 알림 폭주 방지, 레드팀 2026-11-17)
+        ctx.say(_trail_move_text(ctx, pos, old_px, new, first))
 
 
 def trail_live(ctx: Ctx, state: dict) -> None:
@@ -2465,7 +2476,7 @@ def trail_live(ctx: Ctx, state: dict) -> None:
     tick = _tick_or_none(ctx)
     if tick is None:
         return  # 틱을 모르면 옮기지 않는다(다음 실행에서)
-    first = not pos.get("trail")
+    first = _first_move(pos)
     new = None
     seen = int(pos.get("trail_ms") or pos["bar"])
     for r in ctx.rows15:
@@ -2493,10 +2504,11 @@ def trail_live(ctx: Ctx, state: dict) -> None:
 # 그대로 15분 엔진. 이 경로는 손절을 조이기만 한다(느슨하게 하지 않음).
 GUARD_LOCK_S = 5  # 엔진이 잠금을 들고 있으면 이번 분은 건너뜀
 GUARD_DEADLINE_S = 75  # 지정가 추격 청산이 생겨도 이 안에(CLOSE_MARGIN_S 전) 돌아온다
-GUARD_MIN_STEP_PCT = 0.1  # 켜진 뒤에는 손절이 가격의 0.1% 넘게 좋아질 때만 옮긴다(주문 남발 방지)
+GUARD_MIN_STEP_PCT = 0.3  # 켜진 뒤에는 손절이 가격의 0.3% 넘게 좋아질 때만 옮긴다(주문 남발 방지)
 GUARD_OFF_FILE = "TRAIL_GUARD_OFF"  # 이 파일이 있으면 지킴이만 쉰다(엔진의 15분 따라가기는 그대로)
 GUARD_ERR_FILE = "trail_guard_error"  # 오류 알림을 한 시간에 한 번만
 GUARD_ERR_GAP_MS = 3_600_000
+GUARD_SKIP_FILE = "trail_guard_skip"  # 마지막 건너뜀 이유: 바뀔 때만 events.jsonl에 적는다
 
 
 def mark_price(symbol: str) -> float:
@@ -2555,6 +2567,23 @@ def _guard_checks(ctx: Ctx, pos: dict) -> str | None:
     return None
 
 
+def _guard_skip_event(ctx: Ctx, reason: str | None, **kw) -> None:
+    """건너뜀 이유가 바뀔 때만 기록한다(같은 이유로 매분 쌓이지 않게). None이면 지운다."""
+    path = DIR / GUARD_SKIP_FILE
+    key = reason.split(":")[0] if reason else ""
+    try:
+        last = path.read_text().strip()
+    except OSError:
+        last = ""
+    if key == last:
+        return
+    if key:
+        _write_private(path, key)
+        ctx.event(event="trail_guard_skip", symbol=ctx.symbol, reason=reason, **kw)
+    else:
+        path.unlink(missing_ok=True)
+
+
 def trail_guard(
     now: datetime | None = None,
     client=None,
@@ -2590,6 +2619,34 @@ def trail_guard(
     was_on = bool(pos.get("trail"))
     out = {"symbol": sym, "mark": mark, "best": best, "stop": stop}
 
+    def new_ctx() -> Ctx:
+        c = Ctx(client if client is not None else Client(), market_ or Market(sym), send, now, True)
+        c.source = "guard"
+        c.deadline = _clock() + GUARD_DEADLINE_S
+        return c.at(sym)
+
+    if (mark < stop) if long_ else (mark > stop):
+        # 마크 가격이 이미 손절가 밖: 손절이 걸렸는데 지정가가 안 채워졌으면(갭) 바로 쫓아 닫는다
+        # (엔진은 최대 15분 뒤에야 본다, 레드팀 2026-11-17). 걸리지 않았거나 다 채워졌으면 둔다
+        ctx = new_ctx()
+        if not _exit_triggered(ctx.client, pos.get("stop_id")):
+            return {**out, "skip": "past_stop_not_triggered"}
+        try:
+            rows = ctx.client.request("GET", "/fapi/v2/positionRisk", {"symbol": sym})
+            amt = sum(float(r["positionAmt"]) for r in rows if r.get("symbol") == sym)
+        except (NetworkError, Rejected) as e:
+            return {**out, "skip": f"check_failed: {e}"[:200]}
+        if amt == 0:
+            return {**out, "skip": "stop_filled"}  # 체결 기록은 엔진 대사가 한다
+        why_ = _stop_why(pos)
+        ctx.event(event="trail_guard_stop_chase", symbol=sym, mark=mark, amt=amt, why=why_)
+        ctx.say(
+            f"🧯 {_name(sym)} 손절 {_px(stop)}이 걸렸는데 지정가가 안 채워졌어요 "
+            f"(마크 {_px(mark)}) → 지정가로 쫓아 닫아요"
+        )
+        protect_close(ctx, state, why_)
+        return {**out, "chased": True, "flat": not state.get("position")}
+
     def wanted(tick: str | None) -> tuple[bool, float | None]:
         on, new = trail_stop(side, entry, best, was_on, tick)
         if new is None or not _tighter(side, new, stop):
@@ -2607,18 +2664,17 @@ def trail_guard(
                 pos["trail_on_best"] = best
             _save(state_file, state)
         return {**out, "moved": False}
-    ctx = Ctx(client if client is not None else Client(), market_ or Market(sym), send, now, True)
-    ctx.source = "guard"
-    ctx.deadline = _clock() + GUARD_DEADLINE_S
-    ctx = ctx.at(sym)
+    ctx = new_ctx()
     bad = _guard_checks(ctx, pos)
     if bad:
-        ctx.event(event="trail_guard_skip", symbol=sym, reason=bad, mark=mark, best=best)
+        _guard_skip_event(ctx, bad, mark=mark, best=best)
         return {**out, "skip": bad}
+    _guard_skip_event(ctx, None)
     tick = _tick_or_none(ctx)
     if tick is None:
         return {**out, "skip": "tick"}
     on, new = wanted(tick)
+    first = _first_move(pos)
     pos["best"] = best
     if on and not was_on:
         pos["trail"] = True
@@ -2628,7 +2684,7 @@ def trail_guard(
         return {**out, "moved": False}
     if on and not was_on:
         ctx.event(event="trail_on", symbol=sym, best=best, entry=pos["entry"], mark=mark)
-    _move_stop(ctx, state, new, not was_on)
+    _move_stop(ctx, state, new, first)
     p = state.get("position")
     return {**out, "new": new, "moved": bool(p) and float(p["stop"]) == new, "flat": not p}
 
@@ -5067,6 +5123,9 @@ def recover() -> dict:
         _sleep(RECOVER_TRY_GAP)
 
 
+ENGINE_LOCK_S = 120  # 엔진 run/recover가 잠금을 기다리는 시간(레드팀 2026-11-17, 그 전 60초)
+
+
 def _lock(timeout: float = 60):
     import fcntl
 
@@ -5112,9 +5171,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if all(ok for ok, _ in checks) else 1
     if args.command == "start-live" and not args.confirm:
         parser.error("start-live는 실주문을 켭니다. 확인했으면 --confirm 을 붙이세요")
-    lock = _lock()
+    # 1분 손절 지킴이가 주문·추격 중이면(systemd 150초 상한) 기다린다: 엔진 실행을 건너뛰지 않게
+    lock = _lock(ENGINE_LOCK_S)
     if lock is None:
-        notify.send(f"⚠️ BTC 자동매매({args.command}) 건너뜀: 다른 실행이 1분 넘게 진행 중")
+        notify.send(
+            f"⚠️ BTC 자동매매({args.command}) 건너뜀: 다른 실행(엔진·1분 손절 지킴이)이 "
+            f"{ENGINE_LOCK_S}초 넘게 진행 중"
+        )
         return 0
     try:
         if args.command == "start-live":

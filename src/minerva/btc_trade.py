@@ -95,8 +95,8 @@ UNIVERSE: dict = {"source": "default", "stats": {}}
 CID_TAG = {"BTCUSDT": "", "ETHUSDT": "E", "SOXLUSDT": "S", "NVDAUSDT": "N"}
 # 보유 중 다른 종목으로 바꾸려면 그 종목 승률이 이만큼(%p) 높아야 한다(AI 호출을 드물게)
 SWITCH_EDGE_PP = 1.0  # 사용자 2026-11-14 "5%p가 아니라 1%p 이상이면 바꾸자"(처음 5%p, 2026-11-12)
-# 사용자 2026-11-12 "승률 50프로 미만은 들어가지마" → 같은 날 "50이 아니라 45로"
-MIN_ENTRY_WINRATE = 45.0
+# 진입 승률 바닥(사용자 2026-11-12 45%)은 2026-11-16 "승률관계없이 ... 2프로 이상에 백테스트
+# 수익 +만"으로 없앴다. 대신 7일 평균 하루 변동폭 ≥ btc_universe.MIN_DAY_RANGE_PCT(tradable_set).
 CHOOSE_FLAT_MAX = 5  # 빈손 동시 신호: AI에 우선순위 위 이만큼만
 CHOOSE_SWITCH_MAX = 3  # 보유 중 바꾸기 선택지 최대
 # 한 실행에서 진입 점검(시세·거래소 조회)을 하는 다른 종목 수 한도(신호가 몰려도 실행이 늘지 않게)
@@ -313,6 +313,7 @@ def universe(now_ms: int | None = None) -> dict:
         }
     syms = tuple(dict.fromkeys(data["symbols"]))
     stats = {s: data["stats"].get(s) or {} for s in syms}
+    ranges = btc_universe.load_ranges(DIR / "ranges.json", now_ms)
     return {
         "source": "universe",
         "updated_at": data.get("updated_at"),
@@ -320,31 +321,33 @@ def universe(now_ms: int | None = None) -> dict:
         "winrate": {s: float(stats[s].get("winrate") or 0) for s in syms},
         "priority": tuple(btc_universe.priority(list(syms), stats)),
         "stats": stats,
-        "tradable": tradable_set(syms, stats),
+        # 변동폭 파일이 없거나 48시간 넘었으면 새 진입을 멈춘다(레드팀: 조건 없이 열면 사용자 규칙
+        # "2프로 이상만"보다 느슨해진다). 보유분 관리·청산은 그대로
+        "tradable": tradable_set(syms, stats, ranges) if ranges is not None else frozenset(),
+        "ranges": ranges,
     }
 
 
-def tradable_set(syms, stats: dict) -> frozenset:
-    """새로 들어갈 수 있는 종목. 백테스트 승률 ≥ MIN_ENTRY_WINRATE(사용자 2026-11-12 "승률 50프로
-    미만은 들어가지마" → 같은 날 45로 낮춤)이고, 백테스트 수익 > 0이고(사용자 2026-11-13
-    "백테스트해서 수익률이 +인것만 매매하자", 예외 없음)
-    표본이 충분한 종목. 나머지는 신호·화면만."""
+def tradable_set(syms, stats: dict, ranges: dict | None = None) -> frozenset:
+    """새로 들어갈 수 있는 종목: 백테스트 수익 > 0(사용자 2026-11-13 "백테스트해서 수익률이 +인것만
+    매매하자"), 표본이 충분하고, 최근 7일 평균 하루 변동폭 ≥ MIN_DAY_RANGE_PCT(사용자 2026-11-16
+    "2프로 이상에 백테스트 수익 +만", 승률은 보지 않음). ranges가 None(ranges.json이 없거나
+    오래됨)이면 변동폭은 보지 않는다. 파일은 있는데 그 종목이 없으면 들어가지 않는다.
+    나머지는 신호·화면만."""
     ok = set()
     for s in syms:
         st = stats.get(s) or {}
         if (
-            float(st.get("winrate") or 0) >= MIN_ENTRY_WINRATE
-            and float(st.get("ret") or 0) > 0
+            float(st.get("ret") or 0) > 0
             and not btc_universe.low_sample(st)
+            and (ranges is None or float(ranges.get(s) or 0) >= btc_universe.MIN_DAY_RANGE_PCT)
         ):
             ok.add(s)
     return frozenset(ok)
 
 
 def _default_tradable() -> frozenset:
-    return frozenset(
-        s for s in DEFAULT_SYMBOLS if DEFAULT_WINRATE[s] >= MIN_ENTRY_WINRATE and DEFAULT_RET[s] > 0
-    )
+    return frozenset(s for s in DEFAULT_SYMBOLS if DEFAULT_RET[s] > 0)
 
 
 def tradable(sym: str) -> bool:
@@ -3642,8 +3645,16 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
         out["skip"] = "TradFi 약관 미동의로 쉬는 중"
     elif sym not in SYMBOLS:
         out["skip"] = "종목 범위(거래량 상위)에서 빠져 새로 들어가지 않음(보유분 정리만)"
+    elif (
+        not tradable(sym)
+        and UNIVERSE.get("source") == "universe"
+        and UNIVERSE.get("ranges") is None
+    ):
+        out["skip"] = "변동폭 파일(ranges.json)이 없거나 48시간 넘어 새 진입 멈춤(보유분 정리만)"
     elif not tradable(sym):
-        out["skip"] = "승률 45% 미만·백테스트 손실·표본 부족이라 새로 들어가지 않음(보유분 정리만)"
+        out["skip"] = (
+            "7일 변동폭 2% 미만·백테스트 손실·표본 부족이라 새로 들어가지 않음(보유분 정리만)"
+        )
     elif _clock() - t_start > MAX_RUN_SECS:
         out["skip"] = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
     elif c.market is None:
@@ -3942,7 +3953,7 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
     for sym, g in others.items():
         rate = float(SYMBOL_WINRATE.get(sym) or 0)
         if not tradable(sym):
-            passed[sym] = "승률 45% 미만·백테스트 손실·표본 부족(신호 표시만, 진입 안 함)"
+            passed[sym] = "7일 변동폭 2% 미만·백테스트 손실·표본 부족(신호 표시만, 진입 안 함)"
         elif pos and rate < a_rate + SWITCH_EDGE_PP:
             passed[sym] = (
                 f"승률 {rate:g}%가 보유 {_name(a_sym)} {a_rate:g}% + {SWITCH_EDGE_PP:g}%p보다 낮음"

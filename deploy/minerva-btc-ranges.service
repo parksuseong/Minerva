@@ -1,0 +1,18 @@
+# 종목별 7일 평균 하루 변동폭(공개 일봉 GET만, 주문 없음, 종목당 무게 1). minerva-btc-ranges.timer가 실행한다.
+# 결과: ~/.minerva/btc_trade/ranges.json. 엔진은 2% 미만 종목에 새로 들어가지 않는다(48시간 넘으면 조건 없이).
+# 설치: sudo cp deploy/minerva-btc-ranges.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-btc-ranges.timer
+[Unit]
+Description=Minerva BTC engine 7-day daily range refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.btc_universe ranges
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=300M
+TimeoutStartSec=900

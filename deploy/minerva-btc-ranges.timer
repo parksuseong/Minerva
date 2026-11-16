@@ -1,0 +1,10 @@
+# 매일 09:10 KST(바이낸스 일봉 마감 00:00 UTC 뒤) 자동매매 종목의 7일 평균 하루 변동폭을 다시 잰다.
+[Unit]
+Description=Refresh Minerva BTC engine 7-day daily ranges 09:10 KST
+
+[Timer]
+OnCalendar=*-*-* 09:10:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

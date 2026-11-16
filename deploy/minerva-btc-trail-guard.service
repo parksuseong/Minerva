@@ -1,0 +1,21 @@
+# 1분 손절 지킴이(src/minerva/btc_trade.py `trail-guard`). minerva-btc-trail-guard.timer가 매분 40초에 실행한다.
+# 실전(mode=live)일 때만: 엔진 포지션의 마크 가격(공개 GET, 무게 1)을 보고 +2%면 손절을 본전+0.2%로, 그 뒤 최고가에서
+# 3% 뒤로 옮긴다(조이기만). 옮길 때만 주문(새 손절 먼저 → 확인 → 옛 손절 취소). 엔진 잠금(~/.minerva/btc_trade/.lock)을
+# 5초 안에 못 잡으면 그 분은 건너뛴다. 쉬게 하려면 `touch ~/.minerva/btc_trade/TRAIL_GUARD_OFF`.
+# 설치: sudo cp deploy/minerva-btc-trail-guard.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-btc-trail-guard.timer
+[Unit]
+Description=Minerva BTC engine 1-minute trailing-stop guard (mark price, live only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.btc_trade trail-guard
+Nice=5
+MemoryMax=200M
+# 보통 1~2초. 옮길 때 주문 재시도(10초 간격)나 이미 지난 손절의 지정가 추격(75초 안에 돌아옴)이 생겨도
+# 주문 도중 끊기지 않게 넉넉히. 끝나기 전에 다음 분이 오면 systemd가 그 분을 건너뛴다.
+TimeoutStartSec=150

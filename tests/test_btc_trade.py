@@ -4771,3 +4771,339 @@ def test_trail_lock_covers_fees_and_why_labels(monkeypatch):
     assert bt._stop_why({"side": "short", "entry": 100.0, "stop": 103.0, "trail": True}) == "stop"
     assert bt._stop_why({"side": "short", "entry": 100.0, "stop": 99.8, "trail": True}) == "trail"
     assert bt._stop_why({"side": "long", "entry": 100.0, "stop": 100.2}) == "stop"
+
+
+# ------------------------------------- 1분 손절 지킴이 (사용자 2026-11-16 23:55 "바로바로 올리면")
+
+
+@pytest.fixture
+def tg(env, monkeypatch):
+    """실전 값(+2% 활성, 본전 +0.2%, 3% 따라감)으로 지킴이를 부르는 도우미."""
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "trail")
+    marks: dict = {"px": None, "n": 0}
+
+    def fake_mark(symbol):
+        marks["n"] += 1
+        if isinstance(marks["px"], Exception):
+            raise marks["px"]
+        return marks["px"]
+
+    monkeypatch.setattr(bt, "mark_price", fake_mark)
+
+    def call(ex, px, mk=None):
+        marks["px"] = px
+        mk = mk or FakeMarket(ex.price)
+        return bt.trail_guard(now=NOW, client=ex, market_=mk, send=env["send"])
+
+    call.marks = marks
+    return call
+
+
+def _algo_writes(ex) -> list[tuple[str, str]]:
+    return [(m, x.get("clientAlgoId")) for m, p, x in ex.writes if p == "/fapi/v1/algoOrder"]
+
+
+def test_guard_no_position_no_calls(env, tg):
+    live(env)
+    ex = FakeExchange()
+    assert tg(ex, 105_000.0)["skip"] == "flat"
+    assert not ex.calls and tg.marks["n"] == 0
+
+
+def test_guard_dry_mode_does_nothing(env, tg):
+    ex = FakeExchange()
+    engine_long(ex)
+    assert tg(ex, 105_000.0)["skip"] == "dry"
+    assert not ex.calls and tg.marks["n"] == 0 and not env["sent"]
+
+
+def test_guard_skips_tp_custom_and_closing(env, tg):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    st = state()
+    st["position"].update(tp=104_800.0, tp_id="x", tp_custom=True)
+    bt._save(bt.DIR / "state.json", st)
+    assert tg(ex, 105_000.0)["skip"] == "not_trail"
+    st["position"].update(tp=None, tp_id=None, tp_custom=None)
+    st["closing"] = {"symbol": "BTCUSDT", "why": "signal"}
+    bt._save(bt.DIR / "state.json", st)
+    assert tg(ex, 105_000.0)["skip"] == "closing"
+    assert not ex.calls and tg.marks["n"] == 0
+
+
+def test_guard_activation_moves_stop_to_lock_place_then_cancel(env, tg):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    old = pos["stop_id"]
+    tg(ex, 101_900.0)  # +1.9%: 아직
+    assert not ex.writes and not env["sent"]
+    assert state()["position"]["best"] == 101_900.0 and not state()["position"].get("trail")
+    out = tg(ex, 102_100.0)  # +2.1% → 본전 +0.2%
+    p = state()["position"]
+    assert out["moved"] and p["trail"] and p["stop"] == 100_200.0 and p["best"] == 102_100.0
+    assert _algo_writes(ex) == [("POST", p["stop_id"]), ("DELETE", old)]
+    assert ex.algos[p["stop_id"]]["triggerPrice"] == "100200.0"
+    assert ex.algos[old]["algoStatus"] == "CANCELED"
+    assert len(env["sent"]) == 1 and "+2% 도달" in env["sent"][0] and "본전+0.2%" in env["sent"][0]
+    ev = [e for e in jsonl("events.jsonl") if e["event"] in ("trail_on", "trail_move")]
+    assert [e["event"] for e in ev] == ["trail_on", "trail_move"]
+    assert all(e["source"] == "guard" for e in ev)
+    n = len(ex.calls)
+    tg(ex, 102_100.0)  # 같은 가격: 마크 가격만 묻고 끝
+    assert len(ex.calls) == n and len(env["sent"]) == 1
+
+
+def test_guard_trails_long_never_loosens_with_min_step(env, tg):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    tg(ex, 102_100.0)
+    tg(ex, 106_000.0)
+    p = state()["position"]
+    assert p["stop"] == 102_820.0 and p["best"] == 106_000.0
+    assert len(env["sent"]) == 1  # 보통 이동은 알리지 않는다(켜짐만)
+    mv = [e for e in jsonl("events.jsonl") if e["event"] == "trail_move"]
+    assert mv[-1]["stop"] == 102_820.0 and mv[-1]["source"] == "guard"
+    n, sent = len(ex.writes), len(env["sent"])
+    tg(ex, 104_000.0)  # 내려와도 그대로, best도 그대로
+    assert state()["position"]["stop"] == 102_820.0 and state()["position"]["best"] == 106_000.0
+    tg(ex, 106_300.0)  # 손절 +291(0.3% 미만): 안 옮기지만 best는 적는다
+    p = state()["position"]
+    assert p["stop"] == 102_820.0 and p["best"] == 106_300.0
+    assert len(ex.writes) == n and len(env["sent"]) == sent
+    tg(ex, 106_400.0)  # 106400 × 0.97 = 103208 (+388, 0.3% 넘음)
+    assert state()["position"]["stop"] == 103_208.0
+    assert [a["triggerPrice"] for a in _new_algos(ex)] == ["103208.0"]
+    assert len(env["sent"]) == sent
+
+
+def test_guard_trails_short_never_loosens(env, tg):
+    live(env)
+    ex = FakeExchange()
+    engine_short(ex)
+    tg(ex, 97_900.0)  # −2.1% → 본전 −0.2%
+    assert state()["position"]["stop"] == 99_800.0
+    assert "최저" in env["sent"][-1]
+    tg(ex, 95_000.0)
+    assert state()["position"]["stop"] == 97_850.0
+    assert len(env["sent"]) == 1
+    n = len(ex.writes)
+    tg(ex, 96_500.0)
+    p = state()["position"]
+    assert p["stop"] == 97_850.0 and p["best"] == 95_000.0 and len(ex.writes) == n
+    assert [(a["side"], a["triggerPrice"]) for a in _new_algos(ex)] == [("BUY", "97850.0")]
+
+
+def test_guard_runs_under_halt_and_no_entry(env, tg):
+    live(env)
+    (bt.DIR / "HALT").write_text("")
+    (bt.DIR / "NO_ENTRY").write_text("x")
+    ex = FakeExchange()
+    engine_long(ex)
+    tg(ex, 102_100.0)
+    assert state()["position"]["stop"] == 100_200.0
+
+
+def test_guard_off_file(env, tg):
+    live(env)
+    (bt.DIR / bt.GUARD_OFF_FILE).write_text("")
+    ex = FakeExchange()
+    engine_long(ex)
+    assert tg(ex, 102_100.0)["skip"] == "off" and not ex.calls
+
+
+def test_guard_network_error_on_mark_skips(env, tg):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    before = state()
+    assert tg(ex, bt.NetworkError("down"))["skip"] == "mark"
+    assert state() == before and not ex.calls
+
+
+def test_guard_position_mismatch_leaves_it_to_engine(env, tg):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.amt = 0.0  # 거래소에서는 이미 닫힘(엔진 대사 전)
+    out = tg(ex, 102_100.0)
+    assert out["skip"].startswith("position_mismatch") and not ex.writes
+    assert state()["position"]["stop"] == 97_000.0 and not state()["position"].get("trail")
+    ev = jsonl("events.jsonl")[-1]
+    assert ev["event"] == "trail_guard_skip" and ev["source"] == "guard"
+
+
+def test_guard_stop_not_open_leaves_it_to_engine(env, tg):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    ex.trigger_unfilled(pos["stop_id"])  # 손절이 걸렸는데 지정가가 아직
+    assert tg(ex, 102_100.0)["skip"] == "stop_not_open" and not ex.writes
+
+
+def test_guard_would_trigger_closes_as_trail(env, tg):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.reject_stop = True  # 새 손절가를 이미 지났다(-2021)
+    out = tg(ex, 102_100.0)
+    assert out["flat"] and ex.amt == 0 and state()["position"] is None
+    assert jsonl("closed.jsonl")[-1]["why"] == "trail"
+    assert any("이미 지났어요" in m for m in env["sent"])
+
+
+def test_guard_then_engine_stays_consistent(env, tg, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    tg(ex, 106_000.0)  # 한 번에 켜지고 102820
+    assert state()["position"]["stop"] == 102_820.0
+    mk = FakeMarket()
+    _bar(mk, -1, high=104_000.0, close=103_500.0)  # 마감 봉 고가는 지킴이 best보다 낮다
+    with_signal(monkeypatch, None)
+    n = len(ex.writes)
+    run(env, ex, mk)
+    p = state()["position"]
+    assert p["stop"] == 102_820.0 and p["best"] == 106_000.0 and len(ex.writes) == n
+    _rewind_trail(BAR - bt.BAR_MS)
+    _bar(mk, -1, high=107_000.0, close=106_500.0)
+    run(env, ex, mk)  # 엔진은 이어서 조인다
+    assert state()["position"]["stop"] == 103_790.0
+    tg(ex, 106_500.0)  # 지킴이는 엔진 값을 느슨하게 하지 않는다
+    assert state()["position"]["stop"] == 103_790.0
+    assert [a["triggerPrice"] for a in _new_algos(ex)] == ["103790.0"]
+
+
+def test_guard_main_skips_when_lock_busy(env, monkeypatch):
+    live(env)
+    monkeypatch.setattr(bt, "GUARD_LOCK_S", 0)
+    called = []
+    monkeypatch.setattr(bt, "trail_guard", lambda *a, **k: called.append(1) or {})
+    held = bt._lock(1)
+    try:
+        assert bt._guard_main() == 0 and not called
+    finally:
+        held.close()
+    assert bt._guard_main() == 0 and called == [1]
+
+
+def test_guard_main_dry_returns_without_lock(env, monkeypatch):
+    monkeypatch.setattr(bt, "trail_guard", lambda *a, **k: pytest.fail("called"))
+    assert bt._guard_main() == 0 and not (bt.DIR / ".lock").exists()
+
+
+def test_guard_main_error_alerts_once_an_hour(env, monkeypatch):
+    live(env)
+    sent: list[str] = []
+    monkeypatch.setattr(bt.notify, "send", sent.append)
+
+    def boom(*a, **k):
+        raise ValueError("bad")
+
+    monkeypatch.setattr(bt, "trail_guard", boom)
+    assert bt._guard_main() == 1 and bt._guard_main() == 1
+    assert len(sent) == 1 and "지킴이" in sent[0]
+    assert [e["event"] for e in jsonl("events.jsonl")] == ["trail_guard_error"] * 2
+
+
+def test_guard_stop_triggered_unfilled_chases_close(env, tg):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    ex.trigger_unfilled(pos["stop_id"])  # 갭: 손절이 걸렸는데 지정가가 남음
+    out = tg(ex, 96_000.0)
+    assert out["chased"] and out["flat"] and ex.amt == 0 and state()["position"] is None
+    assert jsonl("closed.jsonl")[-1]["why"] == "stop"  # 손절을 옮기기 전 → _stop_why = stop
+    assert any("안 채워졌어요" in m for m in env["sent"])
+    ev = [e for e in jsonl("events.jsonl") if e["event"] == "trail_guard_stop_chase"]
+    assert ev and ev[0]["source"] == "guard"
+
+
+def test_guard_stop_triggered_unfilled_after_trail_is_trail(env, tg):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    tg(ex, 106_000.0)
+    p = state()["position"]
+    assert p["stop"] == 102_820.0
+    ex.trigger_unfilled(p["stop_id"])
+    tg(ex, 102_000.0)
+    assert ex.amt == 0 and jsonl("closed.jsonl")[-1]["why"] == "trail"
+
+
+def test_guard_stop_filled_or_not_triggered_does_nothing(env, tg):
+    live(env)
+    ex = FakeExchange()
+    pos = engine_long(ex)
+    assert tg(ex, 96_900.0)["skip"] == "past_stop_not_triggered"  # 아직 안 걸림: 거래소에 맡김
+    assert not ex.writes and state()["position"]["stop_id"] == pos["stop_id"]
+    ex.trigger_stop(pos["stop_id"], 97_000.0)  # 다 채워짐: 기록은 엔진 대사가
+    assert tg(ex, 96_900.0)["skip"] == "stop_filled"
+    assert not ex.writes and state()["position"] is not None and not env["sent"]
+
+
+def test_guard_failed_first_move_still_announced_next_time(env, tg, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.reject_stop, ex.reject_code = True, -4000  # 켜짐 이동 실패(다른 거부)
+    tg(ex, 102_100.0)
+    p = state()["position"]
+    assert p["trail"] and p["stop"] == 97_000.0 and not p.get("trail_announced")
+    assert not env["sent"]
+    ex.reject_stop = False
+    tg(ex, 102_200.0)
+    p = state()["position"]
+    assert p["stop"] == 100_200.0 and p["trail_announced"]
+    assert len(env["sent"]) == 1 and "+2% 도달" in env["sent"][0]
+
+
+def test_engine_failed_first_move_still_announced_next_run(env, trail, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    mk = FakeMarket()
+    _bar(mk, -1, high=103_000.0, close=102_500.0)
+    with_signal(monkeypatch, None)
+    ex.reject_stop, ex.reject_code = True, -4000
+    run(env, ex, mk)
+    assert state()["position"]["trail"] and state()["position"]["stop"] == 97_000.0
+    ex.reject_stop = False
+    run(env, ex, mk)
+    assert state()["position"]["stop"] == 100_000.0
+    assert any("+3% 도달" in m for m in env["sent"])
+    assert not any("따라 올림" in m for m in env["sent"])
+
+
+def test_guard_skip_event_logged_only_when_reason_changes(env, tg):
+    live(env)
+    ex = FakeExchange()
+    engine_long(ex)
+    ex.amt = 0.0
+    for px in (102_100.0, 102_150.0, 102_200.0):
+        tg(ex, px)
+    skips = [e for e in jsonl("events.jsonl") if e["event"] == "trail_guard_skip"]
+    assert len(skips) == 1
+    ex.amt = 0.029
+    tg(ex, 102_250.0)  # 확인 통과: 기억 지움 → 다시 생기면 다시 적는다
+    assert state()["position"]["stop"] == 100_200.0
+    assert not (bt.DIR / bt.GUARD_SKIP_FILE).exists()
+
+
+def test_main_engine_waits_120s_for_lock(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr(bt, "_lock", lambda timeout=60: seen.append(timeout))
+    sent: list[str] = []
+    monkeypatch.setattr(bt.notify, "send", sent.append)
+    assert bt.main(["run"]) == 0 and seen == [120]
+    assert "120초" in sent[0] and "지킴이" in sent[0]
+
+
+def test_trail_move_text_without_best():
+    ctx = bt.Ctx(None, None, lambda t: None, NOW, True)
+    pos = {"symbol": "BTCUSDT", "side": "long", "entry": 100_000.0, "stop": 97_000.0}
+    assert "100,000.0" in bt._trail_move_text(ctx, pos, 97_000.0, 100_200.0, True)
+    assert "따라 올림" in bt._trail_move_text(ctx, pos, 97_000.0, 100_200.0, False)

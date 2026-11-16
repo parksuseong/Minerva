@@ -446,8 +446,11 @@ def binance_series(x_minerva_token: str = Header("")) -> dict:
     realized = []
     if capital.get("since") and data and data.get("updated_at"):
         rows = perf.binance_daily(folder, data, capital)
-        realized = [{"date": r["date"], "equity": r["equity"]}
-                    for r in reversed(rows) if r["pnl"] is not None]
+        realized = [
+            {"date": r["date"], "equity": r["equity"]}
+            for r in reversed(rows)
+            if r["pnl"] is not None
+        ]
     return {"seed": capital.get("base"), "points": points, "realized": realized}
 
 
@@ -505,12 +508,34 @@ def gose_view() -> dict:
 
 
 def gose_spec() -> dict:
-    """SCR 3단 + 물타기 매매 규칙서: 저장소 문서(Markdown) 전문과 요약 수치. 다른 에이전트용."""
-    try:
-        md = gose.AVG_SPEC.read_text(encoding="utf-8")
-    except OSError:
-        md = None
+    """매매 규칙서(다른 에이전트용): 전략마다 Markdown 전문과 구조화 값(`items`), 나머지 계좌의
+    한 줄 정의(`reference`). 맨 위 칸은 예전 화면용 "SCR 3단 + 물타기" 그대로."""
+
+    def text(name: str) -> str | None:
+        try:
+            return (gose.HERE / name).read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    md = text(gose.AVG_SPEC.name)
     info = gose.read_json(gose.AVG_INFO)
-    if md is None or info is None:
+    index = gose.read_json(gose.SPECS)
+    if md is None or info is None or index is None:
         return {"status": "pending"}
-    return dict(info, status="ok", markdown=md, accounts=[k for k, _ in gose.AVG_ACCOUNTS])
+    items = []
+    for it in index.get("items") or []:
+        body = text(it["md"])
+        if body is None:
+            continue
+        extra = gose.read_json(gose.HERE / it["info"]) if it.get("info") else None
+        row = dict(extra or {}, **{k: v for k, v in it.items() if k != "info"})
+        items.append(dict(row, markdown=body))
+    return dict(
+        info,
+        status="ok",
+        markdown=md,
+        accounts=[k for k, _ in gose.AVG_ACCOUNTS],
+        items=items,
+        reference=index.get("reference") or [],
+        replay_def=index.get("replay_def"),
+    )

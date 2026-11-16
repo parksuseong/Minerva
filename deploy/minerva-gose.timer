@@ -1,0 +1,11 @@
+# 화~토 07:20 KST: 미국 장(전날) 마감 뒤, 한국·홍콩 장 열기 전이라 모든 시장의 마지막 봉이 끝나 있다.
+# Persistent=true: 서버가 꺼져 놓친 실행은 기동 직후 한 번 돌린다.
+[Unit]
+Description=Run Minerva gose paper trading at 07:20 KST Tue-Sat
+
+[Timer]
+OnCalendar=Tue..Sat *-*-* 07:20:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

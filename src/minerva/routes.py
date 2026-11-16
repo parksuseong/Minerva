@@ -12,6 +12,8 @@
 - 자동매매: `python -m minerva.trade` (`minerva-trade-*.timer`) → `~/.minerva/trade/`
 - BTC 자동매매: `python -m minerva.btc_trade` (`minerva-btc-trade.timer`) → `~/.minerva/btc_trade/`.
   `/api/btc/engine`이 그 파일을 읽기만 한다(`btc_view.py`). 주문은 엔진만 낸다.
+- 고서: `python -m minerva.gose run` (`minerva-gose.timer`) → `~/.minerva/gose/`.
+  `/api/gose`가 그 파일과 저장소의 규칙책 요약(`gose_rulebook.json`)만 읽는다. 가상매매, 주문 없음.
 - SCR 실험실: `/api/btc/klines`가 바이낸스 선물 공개 시세(GET, 키 없음)를 덩어리째 캐시해 넘긴다.
   계산은 화면(`static/scrlab_core.js`)이 한다.
 """
@@ -33,7 +35,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException, Response
 
-from minerva import btc_review, btc_trade_review, btc_view, perf
+from minerva import btc_review, btc_trade_review, btc_view, gose, perf
 from minerva.strategy import soxl
 
 router = APIRouter()
@@ -461,4 +463,22 @@ def trade_status() -> dict:
         "halted": (d / "HALT").exists(),
         "positions": _read(d / "positions.json") or {},
         "orders": list(reversed(orders)),
+    }
+
+
+@router.get("/api/gose")
+def gose_view() -> dict:
+    """고서 탭: 규칙책 요약(저장소), 백테스트 요약, 가상매매(실제 주문 없음).
+
+    파일이 없거나 깨졌으면 그 칸은 {"status": "pending"}, 하나라도 없으면 전체도 pending."""
+    rulebook = gose.read_json(gose.RULEBOOK) or {"status": "pending"}
+    folder = gose.gose_dir()
+    backtest = gose.read_json(folder / "backtest.json")
+    paper = gose.read_json(folder / "paper.json")
+    ready = backtest is not None and paper is not None
+    return {
+        "status": "ok" if ready else "pending",
+        "rulebook": rulebook,
+        "backtest": backtest or {"status": "pending"},
+        "paper": paper or {"status": "pending"},
     }

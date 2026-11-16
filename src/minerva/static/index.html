@@ -108,6 +108,9 @@
     #tab-review ul { margin: 0; padding-left: 20px; }
     #tab-review li { margin: 2px 0; }
     #tab-review details > summary { cursor: pointer; }
+    #tab-gose h3 { font-size: 14px; margin: 12px 0 4px; }
+    #tab-gose ul, #tab-gose ol { margin: 4px 0; padding-left: 20px; }
+    #tab-gose details > summary { cursor: pointer; margin: 6px 0; }
     table.acct th, table.acct td { text-align: left; padding: 6px 4px; border-top: 1px solid var(--line); }
     footer { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0 24px; }
   </style>
@@ -131,6 +134,7 @@
     <button role="tab" data-tab="review" aria-selected="false">📝 복기</button>
     <button role="tab" data-tab="office" aria-selected="false">🏢 오피스</button>
     <button role="tab" data-tab="scrlab" aria-selected="false">🧪 SCR 실험실</button>
+    <button role="tab" data-tab="gose" aria-selected="false">📜 고서</button>
   </nav>
 
   <div class="panel" id="tab-today">
@@ -375,6 +379,22 @@
     </section>
   </div>
 
+  <div class="panel" id="tab-gose" hidden>
+    <section class="card">
+      <h2>📜 ① 규칙책 요약 <span class="mini">원문 규칙, 미검증 · 우리 말로 줄임 · 원문 글·그림 없음</span></h2>
+      <div id="gose-rulebook" class="placeholder">불러오는 중…</div>
+    </section>
+    <section class="card">
+      <h2>🧾 ② 백테스트 결과 <span class="mini">32개 변형 · 사전 등록 기준</span></h2>
+      <div id="gose-backtest" class="placeholder">불러오는 중…</div>
+    </section>
+    <section class="card">
+      <h2>🧪 ③ 가상매매 <span class="mini">가상(실제 주문 없음) · 매일 07:20 (화~토) 다시 계산</span></h2>
+      <div id="gose-paper-status" class="placeholder">불러오는 중…</div>
+    </section>
+    <div id="gose-paper"></div>
+  </div>
+
   <footer>투자 판단의 책임은 본인에게 있습니다.</footer>
 
   <script>
@@ -470,5 +490,6 @@
   <script src="/static/review.js?v=20261116a"></script>
   <script src="/static/trade.js?v=20261111a"></script>
   <script src="/static/office.js?v=20261111a"></script>
+  <script src="/static/gose.js?v=20261116a"></script>
 </body>
 </html>

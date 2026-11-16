@@ -14,6 +14,7 @@ from minerva.main import app
 
 M = 15 * 60_000
 NOW = datetime(2026, 11, 16, 22, 0, tzinfo=KST)
+NEXT = datetime(2026, 11, 17, 9, 20, tzinfo=KST)  # 다음 날 아침 복기
 
 
 def ms(s: str) -> int:
@@ -55,7 +56,8 @@ def files(tmp_path, monkeypatch):
         NVDA,
         {**BTC, "mode": "dry", "at": "2026-11-16 11:30:20"},
         {**BTC, "at": "2026-11-15 10:30:20", "opened_at": "2026-11-15 10:00:20"},  # 실전 전
-        {**BTC, "at": "2026-11-16 21:30:20", "opened_at": "2026-11-16 21:00:20"},  # 1시간 안 됨
+        # 복기 날(11-17) 닫힌 거래: 다음 날까지 기다린다
+        {**BTC, "at": "2026-11-17 08:30:20", "opened_at": "2026-11-17 08:00:20"},
         {"at": "2026-11-16 12:00:00", "mode": "live", "pnl": None},  # opened_at 없음
     ]
     (d / "closed.jsonl").write_text("\n".join(json.dumps(c) for c in closed) + "\n{broken\n")
@@ -94,13 +96,16 @@ def test_trade_id_stable_and_safe():
 def test_due_waits_skips_existing_and_limits(files):
     rows = tr.live_rows()
     assert sorted(r["at"] for r in rows) == [
-        "2026-11-16 10:30:20", "2026-11-16 20:10:20", "2026-11-16 21:30:20"]
-    got = tr.due(rows, NOW)
-    assert [r["symbol"] for r in got] == ["BTCUSDT", "NVDAUSDT"]  # 오래된 것부터, 21:30은 아직
-    assert tr.due(rows, NOW, limit=1)[0]["symbol"] == "BTCUSDT"
+        "2026-11-16 10:30:20", "2026-11-16 20:10:20", "2026-11-17 08:30:20"]
+    # 사용자 2026-11-16 "다음날하자": 같은 날에는 아무것도 안 쓴다
+    assert tr.due(rows, NOW) == []
+    nxt = NEXT
+    got = tr.due(rows, nxt)
+    assert [r["symbol"] for r in got] == ["BTCUSDT", "NVDAUSDT"]  # 오래된 것부터, 11-17은 아직
+    assert tr.due(rows, nxt, limit=1)[0]["at"] == "2026-11-16 10:30:20"
     tr.trade_dir().mkdir(parents=True)
     (tr.trade_dir() / f"{tr.trade_id(BTC)}.json").write_text("{}")
-    assert [r["symbol"] for r in tr.due(rows, NOW)] == ["NVDAUSDT"]
+    assert BTC["at"] not in [r["at"] for r in tr.due(rows, nxt)]
 
 
 def test_live_rows_needs_live_capital(files):
@@ -120,7 +125,7 @@ def test_facts_manual_and_tp_custom(files):
     assert "손으로 연 포지션" in joined and "익절가 97.0" in joined and "수량·방향" in joined
     assert f["counterfactual"]["fixed_tp"]["result"] == "open"
     assert f["counterfactual"]["rule_now"]["result"] == "open"
-    assert f["after"]["partial"] is True and 0 < f["after"]["bars"] < tr.AFTER_BARS
+    assert f["after"]["partial"] is True and 0 < f["after"]["bars"] < tr.AFTER_BARS_NEXT_DAY
 
 
 def test_facts_engine_entry_and_no_interventions(files):
@@ -230,25 +235,25 @@ def test_run_saves_sends_and_skips_next_time(files):
         asked.append(p)
         return '{"headline": "손 익절이 규칙과 같았다", "lesson": "관찰"}'
 
-    paths = tr.run(NOW, caller=caller, fetch=flat_bars, send=sent.append)
+    paths = tr.run(NEXT, caller=caller, fetch=flat_bars, send=sent.append)
     assert [p.name for p in paths] == [f"{tr.trade_id(BTC)}.json", f"{tr.trade_id(NVDA)}.json"]
     assert all(oct(os.stat(p).st_mode & 0o777) == "0o600" for p in paths)
     assert "interventions" in asked[1] and "NVDAUSDT" in asked[1]
     assert sent[1].startswith("📝 거래 복기 · NVDA 숏 +3.0% (익절) · 수동\n")
     assert "교훈: 관찰 (검증 안 됨)" in sent[1]
-    assert tr.run(NOW, caller=caller, fetch=flat_bars, send=sent.append) == []
+    assert tr.run(NEXT, caller=caller, fetch=flat_bars, send=sent.append) == []
     assert len(sent) == 2
 
 
 def test_run_no_ai_keeps_numbers_and_limit(files):
-    paths = tr.run(NOW, ai=False, limit=1, fetch=flat_bars)
+    paths = tr.run(NEXT, ai=False, limit=1, fetch=flat_bars)
     rec = json.loads(paths[0].read_text())
     assert rec["review"] is None and rec["review_error"] == "AI 끔"
     assert tr.message(rec).endswith("AI 복기 없음: AI 끔")
 
 
 def test_load_trades_order_and_api(files):
-    tr.run(NOW, ai=False, fetch=flat_bars)
+    tr.run(NEXT, ai=False, fetch=flat_bars)
     (tr.trade_dir() / "notes.json").write_text("{}")
     (tr.trade_dir() / "20261101-0000_XUSDT_20261101-0100.json").write_text("{broken")
     got = tr.load_trades()

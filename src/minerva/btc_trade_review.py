@@ -2,8 +2,10 @@
 한것도 교훈으로 삼을 수 있도록").
 
 실전 시작(`binance_capital.json`의 `since_at`) 뒤 닫힌 실전 거래(`closed.jsonl`)마다 한 번,
-청산 60분 뒤부터 `reviews/trades/<거래 ID>.json`을 쓰고 텔레그램으로 짧게 알린다.
-`minerva-btc-trade-review.timer`(15분마다, 엔진 실행과 겹치지 않게 :07·:22·:37·:52).
+다음 날 아침에 `reviews/trades/<거래 ID>.json`을 쓰고 텔레그램으로 짧게 알린다(사용자 2026-11-16
+"복기는 매번하지말고 다음날하자 이유는 그다음에 어떻게움직인지를 알아야지"). 청산 날짜(KST)가
+오늘보다 이전인 거래만, 청산 뒤 최대 24시간 움직임을 같이 본다.
+`minerva-btc-trade-review.timer`(매일 09:20 KST, 엔진 :15:20 실행과 겹치지 않게).
 
 읽는 것: 엔진 파일(closed.jsonl·events.jsonl, 키 없음), 시드 파일(since_at), 공개 시세 15분봉(GET,
 거래마다 1번). 주문·키 없음. 사용자가 손으로 한 것(손으로 연 포지션을 엔진이 이어받음, 손으로
@@ -31,14 +33,14 @@ from typing import Callable
 
 from minerva import btc_ai, btc_review
 from minerva import btc_trade as bt
-from minerva.btc_review import AFTER_BARS, FMT, _jsonl, _ms, _read, fetch_bars
+from minerva.btc_review import FMT, _jsonl, _ms, _read, fetch_bars
 from minerva.kis import KST, _write_private
 
 MODEL = os.environ.get("MINERVA_REVIEW_MODEL", "opus")
 TIMEOUT = 150  # 5개 × 150초가 systemd 900초 안에 들게
 BUDGET_USD = "0.60"
-WAIT_MIN = 60  # 청산 뒤 이만큼 지나야 쓴다(청산 뒤 움직임을 조금이라도 보게)
-LIMIT = 5  # 한 번에 쓰는 복기 수(AI 비용 상한)
+AFTER_BARS_NEXT_DAY = 96  # 청산 뒤 24시간(15분봉 96개)까지 본다(다음 날 복기)
+LIMIT = 12  # 하루 한 번 쓰는 복기 수(AI 비용 상한, 하루 거래가 이보다 많으면 다음 날 이어서)
 KEEP = 60  # 화면에 보내는 최근 거래 복기 수
 EVENTS_CAP = 15
 ID = re.compile(r"^\d{8}-\d{4}_[A-Z0-9]+_\d{8}-\d{4}$")
@@ -91,12 +93,13 @@ def live_rows() -> list[dict]:
 
 
 def due(rows: list[dict], now: datetime, limit: int = LIMIT) -> list[dict]:
-    """아직 복기가 없고 청산 뒤 WAIT_MIN분 지난 거래, 오래된 것부터 limit개."""
-    now_ms = int(now.timestamp() * 1000)
+    """아직 복기가 없고 청산 날짜(KST)가 오늘보다 이전인 거래(다음 날 복기), 오래된 것부터
+    limit개."""
+    today = now.astimezone(KST).strftime("%Y-%m-%d")
     folder = trade_dir()
     todo = [
         r for r in rows
-        if _ms(r["at"]) + WAIT_MIN * 60_000 <= now_ms
+        if str(r["at"])[:10] < today
         and not (folder / f"{trade_id(r)}.json").exists()
     ]
     todo.sort(key=lambda r: r["at"])
@@ -249,10 +252,12 @@ def facts(row: dict, now: datetime, fetch: Callable = fetch_bars,
     try:
         now_ms = int(now.timestamp() * 1000)
         bars = fetch(sym, _ms(row["opened_at"]) - bt.BAR_MS,
-                     _ms(row["at"]) + (AFTER_BARS + 2) * bt.BAR_MS)
+                     _ms(row["at"]) + (AFTER_BARS_NEXT_DAY + 2) * bt.BAR_MS)
         bars = [b for b in bars if int(b[0]) + bt.BAR_MS <= now_ms]  # 마감한 봉만
         if row.get("exit") and row.get("entry"):
-            rec.update(btc_review.excursion(row, bars, partial=True))
+            rec.update(
+                btc_review.excursion(row, bars, partial=True, after_bars=AFTER_BARS_NEXT_DAY)
+            )
         if row.get("entry"):
             rec["counterfactual"] = counterfactuals(row, bars)
     except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
@@ -267,7 +272,7 @@ PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매의 거래 하나를
 자료(JSON) 칸: pct=진입가 대비 가격 % (3배 전), pnl=USDT, why_ko=청산 이유,
 closed_at=엔진이 기록한 시각(손절·익절 실제 체결은 최대 15분 이를 수 있음),
 mfe_pct/mae_pct=들고 있는 동안 가장 좋았던/나빴던 %,
-after=청산 뒤 가격 변화 %(partial이면 4시간 안 됨),
+after=청산 뒤 가격 변화 %(최대 24시간, partial이면 그보다 짧음, bars=15분봉 수),
 entry_way·entry_events=어떻게 들어갔나, hold_events=보유 중 엔진 기록,
 interventions=사용자가 손으로 한 것, manual=손으로 연 포지션, tp_custom=손으로 정한 익절,
 counterfactual.rule_now=같은 진입에 지금 규칙이었다면(계산, 봉 안 순서는 손절 먼저),

@@ -105,7 +105,9 @@ def fetch_bars(symbol: str, start_ms: int, end_ms: int) -> list[list]:
         return json.load(r)
 
 
-def excursion(trade: dict, bars: list[list], partial: bool = False) -> dict:
+def excursion(
+    trade: dict, bars: list[list], partial: bool = False, after_bars: int = AFTER_BARS
+) -> dict:
     """들고 있는 동안 가장 좋았던·나빴던 가격(진입가 대비 %, 내 방향 기준)과 청산 뒤 4시간.
 
     청산 시각은 엔진이 기록한 때라 손절·익절 실제 체결보다 늦을 수 있다. 그래서 손절·익절은
@@ -139,8 +141,8 @@ def excursion(trade: dict, bars: list[list], partial: bool = False) -> dict:
             after_i = i + 1
             break
     out = {"mfe_pct": round(best, 2), "mae_pct": round(worst, 2), "after": None}
-    nxt = held[after_i : after_i + AFTER_BARS]
-    if len(nxt) == AFTER_BARS or (partial and nxt):
+    nxt = held[after_i : after_i + after_bars]
+    if len(nxt) == after_bars or (partial and nxt):
         hi = max(float(b[2]) for b in nxt)
         lo = min(float(b[3]) for b in nxt)
         last = float(nxt[-1][4])
@@ -150,7 +152,7 @@ def excursion(trade: dict, bars: list[list], partial: bool = False) -> dict:
             "close_pct": round((last / exit_px - 1) * 100, 2),
         }
         if partial:
-            out["after"].update(bars=len(nxt), partial=len(nxt) < AFTER_BARS)
+            out["after"].update(bars=len(nxt), partial=len(nxt) < after_bars)
     return out
 
 

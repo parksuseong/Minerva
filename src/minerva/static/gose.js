@@ -59,8 +59,7 @@
     return out.join("");
   }
 
-  function spec(s) {
-    if (!s || s.status !== "ok") return "<p class=\"placeholder\">규칙서를 아직 못 읽었어요</p>";
+  function avgSpec(s) {
     const rows = (s.summary || []).map((r) => `<tr><td><b>${esc(r.sym)}</b></td><td class="mini">${esc(r.period)}</td>
       <td>${pct(r.cagr, 1)}</td><td>${pct(r.mdd, 1)}</td><td>${num(r.cycles, 0)} · ${num(r.win, 0)}%</td>
       <td>${pct(r.mae_worst, 1)}</td><td>${num(r.hold_max_bars, 0)}</td><td>${pct(r.bh_cagr, 1)} · ${pct(r.bh_mdd, 1)}</td>
@@ -83,8 +82,85 @@
         <th>사이클 · 승률</th><th>평단 대비 최저</th><th>최장 보유(거래일)</th><th>그냥 보유</th><th>무작위 p</th></tr></thead>
         <tbody>${rows}</tbody></table></div>
       <p class="mini">무작위 p = 같은 횟수로 아무 날 들어가 같은 방식으로 익절했을 때 이 규칙보다 연복리가 같거나 높았던 비율(클수록 신호가 의미 없음).</p>
-      <details><summary>규칙서 전문 (다른 에이전트용, <code>/api/gose</code>의 <code>spec.markdown</code>)</summary>${md(s.markdown)}</details>
+      <details><summary>규칙서 전문 (다른 에이전트용, <code>/api/gose</code>의 <code>spec.items[].markdown</code>)</summary>${md(s.markdown)}</details>
     </div>`;
+  }
+
+  // 공용 계좌 전략 규칙서(3-c0/S10, 4): 한눈에 · 숫자 · 주의점 · 전문
+  function planSpec(s) {
+    const b = s.backtest || {};
+    const r = s.replay || {};
+    const spy = r.spy || {};
+    const line = (k, v) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`;
+    return `<div class="spec">
+      <p><b>${esc(s.title)}</b> · <span class="mini">${esc(s.label)} · ${esc(s.made)} 판 · 가상 계좌 ${esc((s.accounts || []).join(", "))}</span></p>
+      <h3>한눈에</h3>
+      <pre><code>${esc((s.brief || []).join("\n"))}</code></pre>
+      <h3>솔직한 주의점</h3>
+      <ul>${(s.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+      <h3>5년 백테스트 <span class="mini">${esc((b.window || []).join(" ~ "))} · ${num(b.symbols, 0)}종목 · 계좌 자리 제한 없이 모든 거래</span></h3>
+      <div class="scroll"><table class="acct"><tbody>
+        ${line("거래 · 승률", `${num(b.n, 0)}번 · ${num(b.win, 1)}%`)}
+        ${line("거래당 평균 · 최악", `${pct(b.mean, 2)} · ${pct(b.worst, 1)}`)}
+        ${line("동일비중 연복리 · 최대 낙폭", `${pct(b.cagr, 1)} · ${pct(b.mdd, 1)}`)}
+        ${line("같은 종목 그냥 보유", `${pct(b.bh_cagr, 1)} · ${pct(b.bh_mdd, 1)}`)}
+        ${line("무작위 대비 백분위", `${num(b.random_pct, 1)} (다중검정 기준 ${num(b.bonferroni_pct, 2)})`)}
+        ${line("판정", `<b>${esc(b.verdict || "-")}</b>`)}
+      </tbody></table></div>
+      <p class="mini">${esc(b.win_def || "")}</p>
+      <h3>시작일 돌려 보기 <span class="mini">${num(r.starts, 0)}번 시작 · 12개월 · 6절 계좌 그대로</span></h3>
+      <div class="scroll"><table class="acct"><thead><tr><th></th><th>이 전략</th><th>SPY 보유</th></tr></thead><tbody>
+        <tr><td>중앙값</td><td>${pct(r.median, 1)}</td><td>${pct(spy.median, 1)}</td></tr>
+        <tr><td>하위 10%</td><td>${pct(r.p10, 1)}</td><td>${pct(spy.p10, 1)}</td></tr>
+        <tr><td>플러스 비율</td><td>${num(r.pos_pct, 0)}%</td><td>${num(spy.pos_pct, 0)}%</td></tr>
+        <tr><td>SPY보다 나음</td><td>${num(r.beat_spy_pct, 0)}%</td><td></td></tr>
+        <tr><td>계좌 낙폭 중앙 · 최악</td><td>${pct(r.mdd_median, 1)} · ${pct(r.mdd_worst, 1)}</td><td>${pct(spy.mdd_median, 1)} · ${pct(spy.mdd_worst, 1)}</td></tr>
+        <tr><td>종목 하나 최악 미실현</td><td>${pct(r.open_dd_worst, 0)}</td><td></td></tr>
+        <tr><td>판정</td><td><b>${esc(r.verdict || "-")}</b></td><td></td></tr>
+      </tbody></table></div>
+      <details><summary>규칙서 전문 (다른 에이전트용, <code>/api/gose</code>의 <code>spec.items[].markdown</code>)</summary>${md(s.markdown)}</details>
+    </div>`;
+  }
+
+  function refList(s) {
+    const rs = s.reference || [];
+    if (!rs.length) return "";
+    return `<details><summary>나머지 가상 계좌 ${rs.length}개 (참고, 미검증 · 한 줄 정의)</summary>
+      <div class="scroll"><table class="acct"><thead><tr><th>계좌</th><th>정의</th><th>12개월 중앙 · 판정</th><th>5년</th><th>코드</th></tr></thead><tbody>
+      ${rs.map((r) => `<tr><td><b>${esc(r.key)}</b></td><td class="mini">${esc(r.def)}</td>
+        <td>${pct(r.replay_median, 1)} · ${esc(r.replay_verdict || "-")}</td><td>${esc(r.backtest_verdict || "-")}</td>
+        <td class="mini"><code>${esc(r.code)}</code></td></tr>`).join("")}
+      </tbody></table></div>
+      <p class="mini">${esc(s.replay_def || "")} 손절 없음(원래 청산·시간 청산). 이 계좌들은 전문이 없어요: 그대로 매매하려면 코드를 읽어야 해요.</p></details>`;
+  }
+
+  const SPEC_KEY = "minerva-gose-spec";
+  let specData = null;
+  let specSel = (() => { try { return localStorage.getItem(SPEC_KEY); } catch (e) { return null; } })();
+
+  function spec(s) {
+    if (!s || s.status !== "ok") return "<p class=\"placeholder\">규칙서를 아직 못 읽었어요</p>";
+    const items = s.items && s.items.length ? s.items : [dict(s)];
+    if (!items.some((it) => it.key === specSel)) specSel = items[0].key;
+    const cur = items.find((it) => it.key === specSel);
+    const btns = items.map((it) => `<button type="button" data-spec="${esc(it.key)}" class="${it.key === specSel ? "on" : ""}"
+      aria-pressed="${it.key === specSel}">${esc(it.short || it.title || it.key)}</button>`).join("");
+    return `<div class="filters" role="group" aria-label="규칙서 고르기">${btns}</div>
+      ${cur.key === "avg" ? avgSpec(cur) : planSpec(cur)}${refList(s)}`;
+  }
+  function dict(s) { return Object.assign({ key: "avg" }, s); }
+
+  function drawSpec() {
+    const box = $("gose-spec");
+    if (!box) return;
+    box.innerHTML = spec(specData);
+    box.querySelectorAll("button[data-spec]").forEach((b) => {
+      b.addEventListener("click", () => {
+        specSel = b.dataset.spec;
+        try { localStorage.setItem(SPEC_KEY, specSel); } catch (e) { /* 저장 막혀도 전환은 된다 */ }
+        drawSpec();
+      });
+    });
   }
 
   function rounds(s) {
@@ -288,7 +364,8 @@
     fetch("/api/gose")
       .then((r) => r.json())
       .then((d) => {
-        if ($("gose-spec")) $("gose-spec").innerHTML = spec(d.spec);
+        specData = d.spec;
+        drawSpec();
         $("gose-rulebook").innerHTML = rulebook(d.rulebook);
         $("gose-backtest").innerHTML = backtest(d.backtest) + rounds(d.spec);
         paper(d.paper);

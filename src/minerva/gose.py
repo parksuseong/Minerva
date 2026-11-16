@@ -11,6 +11,7 @@
    가상 계좌에 넣는다. 계좌: 1만 달러, 동시 10종목, 새 포지션은 전날 마감 평가액의 10%,
    수수료 편도 0.05%, 체결은 다음 날 시가(손절은 그 가격). 같은 날 진입은 신호일·종목 이름 순,
    자리가 차면 건너뛴다. → `paper.json`
+   규칙서(그대로 매매용): `gose_specs.json`, `gose_spec_3c0s10.md`, `gose_spec_4.md`.
 
    "SCR 3단 + 물타기" 계좌 `avg-SOXL`·`avg-SOXX`(`gose_rules_avg`, 규칙서 `gose_spec.md`)는
    이 공용 규칙을 쓰지 않는다: 한 종목만, 사이클 시작 자산/3 단위, 추가 2번, 평단×1.10 익절.
@@ -46,6 +47,8 @@ UNIVERSE_SEED = HERE / "gose_universe.json"
 RULEBOOK = HERE / "gose_rulebook.json"
 AVG_SPEC = HERE / "gose_spec.md"
 AVG_INFO = HERE / "gose_avg.json"
+# 규칙서 목록: 전략마다 Markdown 전문 + 구조화 값, 나머지 계좌는 한 줄 정의(참고, 미검증)
+SPECS = HERE / "gose_specs.json"
 
 CAPITAL = 10_000.0
 MAX_POS = 10

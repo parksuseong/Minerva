@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Minerva owl</title>
+  <!-- 미네르바의 부엉이(사용자 2026-11-16 "파비콘 만들어라 부엉이로") -->
+  <path d="M14 10 L22 20 L42 20 L50 10 L50 40 C50 52 42 60 32 60 C22 60 14 52 14 40 Z" fill="#6b4f2a"/>
+  <path d="M20 44 C20 52 26 56 32 56 C38 56 44 52 44 44 C44 40 38 38 32 38 C26 38 20 40 20 44 Z" fill="#d9b98a"/>
+  <path d="M24 44 l3 3 l3 -3 M30 48 l3 3 l3 -3 M34 44 l3 3 l3 -3" stroke="#6b4f2a" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+  <circle cx="23.5" cy="29" r="9" fill="#f5e6c8"/>
+  <circle cx="40.5" cy="29" r="9" fill="#f5e6c8"/>
+  <circle cx="23.5" cy="29" r="5" fill="#f2b705"/>
+  <circle cx="40.5" cy="29" r="5" fill="#f2b705"/>
+  <circle cx="23.5" cy="29" r="2.6" fill="#1b1b1b"/>
+  <circle cx="40.5" cy="29" r="2.6" fill="#1b1b1b"/>
+  <path d="M29 35 L32 41 L35 35 Z" fill="#e08a1e"/>
+</svg>

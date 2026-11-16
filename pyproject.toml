@@ -23,7 +23,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-minerva = ["static/*", "gose_*.json"]
+minerva = ["static/*", "gose_*.json", "gose_*.md"]
 
 [tool.ruff]
 line-length = 100

@@ -1369,6 +1369,13 @@ def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None,
             "pct": pct,
             "why": why,
             "opened_at": pos.get("opened_at"),
+            # 거래별 복기(btc_trade_review)가 손으로 연 포지션·손으로 정한 익절을 알아보게
+            "manual": bool(pos.get("manual")),
+            "tp_custom": pos.get("tp_custom") or None,
+            "tp": pos.get("tp"),
+            "stop": pos.get("stop"),
+            "trail": bool(pos.get("trail")),
+            "best": pos.get("best"),
         },
     )
     label = {

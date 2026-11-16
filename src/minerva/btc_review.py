@@ -105,13 +105,15 @@ def fetch_bars(symbol: str, start_ms: int, end_ms: int) -> list[list]:
         return json.load(r)
 
 
-def excursion(trade: dict, bars: list[list]) -> dict:
+def excursion(trade: dict, bars: list[list], partial: bool = False) -> dict:
     """들고 있는 동안 가장 좋았던·나빴던 가격(진입가 대비 %, 내 방향 기준)과 청산 뒤 4시간.
 
     청산 시각은 엔진이 기록한 때라 손절·익절 실제 체결보다 늦을 수 있다. 그래서 손절·익절은
     진입 뒤 청산가에 처음 닿은 봉까지(청산가를 지난 움직임은 세지 않음)를 보유 구간으로 본다.
     그 밖의 청산(신호·수동 등)과 못 닿은 손절·익절은 기록 시각 전에 마감한 봉까지 본다
     (엔진은 봉 마감 20초 뒤에 청산하므로 기록 시각이 든 봉은 청산 뒤다).
+    partial이면 청산 뒤 봉이 4시간보다 적어도 있는 만큼 보고 `bars`(봉 수)·`partial`을 붙인다
+    (거래별 복기는 청산 1시간 뒤에 쓴다). bars에는 마감한 봉만 넣는다.
     """
     entry, exit_px = float(trade["entry"]), float(trade["exit"])
     sign = 1 if trade["side"] == "long" else -1
@@ -138,7 +140,7 @@ def excursion(trade: dict, bars: list[list]) -> dict:
             break
     out = {"mfe_pct": round(best, 2), "mae_pct": round(worst, 2), "after": None}
     nxt = held[after_i : after_i + AFTER_BARS]
-    if len(nxt) == AFTER_BARS:
+    if len(nxt) == AFTER_BARS or (partial and nxt):
         hi = max(float(b[2]) for b in nxt)
         lo = min(float(b[3]) for b in nxt)
         last = float(nxt[-1][4])
@@ -147,6 +149,8 @@ def excursion(trade: dict, bars: list[list]) -> dict:
             "low_pct": round((lo / exit_px - 1) * 100, 2),
             "close_pct": round((last / exit_px - 1) * 100, 2),
         }
+        if partial:
+            out["after"].update(bars=len(nxt), partial=len(nxt) < AFTER_BARS)
     return out
 
 

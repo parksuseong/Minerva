@@ -1,0 +1,14 @@
+# 자동매매 거래별 복기: 청산 1시간 지난 실전 거래마다 숫자 + Claude 복기글 → ~/.minerva/btc_trade/reviews/trades/<ID>.json + 텔레그램 한 줄. 읽기 전용, 주문 없음. 한 번에 5개까지.
+# 설치: sudo cp deploy/minerva-btc-trade-review.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-btc-trade-review.timer
+[Unit]
+Description=Minerva auto-trading per-trade review (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.btc_trade_review
+TimeoutStartSec=900

@@ -86,7 +86,7 @@ def daily_analysis() -> dict:
 def btc_analysis() -> dict:
     data = _read(btc_path())
     if data is None:
-        return {"status": "pending", "message": "아직 비트코인 분석이 없어요 (15분마다 자동 실행)"}
+        return {"status": "pending", "message": "아직 BTC 분석이 없어요 (15분마다 자동 실행)"}
     return data
 
 

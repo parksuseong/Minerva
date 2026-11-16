@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -171,6 +172,142 @@ def test_build_paper_and_run_without_fetch(gdir):
     assert len(paper["accounts"]) == len(gose.ACCOUNTS)
     a = next(x for x in paper["accounts"] if x["key"] == "1A")
     assert a["curve"][0][0] == bars[250][0] and a["n_closed"] > 0
+
+
+def _vol_bars(n=400, like=None):
+    """UVXY 대신 쓰는 합성 변동성 일봉(like 또는 _wave_bars와 같은 날짜, 더 짧은 주기)."""
+    out = []
+    for i, b in enumerate(like or _wave_bars(n)):
+        c = 20 * (1 + 0.5 * math.sin(2 * math.pi * i / 33)) ** 2 + 5
+        prev = out[-1][4] if out else c
+        out.append([b[0], prev, max(prev, c) * 1.01, min(prev, c) * 0.99, c])
+    return out
+
+
+def _trend_bars(n=900, seed=4, drift=0.002):
+    """오르는 무작위 걸음(고정 시드). 월봉 지표가 차도록 길게 — 3v2 추세 조건이 가끔 맞는다."""
+    rng = random.Random(seed)
+    out, d, c = [], date(2022, 1, 3), 100.0
+    for _ in range(n):
+        while d.weekday() >= 5:
+            d += timedelta(days=1)
+        prev = c
+        c *= 1 + drift + rng.gauss(0, 0.02)
+        out.append([d.isoformat(), prev, max(prev, c) * 1.01, min(prev, c) * 0.99, c])
+        d += timedelta(days=1)
+    return out
+
+
+def test_v2_accounts_registered():
+    keys = [k for k, _, _ in gose.ACCOUNTS]
+    assert keys[-2:] == ["3v2-loose", "11v2a"] and len(keys) == len(set(keys))
+    assert gose._rules("11v2a") is gose.V and gose._rules("3-c0") is gose.R
+    assert gose._allowed("3v2-loose", "AAPL")  # 3v2는 전 종목
+    assert gose._allowed("11v2a", "SOXL") and not gose._allowed("11v2a", "AAPL")
+    assert not gose._allowed("11v2a", "UVXY")  # 신호원은 사지 않는다
+    assert gose._allowed("1A", "AAPL")
+
+
+def test_11v2a_uses_vol_signal_and_traded_symbols_only():
+    bars, vol = _wave_bars(), [tuple(b) for b in _vol_bars()]
+    hits = gose.V.compute_vol_hits(vol, ("11v2a",))
+    assert hits["11v2a"]
+    end = bars[-1][0]
+    soxl = gose.collect("SOXL", bars, None, "0000", end, vol=vol, vol_hits=hits)["11v2a"]["trades"]
+    assert soxl and all(t["reason_in"].startswith("UVXY") for t in soxl)
+    # 신호일은 UVXY 신호 날짜(같은 달력이라 같은 날)
+    sig = {d for _, d in hits["11v2a"]}
+    assert {t["signal_date"] for t in soxl} <= sig
+    # 허용 밖 종목은 같은 신호가 있어도 거래 없음, 3v2-loose는 그대로 계산
+    aapl = gose.collect("AAPL", bars, None, "0000", end, vol=vol, vol_hits=hits)
+    assert aapl["11v2a"] == {"trades": [], "pending": []}
+    # 신호원이 없으면 11v2a는 거래 없음
+    assert gose.collect("SOXL", bars, None, "0000", end)["11v2a"]["trades"] == []
+
+
+def test_v2_accounts_respect_start():
+    bars = _trend_bars()
+    vol = [tuple(b) for b in _vol_bars(like=bars)]
+    end = bars[-1][0]
+    for key in ("3v2-loose", "11v2a"):
+        full = gose.collect("SOXL", bars, None, "0000", end, vol=vol)[key]["trades"]
+        assert len(full) >= 2, key
+        start = sorted(t["signal_date"] for t in full)[1]  # 첫 거래는 시작 전
+        cut = gose.collect("SOXL", bars, None, start, end, vol=vol)[key]["trades"]
+        assert cut and all(t["signal_date"] >= start for t in cut)
+        assert len(full) > len(cut), key
+        assert [t for t in full if t["signal_date"] >= start] == cut
+
+
+def test_build_paper_v2_accounts_with_vol_cache(gdir):
+    bars = _wave_bars()
+    for sym in ("SOXL", "AAPL"):
+        gose._write(gdir / "bars" / f"{sym}.json", {"bars": bars})
+    gose._write(gdir / "bars" / "UVXY.json", {"bars": _vol_bars()})
+    paper = gose.build_paper(["SOXL", "AAPL"], "^VIX", bars[150][0], bars[-1][0])
+    by = {a["key"]: a for a in paper["accounts"]}
+    assert paper["symbols_used"] == 2  # UVXY는 종목 수에 안 들어간다
+    a = by["11v2a"]
+    assert a["round"] == 2 and a["label"] == gose.V2_LABEL and a["signal_source"] == "UVXY"
+    assert a["symbols"] == ["SOXX", "QQQ", "SPY", "SOXL"]
+    assert a["signal_source_through"] == bars[-1][0]
+    traded = {c["sym"] for c in a["closed"]} | {p["sym"] for p in a["open"]}
+    assert traded == {"SOXL"}
+    assert by["3v2-loose"]["round"] == 2 and "signal_source" not in by["3v2-loose"]
+    assert "round" not in by["1A"]
+    # 신호원 캐시가 없어도 돌고, 11v2a만 비어 있다
+    (gdir / "bars" / "UVXY.json").unlink()
+    paper = gose.build_paper(["SOXL"], "^VIX", bars[150][0], bars[-1][0])
+    a = next(x for x in paper["accounts"] if x["key"] == "11v2a")
+    assert a["n_closed"] == 0 and not a["open"] and a["signal_source_through"] is None
+
+
+def test_build_backtest_with_round2():
+    r1 = {
+        "meta": {"bonferroni_pct": 99.84},
+        "variants": {"1A/N": {"main": {"n": 3}, "pass": False, "fail_reasons": ["거래<30"]}},
+    }
+    v_loose = {
+        "main": {"n": 900, "mean": 1.5},
+        "subs": {"2021-22": {"n": 275, "mean": -0.999}},
+        "random": {"pct": 99.4},
+        "pass": False,
+        "fail_reasons": ["하위기간 평균≤0: 2021-22"],
+    }
+    v_a = {
+        "main": {"n": 29, "mean": 7.5},
+        "subs": {"2021-22": {"n": 0}},
+        "per_sym_main": {
+            "SOXX": {"n": 8, "mean": 5.2},
+            "QQQ": {"n": 7, "mean": 2.1},
+            "SPY": {"n": 7, "mean": 0.9},
+            "SOXL": {"n": 7, "mean": 22.2},
+        },
+        "pass": False,
+        "fail_reasons": ["거래<30"],
+    }
+    r2 = {
+        "meta": {"bonferroni_pct": 99.89, "variants": 46},
+        "variants": {"3v2-loose/N": v_loose, "11v2a/N": v_a},
+    }
+    out = gose.build_backtest(r1, r2)
+    assert out["variants"] == 3 and out["verified"] == 0
+    assert out["meta"]["bonferroni_pct"] == 99.89 and out["meta"]["tested"] == 46
+    assert "46개" in out["gates"][-1]
+    assert out["rounds"]["2"] == {
+        "variants": 2,
+        "verified": 0,
+        "label": gose.V2_LABEL,
+        "vol_series": None,
+    }
+    rows = {r["variant"]: r for r in out["rows"]}
+    assert [r["variant"] for r in out["rows"]] == ["1A/N", "3v2-loose/N", "11v2a/N"]
+    assert "round" not in rows["1A/N"]
+    assert any("2021-22" in c and "손실" in c for c in rows["3v2-loose/N"]["caveats"])
+    cav = rows["11v2a/N"]["caveats"]
+    assert any("신호 0번" in c for c in cav) and any("SOXL 쏠림" in c for c in cav)
+    # 2차가 없으면 예전과 같다
+    assert gose.build_backtest(r1)["rounds"] is None
 
 
 def test_build_backtest_counts_and_caveats():

@@ -1,0 +1,17 @@
+# 고서 가상매매: 야후 일봉 갱신 → 룰북 후보 전략을 가상 계좌로 다시 계산 → ~/.minerva/gose/paper.json. 실제 주문 없음, 키 없음.
+# 설치: sudo cp deploy/minerva-gose.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-gose.timer
+[Unit]
+Description=Minerva gose paper trading (virtual only, no orders)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.gose run
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=500M
+TimeoutStartSec=1800

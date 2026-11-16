@@ -164,7 +164,14 @@
     const t = eng.live_totals || { n: rows.length, wins: rows.filter((r) => (r.pnl || 0) > 0).length,
       pnl: rows.reduce((a, r) => a + (r.pnl || 0), 0) };
     const sum = t.pnl, wins = t.wins;
-    $("bte-acct").innerHTML = `<div class="detail">실전 시작 ${esc(eng.live_since)} KST 이후 ${t.n}번 · 이긴 ${wins}번 · 합계 <b>${sum > 0 ? "+" : ""}${num(sum, 2)} USDT</b> (수수료 포함)</div>
+    const pct = (w, n) => (n ? `${num((100 * w) / n, 0)}%` : "-");
+    const g = eng.gauges || {};
+    const days = g.winrate_days || 30;
+    const wr30 = g.winrate_n != null
+      ? ` · 최근 ${days}일 ${pct(g.winrate_wins, g.winrate_n)} (${g.winrate_wins}/${g.winrate_n}, ${num((g.winrate_min || 0.5) * 100, 0)}% 아래면 진입 정지)`
+      : "";
+    $("bte-acct").innerHTML = `<div class="detail" style="font-size:1.05em">승률 <b>${pct(wins, t.n)}</b> (이긴 ${wins} / ${t.n}번)${wr30}</div>
+      <div class="detail">실전 시작 ${esc(eng.live_since)} KST 이후 ${t.n}번 · 이긴 ${wins}번 · 합계 <b>${sum > 0 ? "+" : ""}${num(sum, 2)} USDT</b> (수수료 포함)</div>
       <div class="detail">지금: ${posHtml(eng.position)}</div>
       ${rows.length || eng.position ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${holdRow(eng.position)}${tradeRows(rows, "bte-acct")}</tbody></table>${window.MinervaUI.moreBtn("bte-acct", rows.length)}</div>` : ""}`;
   };

@@ -24,13 +24,19 @@ def bdir(tmp_path, monkeypatch):
     d = tmp_path / "feed"
     (d / "posts").mkdir(parents=True)
     (d / "rulebook").mkdir()
-    (d / "config.json").write_text(json.dumps({"feed_id": BID}))
+    (d / "config.json").write_text(json.dumps({
+        "id": BID,
+        "list_url": "https://feed.example.com/api/{bid}/post-list?n={n}&p={p}",
+        "rss_url": "https://rss.feed.example.com/{bid}.xml",
+        "post_url": "https://feed.example.com/PostView?id={bid}&no={no}",
+        "referer": "https://feed.example.com/{bid}",
+    }))
     (d / "index.json").write_text(json.dumps(
         {"100000000001": {"title": "옛 글", "cat": "SCR 연구실", "date": "2026-10-30 20:19"}}))
     (d / "rulebook" / "summary.md").write_text("# 룰북 요약\n")
     (d / "rulebook" / "rulebook.md").write_text(
         "## [L] 롱 진입\n### L-06 3단 돌파 롱 — **가능**\n### V-01 VIX 10선 — **애매**\n")
-    monkeypatch.setenv("MINERVA_feed_DIR", str(d))
+    monkeypatch.setenv("MINERVA_FEED_DIR", str(d))
     monkeypatch.setenv("MINERVA_GOSE_DIR", str(tmp_path / "gose"))
     return d
 
@@ -229,7 +235,7 @@ def test_full_run(bdir, tmp_path):
     # 텔레그램 한 번
     assert len(sent) == 1
     msg = sent[0]
-    assert "새 글 2개" in msg and gb.LABEL in msg and "원전 의견: SOXS→SOXX 숏" in msg
+    assert "새 장 2개" in msg and gb.LABEL in msg and "원전 의견: SOXS→SOXX 숏" in msg
     assert "우리 점검: 일 " in msg and "판단: " in msg and "분석 실패" in msg
     # 다시 돌리면 새 글 없음
     again = gb.run(NOW, get=FakeNet(), sleep=lambda s: None, caller=caller, send=sent.append)
@@ -258,7 +264,7 @@ def test_route_feed_section(bdir, tmp_path):
     gb.save_records([{"id": "100000000003", "title": "t", "cat": "c", "date": "2026-11-16 20:00",
                       "analysis": None, "error": "x"}], BID, NOW)
     d = TestClient(app).get("/api/gose").json()
-    assert d["feed"]["status"] == "ok" and d["feed"]["entries"][0]["title"] == "t"
+    assert d["feed"]["status"] == "ok" and d["feed"]["entries"][0]["title"] == "새 장"
 
 
 def test_call_claude_read_only_images(monkeypatch, tmp_path):

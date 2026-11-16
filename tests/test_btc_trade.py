@@ -5173,3 +5173,12 @@ def test_trail_move_text_without_best():
     pos = {"symbol": "BTCUSDT", "side": "long", "entry": 100_000.0, "stop": 97_000.0}
     assert "100,000.0" in bt._trail_move_text(ctx, pos, 97_000.0, 100_200.0, True)
     assert "따라 올림" in bt._trail_move_text(ctx, pos, 97_000.0, 100_200.0, False)
+
+
+@pytest.mark.live_constants
+def test_live_leverage_1x_window_365():
+    # 사용자 2026-11-17 "가장 최선을 네가 알아서 선택해" → 시점 시뮬레이션 뒤 1배·365일
+    from minerva import btc_universe
+
+    assert bt.LEVERAGE == 1 and btc_universe.LEVERAGE == 1
+    assert btc_universe.WINDOW_DAYS == 365

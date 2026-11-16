@@ -121,7 +121,12 @@ PRE_CLOSE_MS = 60 * 60_000
 PRE_CLOSE_GAP_MS = 6 * 3_600_000
 INTERVAL = "15m"
 BAR_MS = 15 * 60_000
-LEVERAGE = 3
+# 2026-11-17 01:41 사용자 "가장 최선을 네가 알아서 선택해" → 시점 시뮬레이션(2024-11~2026-11,
+# 매주 그때 정보로 종목 고르기): 3배·182일 창 −52%(MDD 91%), 1배 +3.6%(MDD 49%), 365일 창 3배
+# +152%(미끄러짐 0.1% 넣으면 +17%), 365일+1배 미끄러짐 넣고 +45%·MDD 32%·두 해 모두 +(결과 본 뒤
+# 조합, 참고). 기대값이 확실하지 않아 깡통 위험부터 줄인다: 1배 + 365일 창.
+# 들고 있던 포지션은 그 배율 그대로 끝까지.
+LEVERAGE = 1
 STOP_PCT = 0.03
 # AI가 손절·익절 폭을 고르나. 2026-11-12 사용자 승인으로 끔:
 # 손절 3% 고정·익절 없음(백테스트와 같은 규칙).
@@ -1458,7 +1463,8 @@ def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None,
     sym = pos_symbol(pos)
     px = _px(exit_px) if exit_px else "?"
     money = f", 손익 {pnl:+.2f} USDT" if pnl is not None else ""
-    pc = f" ({pct:+.2f}% × {LEVERAGE}배)" if pct is not None else ""
+    lev = pos.get("leverage") or LEVERAGE  # 예전 배율로 연 포지션은 그 배율
+    pc = f" ({pct:+.2f}% × {lev}배)" if pct is not None else ""
     res = {"win": " · 승", "loss": " · 패", "draw": " · 무승부(진입가 근처 손절)"}.get(
         outcome({"pnl": pnl, "pct": pct, "why": why}) or "", ""
     )

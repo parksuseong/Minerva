@@ -26,3 +26,26 @@ def pytest_sessionstart(session):
     from minerva import btc_trade
 
     assert Path(btc_trade.DIR).resolve() != _REAL, "시험이 실전 엔진 폴더를 가리킨다"
+
+
+import pytest  # noqa: E402
+
+# 2026-11-17 실전 배율 1배·창 365일로 바꿨다. 예전 시험들은 3배·182일 숫자로 짜여 있어 그대로 두고,
+# 실전 값은 test_btc_trade.py의 test_live_leverage_1x_window_365에서 따로 확인한다.
+LEGACY_LEVERAGE = 3
+LEGACY_WINDOW = 182
+
+
+@pytest.fixture(autouse=True)
+def _legacy_engine_numbers(request, monkeypatch):
+    if request.node.get_closest_marker("live_constants"):
+        return
+    from minerva import btc_trade, btc_universe
+
+    monkeypatch.setattr(btc_trade, "LEVERAGE", LEGACY_LEVERAGE)
+    monkeypatch.setattr(btc_universe, "LEVERAGE", LEGACY_LEVERAGE)
+    monkeypatch.setattr(btc_universe, "WINDOW_DAYS", LEGACY_WINDOW)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live_constants: 실전 상수 그대로 시험")

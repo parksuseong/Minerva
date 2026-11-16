@@ -45,18 +45,20 @@ CONTRACTS = ("PERPETUAL", "TRADIFI_PERPETUAL")
 FRESH_DAYS = 14
 MIN_TRADES = 20
 MIN_DAYS = 60
-WINDOW_DAYS = 182  # 사용자 2026-11-13 "최근 6개월만 하자 1년은 너무 길다"
+# 2026-11-17 시점 시뮬레이션 뒤 365일로(사용자 위임 "가장 최선을 네가 알아서").
+# 그 전 182일(11-13 "최근 6개월만")
+WINDOW_DAYS = 365
 WARMUP = 300
 FEE = 0.0005
-LEVERAGE = 3
+LEVERAGE = 1  # 엔진 btc_trade.LEVERAGE와 같게(백테스트도 같은 배율)
 STOP = 0.03
 BAR_MS = 15 * 60_000
 PAGE = 1000  # 봉 1000개 = 무게 5 (1500개는 무게 10)
 GAP_S = 0.4
 WEIGHT_SOFT = 1200
 RULE = (
-    "SCR ① 15분봉(Stoch 9·CCI 20·RSI 21, W3, 3/3, 넘어옴) 롱↔숏 갈아타기 · 3배 · 손절 3% · "
-    "수수료 편도 0.05% · 다음 봉 시가 진입 · 최근 182일(약 6개월, 상장이 늦으면 상장 이후)"
+    "SCR ① 15분봉(Stoch 9·CCI 20·RSI 21, W3, 3/3, 넘어옴) 롱↔숏 갈아타기 · 1배 · 손절 3% · "
+    "수수료 편도 0.05% · 다음 봉 시가 진입 · 최근 365일(약 1년, 상장이 늦으면 상장 이후)"
 )
 DIR = Path(os.environ.get("MINERVA_BTC_TRADE_DIR", "~/.minerva/btc_trade")).expanduser()
 # 사용자 2026-11-16 "승률관계없이 최근 일주일동안 하루에 3프로 이상씩 움직인 종목있으면 매매하자"

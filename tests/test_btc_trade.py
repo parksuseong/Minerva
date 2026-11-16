@@ -2575,6 +2575,9 @@ def universe_file(rates: dict, at: datetime = NOW, extra: dict | None = None) ->
         "stats": stats,
     }
     (bt.DIR / "universe.json").write_text(json.dumps(data))
+    # 7일 변동폭(2026-11-16): 모두 2% 넘게(변동폭 조건은 따로 시험)
+    rng = {"updated_at": at.strftime("%Y-%m-%d %H:%M"), "ranges": dict.fromkeys(rates, 5.0)}
+    (bt.DIR / "ranges.json").write_text(json.dumps(rng))
 
 
 # 보유 BTC(40%)보다 SWITCH_EDGE_PP(1%p) 이상 높은 종목이 바꾸기 후보가 되는 승률
@@ -3321,7 +3324,7 @@ def test_universe_reads_fresh_ranges_only(env):
     u = bt.universe(now)
     assert u["tradable"] == {"AAAUSDT"}
     assert u["ranges"] == {"AAAUSDT": 3.1, "BBBUSDT": 1.2}
-    # 48시간 넘게 지난 파일은 안 쓴다 → 변동폭 조건 없이
+    # 48시간 넘게 지난 파일은 안 쓴다 → 새 진입 멈춤(레드팀: 조건 없이 열지 않는다)
     later = now + 3 * 86_400_000
     (bt.DIR / "universe.json").write_text(
         json.dumps(
@@ -3333,7 +3336,7 @@ def test_universe_reads_fresh_ranges_only(env):
         )
     )
     u = bt.universe(later)
-    assert u["ranges"] is None and u["tradable"] == {"AAAUSDT", "BBBUSDT"}
+    assert u["ranges"] is None and u["tradable"] == frozenset()
 
 
 def test_flat_low_sample_symbol_signal_not_entered(env, multi, monkeypatch):

@@ -321,7 +321,9 @@ def universe(now_ms: int | None = None) -> dict:
         "winrate": {s: float(stats[s].get("winrate") or 0) for s in syms},
         "priority": tuple(btc_universe.priority(list(syms), stats)),
         "stats": stats,
-        "tradable": tradable_set(syms, stats, ranges),
+        # 변동폭 파일이 없거나 48시간 넘었으면 새 진입을 멈춘다(레드팀: 조건 없이 열면 사용자 규칙
+        # "2프로 이상만"보다 느슨해진다). 보유분 관리·청산은 그대로
+        "tradable": tradable_set(syms, stats, ranges) if ranges is not None else frozenset(),
         "ranges": ranges,
     }
 
@@ -3643,6 +3645,12 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
         out["skip"] = "TradFi 약관 미동의로 쉬는 중"
     elif sym not in SYMBOLS:
         out["skip"] = "종목 범위(거래량 상위)에서 빠져 새로 들어가지 않음(보유분 정리만)"
+    elif (
+        not tradable(sym)
+        and UNIVERSE.get("source") == "universe"
+        and UNIVERSE.get("ranges") is None
+    ):
+        out["skip"] = "변동폭 파일(ranges.json)이 없거나 48시간 넘어 새 진입 멈춤(보유분 정리만)"
     elif not tradable(sym):
         out["skip"] = (
             "7일 변동폭 2% 미만·백테스트 손실·표본 부족이라 새로 들어가지 않음(보유분 정리만)"

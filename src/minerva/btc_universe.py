@@ -394,10 +394,16 @@ def refresh_ranges(
     now_ms = now_ms or int(time.time() * 1000)
     ranges: dict[str, float] = {}
     errors: dict[str, str] = {}
+    # 한 번 실패한 종목은 48시간 안의 앞 값을 이어 쓴다(하루 내내 막히지 않게)
+    before = load_ranges(out, now_ms) or {}
     for sym in symbols:
         try:
             params = {"symbol": sym, "interval": "1d", "limit": RANGE_DAYS + 2}
-            bars = get("/fapi/v1/klines", params)
+            try:
+                bars = get("/fapi/v1/klines", params)
+            except OSError:
+                _sleep(2)
+                bars = get("/fapi/v1/klines", params)  # 한 번 더
             r = day_range(bars, now_ms)
             if r is None:
                 errors[sym] = "일봉 부족"
@@ -407,6 +413,8 @@ def refresh_ranges(
             raise
         except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
             errors[sym] = f"{type(e).__name__}: {e}"[:200]
+            if sym in before:
+                ranges[sym] = before[sym]
         _sleep(GAP_S / 2)
     data = {
         "updated_at": datetime.fromtimestamp(now_ms / 1000, KST).strftime("%Y-%m-%d %H:%M"),
@@ -501,6 +509,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(table(data))
     print(f"→ {out} ({time.monotonic() - t0:.0f}초)")
+    if not args.dry and args.out is None:
+        # 새로 들어온 종목도 바로 변동폭을 잰다(월요일 09:10까지 막히지 않게, 레드팀)
+        try:
+            refresh_ranges(DIR / "ranges.json", list(dict.fromkeys(data["symbols"])))
+        except RateLimited as e:
+            log.error("변동폭 갱신 중 요청 한도(%s): 앞 파일 그대로", e)
     return 0
 
 

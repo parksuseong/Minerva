@@ -120,6 +120,27 @@
     $("gose-paper").innerHTML = accts.map((a) => account(a, r.capital || 10000)).join("");
   }
 
+  const SIDE = { long: "롱", short: "숏" };
+  function feed(b) {
+    if (!b || b.status === "pending" || !(b.entries || []).length) {
+      return "<p class=\"placeholder\">아직 없음 (매일 23:10에 새 글을 확인해요)</p>";
+    }
+    const rows = b.entries.map((e) => {
+      const rules = (e.rules || []).map((r) => `<li>[${esc(r.topic)}] ${esc(r.rule_paraphrase)}
+        <span class="mini">기계화 ${esc(r.mechanizable)}${(r.relates_to || []).length ? ` · 관련 ${esc(r.relates_to.join(", "))}` : ""}${r.conflict ? ` · 충돌: ${esc(r.conflict)}` : ""}</span></li>`).join("");
+      const calls = (e.calls || []).map((c) => `<li><b>${esc(c.instrument)}</b>${c.instrument !== c.symbol ? ` (${esc(c.symbol)})` : ""}
+        <b class="${c.side === "long" ? "up" : "down"}">${SIDE[c.side] || esc(c.side)}</b> · ${esc(c.timeframe || "")}
+        <span class="mini">${esc(c.reason || "")}${c.levels ? ` · 수준 ${esc(c.levels)}` : ""}${c.confidence ? ` · ${esc(c.confidence)}` : ""}</span><br>
+        우리 점검: ${esc(c.check || "-")} SCR · 판단: <b class="${c.verdict === "추천" ? (c.side === "long" ? "up" : "down") : ""}">${esc(c.verdict || "-")}</b>
+        <span class="mini">(${esc(c.verdict_reason || "")})${c.perp ? ` · 바이낸스 ${esc(c.perp)}` : ""}</span></li>`).join("");
+      return `<div class="asset"><b>${esc(e.title)}</b> <span class="mini">${esc(e.date)} · ${esc(e.category)}</span>
+        ${e.error ? `<p class="mini">분석 실패: ${esc(e.error)}</p>` : `<p>${esc(e.summary || "").replace(/\n/g, "<br>")}</p>`}
+        ${rules ? `<details><summary>규칙 변경 후보 ${(e.rules || []).length}개</summary><ul>${rules}</ul></details>` : ""}
+        ${calls ? `<h3>매매 의견</h3><ul>${calls}</ul>` : ""}</div>`;
+    }).join("");
+    return `<p class="mini">${esc(b.label || "")} · ${esc(b.generated_at || "")} 갱신 · 추천 = 원전 의견과 우리 일·주봉 SCR 방향이 같고 월봉이 반대가 아닐 때. 주문은 하지 않아요.</p>${rows}`;
+  }
+
   function load() {
     fetch("/api/gose")
       .then((r) => r.json())
@@ -127,6 +148,7 @@
         $("gose-rulebook").innerHTML = rulebook(d.rulebook);
         $("gose-backtest").innerHTML = backtest(d.backtest);
         paper(d.paper);
+        $("gose-feed").innerHTML = feed(d.feed);
       })
       .catch(() => { $("gose-paper-status").textContent = "고서 자료를 불러오지 못했어요"; });
   }

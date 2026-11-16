@@ -18,6 +18,8 @@ os.environ["MINERVA_TELEGRAM_ENV"] = str(_TMP / "no-telegram.env")
 os.environ["MINERVA_ACCOUNT_DIR"] = str(_TMP / "account")
 # 고서 가상매매 폴더(~/.minerva/gose)도 임시로
 os.environ["MINERVA_GOSE_DIR"] = str(_TMP / "gose")
+# 원전 비공개 자료(~/.minerva/feed)도 임시로
+os.environ["MINERVA_feed_DIR"] = str(_TMP / "feed")
 
 
 def pytest_sessionstart(session):

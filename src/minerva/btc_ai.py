@@ -18,6 +18,7 @@ import os
 import signal
 import subprocess
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Callable
 
@@ -228,10 +229,20 @@ def call_claude(
     cwd: Path | None = None,
     model: str | None = None,
     budget: str | None = None,
+    allowed_tools: Sequence[str] = (),
+    add_dirs: Sequence[Path] = (),
 ) -> str:
     """`claude -p` 한 번. 도구 없음, MCP 없음, 세션 저장 없음. 실패하면 예외.
 
-    model·budget은 일일 복기(`btc_review`)가 바꿔 쓴다. 엔진은 기본값 그대로."""
+    model·budget은 일일 복기(`btc_review`)가 바꿔 쓴다. 엔진은 기본값 그대로.
+    allowed_tools·add_dirs는 원전 글 분석(`gose_feed`)이 그 글의 그림 폴더만 읽게(Read) 쓴다.
+    나머지 도구는 그대로 막는다."""
+    allowed = [t for t in allowed_tools if t in BLOCKED_TOOLS]
+    extra: list[str] = []
+    if allowed:
+        extra += ["--allowedTools", *allowed]
+    for d in add_dirs:
+        extra += ["--add-dir", str(d)]
     cmd = [
         CLAUDE,
         "-p",
@@ -242,7 +253,8 @@ def call_claude(
         "dontAsk",
         "--strict-mcp-config",
         "--disallowedTools",
-        *BLOCKED_TOOLS,
+        *[t for t in BLOCKED_TOOLS if t not in allowed],
+        *extra,
         "--max-budget-usd",
         budget or BUDGET_USD,
         "--no-session-persistence",

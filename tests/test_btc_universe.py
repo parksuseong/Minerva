@@ -300,3 +300,38 @@ def test_near_reports_hits_and_distances():
     sig = scr_lab.signals(h, lo, c)
     if sig["long"] and sig["long"][-1] == len(c) - 1:
         assert out["long"]["fired"]
+
+
+# ---------------------------------------------------------------- 7일 하루 변동폭(2026-11-16)
+
+DAY = 86_400_000
+
+
+def _day(t, o, h, lo):
+    return [t, str(o), str(h), str(lo), str(o), "1", t + DAY - 1]
+
+
+def test_day_range_uses_last_7_closed_days_only():
+    now = 10 * DAY + 3_600_000  # 10일째 봉은 진행 중
+    bars = [_day(i * DAY, 100, 102 + i, 100) for i in range(11)]
+    # 마감한 봉 0~9 중 마지막 7개(3~9): (2+i)% 평균 = (5+…+11)/7 = 8
+    assert bu.day_range(bars, now) == 8.0
+    assert bu.day_range(bars[:5], now) is None  # 모자라면 None
+
+
+def test_refresh_ranges_writes_file_and_skips_failures(tmp_path):
+    now = 10 * DAY + 3_600_000
+
+    def get(path, params=None):
+        assert path == "/fapi/v1/klines" and params["interval"] == "1d"
+        if params["symbol"] == "BADUSDT":
+            raise OSError("boom")
+        return [_day(i * DAY, 100, 103, 100) for i in range(9)]
+
+    out = tmp_path / "ranges.json"
+    data = bu.refresh_ranges(out, ["AAAUSDT", "BADUSDT"], now, get)
+    assert data["ranges"] == {"AAAUSDT": 3.0} and "BADUSDT" in data["errors"]
+    saved = bu.load_ranges(out, now + 3_600_000)
+    assert saved == {"AAAUSDT": 3.0}
+    assert bu.load_ranges(out, now + 49 * 3_600_000) is None  # 48시간 넘으면 안 씀
+    assert bu.load_ranges(tmp_path / "none.json", now) is None

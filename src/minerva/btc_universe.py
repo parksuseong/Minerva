@@ -59,6 +59,13 @@ RULE = (
     "수수료 편도 0.05% · 다음 봉 시가 진입 · 최근 182일(약 6개월, 상장이 늦으면 상장 이후)"
 )
 DIR = Path(os.environ.get("MINERVA_BTC_TRADE_DIR", "~/.minerva/btc_trade")).expanduser()
+# 사용자 2026-11-16 "승률관계없이 최근 일주일동안 하루에 3프로 이상씩 움직인 종목있으면 매매하자"
+# → 같은 날 "2프로 이상에 백테스트 수익 +만": 최근 마감 일봉 7개의 하루 변동폭((고가−저가)/시가)
+# 평균이 2% 이상인 종목만 새로 들어간다. 매일 09:10 KST `ranges`(minerva-btc-ranges.timer)가 쓴다.
+RANGE_DAYS = 7
+MIN_DAY_RANGE_PCT = 2.0
+RANGE_FRESH_HOURS = 48
+DAY_MS = 86_400_000
 
 _sleep = time.sleep
 
@@ -364,6 +371,75 @@ def refresh(
     return data
 
 
+def day_range(bars: list[list], now_ms: int, days: int = RANGE_DAYS) -> float | None:
+    """마감한 일봉 마지막 days개의 (고가−저가)/시가 평균(%). 봉이 모자라면 None."""
+    done = [b for b in bars if int(b[0]) + DAY_MS <= now_ms]
+    done = done[-days:]
+    if len(done) < days:
+        return None
+    pcts = [(float(b[2]) - float(b[3])) / float(b[1]) * 100 for b in done if float(b[1]) > 0]
+    if len(pcts) < days:
+        return None
+    return round(sum(pcts) / len(pcts), 2)
+
+
+def refresh_ranges(
+    out: Path,
+    symbols: list[str],
+    now_ms: int | None = None,
+    get: Callable = get_json,
+) -> dict:
+    """종목마다 일봉 몇 개(무게 1)를 받아 7일 평균 하루 변동폭을 out에 쓴다. 한 종목 실패는
+    빼고 간다(파일에 없는 종목은 엔진이 새로 들어가지 않는다). 429·418은 전체를 멈춘다."""
+    now_ms = now_ms or int(time.time() * 1000)
+    ranges: dict[str, float] = {}
+    errors: dict[str, str] = {}
+    for sym in symbols:
+        try:
+            params = {"symbol": sym, "interval": "1d", "limit": RANGE_DAYS + 2}
+            bars = get("/fapi/v1/klines", params)
+            r = day_range(bars, now_ms)
+            if r is None:
+                errors[sym] = "일봉 부족"
+            else:
+                ranges[sym] = r
+        except RateLimited:
+            raise
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+            errors[sym] = f"{type(e).__name__}: {e}"[:200]
+        _sleep(GAP_S / 2)
+    data = {
+        "updated_at": datetime.fromtimestamp(now_ms / 1000, KST).strftime("%Y-%m-%d %H:%M"),
+        "days": RANGE_DAYS,
+        "min_pct": MIN_DAY_RANGE_PCT,
+        "ranges": ranges,
+        "errors": errors,
+    }
+    _write_private(out, json.dumps(data, ensure_ascii=False, indent=1))
+    return data
+
+
+def load_ranges(path: Path, now_ms: int, fresh_hours: float = RANGE_FRESH_HOURS) -> dict | None:
+    """쓸 수 있는 ranges.json의 {종목: 변동폭%}. 없거나·깨졌거나·오래됐으면 None
+    (엔진은 변동폭 조건 없이)."""
+    try:
+        data = json.loads(path.read_text())
+        at = datetime.strptime(str(data["updated_at"]), "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+        ranges = data["ranges"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(ranges, dict):
+        return None
+    age_ms = now_ms - at.timestamp() * 1000
+    if age_ms > fresh_hours * 3_600_000 or age_ms < -DAY_MS:
+        return None
+    out = {}
+    for k, v in ranges.items():
+        if isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[k] = float(v)
+    return out
+
+
 def _empty() -> dict:
     return {"trades": 0, "wins": 0, "winrate": 0.0, "ret": 0.0, "mdd": 0.0, "stops": 0, "days": 0.0}
 
@@ -388,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
     from minerva.btc_trade import SCR_PARAMS  # 엔진과 같은 값(엔진이 이 모듈을 불러 순환 피함)
 
     ap = argparse.ArgumentParser(description="자동매매 종목 범위(거래량 상위 50) 갱신")
-    ap.add_argument("command", choices=["refresh", "show"])
+    ap.add_argument("command", choices=["refresh", "show", "ranges"])
     ap.add_argument("--dry", action="store_true", help="~/.minerva 대신 --out(기본 임시)에 쓴다")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
@@ -398,6 +474,22 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry
         else DIR / "universe.json"
     )
+    if args.command == "ranges":
+        uni = json.loads((DIR / "universe.json").read_text())
+        out = args.out or (
+            Path(os.environ.get("TMPDIR", "/tmp")) / "minerva-ranges-dry.json"
+            if args.dry
+            else DIR / "ranges.json"
+        )
+        try:
+            data = refresh_ranges(out, list(dict.fromkeys(uni["symbols"])))
+        except RateLimited as e:
+            log.error("바이낸스 요청 한도(%s): 멈춤. 파일은 그대로", e)
+            return 2
+        for sym, r in sorted(data["ranges"].items(), key=lambda kv: -kv[1]):
+            print(f"{sym:16s} {r:6.2f}%{'' if r >= MIN_DAY_RANGE_PCT else '  (2% 미만)'}")
+        print(f"→ {out}, 실패 {len(data['errors'])}")
+        return 0
     if args.command == "show":
         print(table(json.loads(out.read_text())))
         return 0

@@ -134,8 +134,8 @@ def test_account_tab_after_start_live(files, monkeypatch):
 
 
 def _universe(d, now: datetime | None = None):
-    """BNB·BTC는 들어갈 수 있고, DOGE는 승률 미달, NVDA는 수익 마이너스
-    (범위엔 있지만 매매 안 함)."""
+    """BNB·BTC는 들어갈 수 있고, DOGE는 7일 변동폭 2% 미만, NVDA는 수익 마이너스
+    (범위엔 있지만 매매 안 함). 승률은 2026-11-16부터 안 본다(DOGE 30%여도 변동폭만 되면 들어감)."""
     now = now or datetime.now(KST)
 
     def st(wr, ret, rank, kind="COIN"):
@@ -152,6 +152,10 @@ def _universe(d, now: datetime | None = None):
         json.dumps({"updated_at": now.strftime("%Y-%m-%d %H:%M"), "symbols": list(stats),
                     "stats": stats})
     )  # fmt: skip
+    ranges = {"BTCUSDT": 4.6, "DOGEUSDT": 1.5, "NVDAUSDT": 8.7, "BNBUSDT": 4.9}
+    (d / "ranges.json").write_text(
+        json.dumps({"updated_at": now.strftime("%Y-%m-%d %H:%M"), "ranges": ranges})
+    )
 
 
 def _near_rows(syms):
@@ -212,10 +216,10 @@ def test_near_view_keeps_only_traded_rows(files):
 
 
 def test_near_view_empty_when_nothing_traded(files):
-    (bt.DIR / "near.json").write_text(json.dumps({"rows": _near_rows(["ETHUSDT"])}))
-    # universe.json이 없으면 네 종목 기본값 중 BTC만 매매(ETH는 수익은 +지만 승률 미달)
+    (bt.DIR / "near.json").write_text(json.dumps({"rows": _near_rows(["SOXLUSDT"])}))
+    # universe.json이 없으면 네 종목 기본값 중 수익 +인 BTC·ETH만 매매(SOXL은 손실)
     v = btc_view.near_view()
-    assert v["traded"] == ["BTCUSDT"] and v["rows"] == []
+    assert set(v["traded"]) == {"BTCUSDT", "ETHUSDT"} and v["rows"] == []
 
 
 def test_kline_whitelist_adds_only_traded_symbols(files):

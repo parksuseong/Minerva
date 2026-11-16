@@ -4407,6 +4407,7 @@ def trail(monkeypatch):
     monkeypatch.setattr(bt, "AI_EXITS", False)
     monkeypatch.setattr(bt, "EXIT_RULE", "trail")
     monkeypatch.setattr(bt, "TRAIL_LOCK_PCT", 0.0)  # 계산 시험은 본전 0. 실전 0.2는 따로 시험
+    monkeypatch.setattr(bt, "TRAIL_ACTIVATE_PCT", 3.0)  # 계산 시험은 +3%. 실전 +2%는 따로 시험
 
 
 def _bar(mk: FakeMarket, i: int, high=None, low=None, close=None) -> None:
@@ -4457,6 +4458,11 @@ def _rewind_trail(bar: int) -> None:
     st = state()
     st["position"]["trail_ms"] = bar
     bt._save(bt.DIR / "state.json", st)
+
+
+def test_trail_activate_is_2pct():
+    # 사용자 2026-11-16 "증거금이 약 3%만 되도 본전" → 시험 뒤 "제일 좋은거로 하자" = 가격 +2%
+    assert bt.TRAIL_ACTIVATE_PCT == 2.0
 
 
 def test_trail_stop_math_and_rounding(trail):

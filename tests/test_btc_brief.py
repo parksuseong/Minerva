@@ -149,7 +149,7 @@ def test_brief_shows_trail_state(files, monkeypatch):
     st["position"].update(tp=None, tp_pct=None)
     (files / "state.json").write_text(json.dumps(st))
     text = btc_brief.brief_text(btc_view.engine_view(NOW), NOW, 75_500.0, {}, "2026-11-09 05:00")
-    assert "익절 없음 · +3% 닿으면 본전 → 3% 따라감" in text
+    assert "익절 없음 · +2% 닿으면 본전 → 3% 따라감" in text
     st["position"].update(trail=True, best=73_000.0, stop=75_190.0)
     (files / "state.json").write_text(json.dumps(st))
     text = btc_brief.brief_text(btc_view.engine_view(NOW), NOW, 75_500.0, {}, "2026-11-09 05:00")

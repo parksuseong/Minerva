@@ -197,7 +197,7 @@
         const code = e && e.message;
         if (code === "400" && cfg.symbol !== BASE.symbol) { cfg.symbol = BASE.symbol; save(); syncControls(); }
         $("lab-status").textContent = code === "429" ? "요청이 많아 잠시 쉬어요(실전 매매와 같은 IP). 1분 뒤 다시 눌러 주세요."
-          : code === "400" ? "이 종목은 지금 매매 종목이 아니라 볼 수 없어요. 비트코인으로 돌려 놨어요."
+          : code === "400" ? "이 종목은 지금 매매 종목이 아니라 볼 수 없어요. BTC로 돌려 놨어요."
             : "봉을 받지 못했어요. 잠시 뒤 다시 열어 주세요.";
       });
   };

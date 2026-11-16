@@ -81,7 +81,7 @@ CORE = [
     Asset("^KS11", "코스피", "KR"),
     Asset("SPY", "S&P500 (SPY)", "US"),
     Asset("NQ=F", "나스닥100 E-mini 선물", "US"),
-    Asset("BTC-USD", "비트코인", "CRYPTO"),
+    Asset("BTC-USD", "BTC", "CRYPTO"),
 ]
 
 

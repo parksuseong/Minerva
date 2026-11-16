@@ -180,6 +180,7 @@ def facts(
         if not _on(day, t) or not t.get("opened_at"):
             continue
         row = {k: t.get(k) for k in ("symbol", "side", "qty", "entry", "exit", "pnl", "pct", "why")}
+        row["leverage"] = bt.pos_leverage(t)  # 그 거래를 연 배율(옛 기록은 3배)
         why = t.get("why")
         row.update(opened_at=t["opened_at"], closed_at=t["at"], why_ko=WHY.get(why, why))
         row["result"] = RESULT_KO.get(bt.outcome(t))
@@ -210,7 +211,7 @@ def facts(
         "partial": day >= now.strftime("%Y-%m-%d"),
         "generated_at": now.strftime("%Y-%m-%d %H:%M"),
         "rules": {
-            "leverage": bt.LEVERAGE,
+            "leverage": bt.LEVERAGE,  # 엔진이 지금 새로 여는 배율, 거래마다는 trades[].leverage
             "stop_pct": bt.STOP_PCT * 100,
             "tp_pct": bt.fixed_tp_pct(),
             "exit_rule": "trail" if bt.trail_rule() else "fixed",
@@ -252,7 +253,8 @@ def _reason(raw) -> str | None:
 
 
 PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 하루를 복기하는 트레이더다.
-엔진 규칙(바꾸지 않음): 15분봉 SCR ① 신호, 3배, 손절 진입가 -3%, 익절 +3%
+엔진 규칙(바꾸지 않음): 15분봉 SCR ① 신호, 배율은 거래마다 trades[].leverage(2026-11-17부터 새
+진입은 rules.leverage배, 그 전 3배), 손절 진입가 -3%, 익절 +3%
 (2026-11-16부터: 익절 없이 +2% 닿으면 손절을 본전으로, 그 뒤 최고가에서 3% 따라감, why=trail),
 한 번에 한 포지션,
 반대 신호면 바꿈, 백테스트 손실·7일 평균 하루 변동폭 2% 미만 종목은 신호만 표시

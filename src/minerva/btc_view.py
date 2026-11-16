@@ -19,6 +19,11 @@ from minerva.strategy import soxl
 MAX_TRADES = 500  # 화면 표는 20줄씩 나눠 보인다. 합계는 live_totals(전체)
 
 
+def _with_leverage(pos: dict | None) -> dict | None:
+    """화면용 포지션: 연 배율(leverage)을 늘 채운다(옛 포지션은 칸이 없어 3배)."""
+    return {**pos, "leverage": bt.pos_leverage(pos)} if isinstance(pos, dict) else pos
+
+
 def fill_outcomes(trades: list[dict], closed: list[dict]) -> None:
     """계좌 탭 체결내역(`binance.parse_trades`)의 청산 체결(실현손익 ≠ 0)에 그 거래의 승패를 붙인다
     (사용자 2026-11-17 "계좌탭에 매매내역에는 승무패도 적어줘"). 규칙은 `btc_trade.outcome` 하나.
@@ -190,7 +195,11 @@ def engine_view(now: datetime | None = None) -> dict:
     ai = [a for a in ai if a.get("mode") == mode][-10:]
     every = [r for r in tail_jsonl(bt.DIR / "closed.jsonl", 10**9) if r.get("mode") == mode]
     # 화면 표의 승/패/무승부 표시(btc_trade.outcome, 손익을 모르면 None)
-    closed = [{**r, "outcome": bt.outcome(r)} for r in every[-MAX_TRADES:]]
+    # leverage: 그 거래를 연 배율(옛 기록은 칸이 없어 3배, bt.pos_leverage)
+    closed = [
+        {**r, "outcome": bt.outcome(r), "leverage": bt.pos_leverage(r)}
+        for r in every[-MAX_TRADES:]
+    ]
     capital = bt._load(bt.CAPITAL_FILE, {}) or {}
     since_at = capital.get("since_at") if capital.get("live") else None
     live_rows = [r for r in every if since_at and (r.get("at") or "") >= since_at]
@@ -238,7 +247,7 @@ def engine_view(now: datetime | None = None) -> dict:
         },
         # TradFi 약관 미동의로 쉬는 종목 {종목: {"at", "until_ms", "code", ...}}
         "unavailable": state.get("unavailable") or {},
-        "position": state.get("position"),
+        "position": _with_leverage(state.get("position")),
         "last_run": last_run,
         "last_signal": last_sig,
         "last_ai": ai[-1] if ai else None,

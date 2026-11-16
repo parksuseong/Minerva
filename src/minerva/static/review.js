@@ -81,7 +81,7 @@
       ${rv ? `${textBlock("무슨 일이 있었나", rv.what)}${items("👍 잘한 점", rv.good)}${items("👎 아쉬운 점", rv.bad)}
         ${textBlock("✋ 손으로 한 결정 평가", rv.manual_note)}${textBlock("💡 교훈 (검증 안 됨, 규칙 아님)", rv.lesson)}
         ${textBlock("📏 규칙대로였나", rv.rule_check)}` : `<p class="mini">AI 복기 없음: ${esc(t.review_error || "-")}</p>`}
-      <p class="mini">${esc(t.generated_at || "")}에 씀 · %는 진입가 대비 가격 %(3배 전)</p>
+      <p class="mini">${esc(t.generated_at || "")}에 씀 · %는 진입가 대비 가격 %(배율 곱하기 전${t.leverage ? `, 이 거래 ${esc(t.leverage)}배` : ""})</p>
     </details>`;
   }
 

@@ -34,7 +34,10 @@
   };
 
   let eng = null, bars = null, gate = null, chart = null, series = null, acct = null;
-  const lev = () => (eng && eng.params && eng.params.leverage) || 3;
+  // 엔진이 지금 새로 여는 배율(2026-11-17부터 1배). 포지션·거래 행은 그 행을 연 배율(levOf)
+  const lev = () => (eng && eng.params && eng.params.leverage) || 1;
+  // 옛 행(배율 칸 없음)은 3배로 열렸다
+  const levOf = (r) => (r && r.leverage) || 3;
 
   const modeChip = (d) => {
     if (d.halt) return '<span class="chip warn">⏸ 정지(HALT)</span>';
@@ -56,7 +59,7 @@
       : p.trail ? ` · 따라가는 중 (최고 <b>${num(p.best, d)}</b>)`
       : rule ? ` · 익절 없음 · +${num(rule.activate_pct, 1)}% 닿으면 본전 → ${num(rule.trail_pct, 1)}% 따라감`
       : " · 익절 없음";
-    const now = isBtc(p) ? ` · 지금 ${pct(u)} (× ${lev()}배 ${pct(u == null ? null : u * lev())})` : "";
+    const now = isBtc(p) ? ` · 지금 ${pct(u)} (× ${levOf(p)}배 ${pct(u == null ? null : u * levOf(p))})` : "";
     return `<span class="chip ${p.side === "long" ? "good" : "warn"}">${who(p, p.side)}</span> ${num(p.qty, 3)} ${short(symOf(p))} @ <b>${num(p.entry, d)}</b>${now}<br>
       <span class="mini">손절 <b>${num(p.stop, d)}</b> (−${num(p.stop_pct ?? 3, 2)}%)${tp} · ${esc(p.opened_at || "")} 진입${p.mode === "dry" ? " · 드라이런 가상" : ""}</span>`;
   };
@@ -96,6 +99,7 @@
       <h3 style="margin:10px 0 4px;font-size:14px">마지막 신호</h3><div>${sigHtml(d.last_signal)}</div>
       <h3 style="margin:10px 0 4px;font-size:14px">정지 규칙</h3>${gaugeHtml(d.gauges)}
       <p class="mini">${runAt}${d.live_since ? ` · 실전 시작 ${esc(d.live_since)}` : ""}</p>`;
+    if ($("bte-lev")) $("bte-lev").textContent = lev();
     if ($("bte-today")) {
       $("bte-today").innerHTML = `<div class="regime">${modeChip(d)}</div>
         <div><b>포지션</b>: ${posHtml(d.position)}</div>
@@ -119,7 +123,7 @@
 
   const tradeRows = (rows, key) => rows.map((r, i) => `<tr${window.MinervaUI.pgAttr(key, i)}><td>${esc((r.at || "").slice(5, 16))}</td>
       <td><span class="chip ${r.side === "long" ? "good" : "warn"}">${who(r, r.side)}</span></td>
-      <td>${num(r.entry)} → ${num(r.exit)}</td><td>${pct(r.pct)} <span class="mini">×${lev()} ${pct(r.pct == null ? null : r.pct * lev())}</span></td>
+      <td>${num(r.entry)} → ${num(r.exit)}</td><td>${pct(r.pct)} <span class="mini">×${levOf(r)} ${pct(r.pct == null ? null : r.pct * levOf(r))}</span></td>
       <td>${r.pnl == null ? "-" : `${r.pnl > 0 ? "+" : ""}${num(r.pnl, 2)}`}</td><td>${esc(WHY[r.why] || r.why)}</td><td>${resCell(r.outcome)}</td></tr>`).join("");
   // 들고 있는 포지션을 거래 표 맨 위에 "보유 중"으로 (사용자 2026-11-14). 지금 가격·평가손익은
   // 계좌 조회(/api/account/binance, 1분마다, 마크 가격)에서, 없으면 BTC만 이 화면 봉 종가로.
@@ -134,7 +138,7 @@
     return `<tr><td><b>보유 중</b></td>
       <td><span class="chip ${p.side === "long" ? "good" : "warn"}">${who(p, p.side)}</span></td>
       <td>${num(p.entry)} → ${now == null ? "-" : `지금 ${num(now)}`}</td>
-      <td>${pct(u)} <span class="mini">×${lev()} ${pct(u == null ? null : u * lev())}</span></td>
+      <td>${pct(u)} <span class="mini">×${levOf(p)} ${pct(u == null ? null : u * levOf(p))}</span></td>
       <td>${pnl == null ? "-" : `${pnl > 0 ? "+" : ""}${num(pnl, 2)}`}</td>
       <td>평가 중 <span class="mini">${esc((p.opened_at || "").slice(5, 16))} 진입 · 수수료 빼기 전</span></td><td>-</td></tr>`;
   };

@@ -39,7 +39,7 @@ BLOCKED_TOOLS = (
 ).split()
 
 PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 청산 폭 담당이다.
-종목(<SYMBOL>)과 진입 여부·방향은 이미 정해졌다(SCR 15분봉 신호, 레버리지 3배). 너는 이번
+종목(<SYMBOL>)과 진입 여부·방향은 이미 정해졌다(SCR 15분봉 신호, 레버리지 <LEVERAGE>배). 너는 이번
 포지션의 손절 폭과 익절 폭만 정한다. 아래 자료만 근거로 쓴다.
 
 가장 중요한 것은 돈을 잃지 않는 것이다(사용자 지시 "최대한 손해 보면 안 된다").
@@ -47,8 +47,8 @@ PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 청산 �
   허락하는 한 가장 가깝게. 잡음 안이면 흔들려 나가고, 너무 멀면 한 번에 크게 잃는다.
 - 이미 많이 움직였으면(신호 종가와 지금 가격 차이, 20봉 고저까지 거리) 익절을 걸어 이익을 챙긴다.
   익절 없이(null) 들고 가는 것은 추세가 뚜렷하고 아직 덜 움직였을 때만.
-- backtest_winrate_pct는 이 종목에서 이 신호의 최근 백테스트 승률이다(보통 최근 6개월, 종목
-  목록이 없으면 1년). 낮으면(50% 아래) 익절을 더 가깝게, 손절도 구조가 허락하는 만큼 좁게 잡는다.
+- backtest_winrate_pct는 이 종목에서 이 신호의 최근 백테스트 승률이다(최근 1년, 종목 선정용
+  3배 기준). 낮으면(50% 아래) 익절을 더 가깝게, 손절도 구조가 허락하는 만큼 좁게 잡는다.
 - market_kind는 종목 종류다(crypto, TradFi 미국 주식·ETF, 한국 주식, 원자재 등). TradFi는
   기초 시장이 열린 시간에 크게 움직이고, 쉬는 시간 뒤 첫 봉에 크게 튈 수 있다.
   종목마다 변동성이 크게 다르니 recent_15m_range_pct·atr14_pct를 꼭 보고 그 종목의 잡음 폭에 맞춘다.
@@ -59,7 +59,7 @@ PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 청산 �
 - stop_pct: 진입가에서 손절까지 거리(%), 1.0 이상 5.0 이하. 기본은 3.0.
 - tp_pct: 진입가에서 익절까지 거리(%), 1.0 이상 10.0 이하.
   익절 없이 반대 신호까지 들고 가려면 null.
-- 3배 레버리지라 가격 1%는 계좌 약 3%다(손절 5%면 계좌 약 15%).
+- 레버리지 <LEVERAGE>배라 가격 1%는 계좌 약 <LEVERAGE>%다(자료의 leverage, 손절 % × 배율 = 계좌 %).
 - reason: 왜 그렇게 정했는지 한국어 한 문장(80자 이내).
 
 출력은 JSON 객체 하나만. 설명·코드 블록·다른 글자를 붙이지 않는다.
@@ -293,7 +293,9 @@ def decide(data: dict, caller: Callable[[str], str] = call_claude) -> dict:
     t0 = time.monotonic()
     raw, err = "", ""
     try:
-        head = PROMPT.replace("<SYMBOL>", str(data.get("symbol") or "자료의 symbol"))
+        head = PROMPT.replace("<SYMBOL>", str(data.get("symbol") or "자료의 symbol")).replace(
+            "<LEVERAGE>", str(data.get("leverage") or "자료의 leverage")
+        )
         raw = caller(head + json.dumps(data, ensure_ascii=False))
         parsed, err = parse(raw)
     except subprocess.TimeoutExpired:
@@ -322,14 +324,15 @@ def decide(data: dict, caller: Callable[[str], str] = call_claude) -> dict:
 
 CHOOSE_PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 종목 선택 담당이다.
 엔진은 거래량 상위 종목(최대 50개, 코인과 TradFi 주식·ETF·원자재)에 같은 신호(SCR 15분봉, 마감 봉)를
-쓰고, 포지션은 한 번에 하나만 든다(계좌 전체, 레버리지 3배). 이번 봉에 신호가 겹쳤다. candidates는
+쓰고, 포지션은 한 번에 하나만 든다(계좌 전체, 새 진입 레버리지 = engine_leverage배, 들고 있는
+포지션은 연 때 배율 held.leverage배). 이번 봉에 신호가 겹쳤다. candidates는
 우선순위(백테스트 승률 순) 위 몇 개만 들어 있다. options 중 하나만 고른다.
 - keep: 들고 있는 포지션 유지. flip:종목: 그 종목을 반대로 갈아타기. close:종목: 그 종목 청산만.
 - switch:종목: 들고 있는 포지션을 닫고 그 종목 신호 방향으로 진입. enter:종목: 그 종목 진입.
 - none: 아무것도 안 함.
 자료(candidates: 신호 난 종목, held: 들고 있는 포지션)만 근거로 쓴다. 갈아타면 수수료가 두 번 든다.
-backtest_winrate_pct는 종목별 이 신호의 최근 백테스트 승률이다(보통 최근 6개월, 종목 목록이
-없으면 1년). 뚜렷한 이유가 없으면 승률이 높은 종목을 고른다.
+backtest_winrate_pct는 종목별 이 신호의 최근 백테스트 승률이다(최근 1년, 종목 선정용 3배
+기준). 뚜렷한 이유가 없으면 승률이 높은 종목을 고른다.
 reason: 왜 골랐는지 한국어 한 문장(80자 이내).
 
 출력은 JSON 객체 하나만. 설명·코드 블록·다른 글자를 붙이지 않는다.

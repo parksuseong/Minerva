@@ -155,52 +155,99 @@ def account_returns(account: dict, history: dict, capital: dict, bot: float) -> 
     return out
 
 
+INCOME_FILE = "binance_income.json"
+
+
+def merge_income(
+    stored: dict | None, income: dict | None, income_range: list | None
+) -> tuple[dict | None, list | None]:
+    """쌓아 둔 날짜별 income(`binance_income.json`: {"from", "days"})과 지금 스냅숏 값을 합친다.
+
+    스냅숏(`binance.snapshot`)은 최근 89일만 받아서, 그 전 날은 쌓아 둔 파일에서 읽는다.
+    범위 안 날은 스냅숏 값이 이긴다. 돌려주는 범위는 [가장 이른 첫 날, 스냅숏의 마지막 날]."""
+    lo, hi = (list(income_range or []) + [None, None])[:2]
+    days = dict((stored or {}).get("days") or {})
+    if income is not None:
+        for d, v in income.items():
+            if (lo is None or d >= lo) and (hi is None or d < hi):
+                days[d] = v
+    first = (stored or {}).get("from")
+    if lo is not None:
+        first = min(first, lo) if first else lo
+    if income is None and not first:
+        return None, None
+    return days, [first, hi]
+
+
 def daily_returns(
-    history: dict,
     capital: dict,
     today: str,
-    now_value: float,
     income: dict | None = None,
     income_range: list | None = None,
+    unrealized: float | None = None,
 ) -> list[dict]:
-    """일별 수익률(최신이 위). 값은 그날 마지막 순평가액(낸 수수료·펀딩 반영 + 지금 닫을 때
-    수수료 추정 차감). 첫날은 시드와, 나머지는 바로 앞 기록일 마감과 비교하고 그 사이 입출금은 뺀다.
+    """일별 수익률(최신이 위), **확정 손익 기준**(사용자 2026-11-17 "일별수익률은 매매 확정된거
+    기준으로 다시 해. 포지션 들고있는거로 하면 안되지").
 
-    history: {날짜: 그날 마지막 순평가액}. 오늘 값은 now_value(최신 스냅숏)로 덮는다.
-    기록이 빠진 날이 있으면 다음 행이 여러 날치다(`days`).
-    income: {날짜: {"realized", "funding", "commission"}} (바이낸스 income, 참고 칸).
-    income_range: [첫 날, 마지막 날 또는 None]. 범위 밖 날은 None(모름)으로 둔다.
+    그날(KST) 손익 = 바이낸스 income의 그날 실현손익(REALIZED_PNL, 그날 체결된 청산분) + 수수료
+    (COMMISSION, 음수) + 펀딩(FUNDING_FEE). 들고 있는 포지션의 평가손익은 넣지 않는다.
+    수익률 = 그날 손익 ÷ 그날 시작 확정 평가액(시드 + 그날까지 입출금 + 전날까지 확정 손익 누적).
+    입출금(TRANSFER)은 income에 넣지 않으므로 손익에 섞이지 않는다. 시드 날은 `since_at` 뒤만.
+    오늘 줄은 지금까지 확정분이고, 보유 중 평가손익은 `unrealized`에 따로 둔다(수익률에 안 넣음).
+
+    income: {날짜: {"realized", "funding", "commission"}} (`merge_income`).
+    income_range: [첫 날, 마지막 날 또는 None]. 범위 밖 날은 손익 None(모름)이고 누적에 안 들어간다.
     """
     since = capital.get("since")
-    if not since:
+    if not since or today < since:
         return []
-    days = {d: v for d, v in history.items() if since <= d <= today}
-    days[today] = now_value
-    deps = capital.get("deposits", [])
     lo, hi = (list(income_range or []) + [None, None])[:2]
-    out, prev, prev_day = [], capital["base"], None
-    for d in sorted(days):
-        added = sum(x["amount"] for x in deps if (prev_day is None or x["date"] > prev_day)
-                    and x["date"] <= d)
-        start = prev + added
-        pnl = days[d] - start
-        span = 1 if prev_day is None else (
-            datetime.strptime(d, "%Y-%m-%d") - datetime.strptime(prev_day, "%Y-%m-%d")
-        ).days
+    deps = capital.get("deposits", [])
+    base = float(capital.get("base") or 0)
+    out, cum = [], 0.0
+    day = datetime.strptime(since, "%Y-%m-%d")
+    end = datetime.strptime(today, "%Y-%m-%d")
+    while day <= end:
+        d = day.strftime("%Y-%m-%d")
+        # 첫날은 시드 전 날짜로 적힌 입출금도 시드에 더한다(예전 계산과 같음)
+        added = sum(x["amount"] for x in deps if x["date"] == d or (d == since and x["date"] < d))
+        invested = base + sum(x["amount"] for x in deps if x["date"] <= d)
+        start = invested + cum
         known = income is not None and (lo is None or d >= lo) and (hi is None or d < hi)
-        inc = (income or {}).get(d, {})
-        out.append({
+        inc = (income or {}).get(d, {}) if known else {}
+        parts = {k: (float(inc.get(k, 0.0)) if known else None)
+                 for k in ("realized", "commission", "funding")}
+        pnl = sum(parts.values()) if known else None
+        row = {
             "date": d,
-            "days": span,
-            "equity": days[d],
+            "basis": "realized",
+            "start": start,
             "pnl": pnl,
-            "pct": pnl / start * 100 if start > 0 else None,
+            "pct": pnl / start * 100 if pnl is not None and start > 0 else None,
+            "equity": start + (pnl or 0.0),
             "deposit": added,
-            **{k: (inc.get(k, 0.0) if known else None)
-               for k in ("realized", "commission", "funding")},
-        })
-        prev, prev_day = days[d], d
+            **parts,
+        }
+        if pnl is not None:
+            cum += pnl
+        row["cum_pnl"] = cum
+        if d == today:
+            row["open"] = True
+            row["unrealized"] = unrealized
+        out.append(row)
+        day += timedelta(days=1)
     return out[::-1]
+
+
+def binance_daily(folder: Path, data: dict, capital: dict) -> list[dict]:
+    """계좌 탭·일일 복기가 같이 쓰는 바이낸스 일별(확정 손익). data = `binance.json` 스냅숏."""
+    path = folder / INCOME_FILE
+    try:
+        stored = json.loads(path.read_text()) if path.exists() else None
+    except (OSError, ValueError):
+        stored = None
+    income, rng = merge_income(stored, data.get("income_daily"), data.get("income_range"))
+    return daily_returns(capital, data["updated_at"][:10], income, rng, data.get("unrealized"))
 
 
 def _summary(rows: list[dict]) -> str:

@@ -397,14 +397,21 @@ def binance_account(x_minerva_token: str = Header("")) -> dict:
         returns = perf.account_returns(net, history, capital, 0.0)
         returns.pop("bot", None)
         returns.pop("bot_pct", None)
+        # 일별·오늘 수익률은 확정 손익 기준(사용자 2026-11-17): 그날 체결된 실현손익
+        # − 수수료 + 펀딩. 보유 중 평가손익은 따로(`unrealized`) 보이고 수익률에 넣지 않는다.
+        # 누적(total)은 순평가액 그대로
+        data["daily"] = perf.binance_daily(folder, data, capital)
+        today = next((r for r in data["daily"] if r.get("open")), None)
+        returns.pop("today", None)
+        returns.pop("today_pct", None)
+        if today and today["pnl"] is not None:
+            returns.update(today=today["pnl"], today_pct=today["pct"])
+        if data["daily"]:
+            returns["realized_total"] = data["daily"][0]["cum_pnl"]
         data["returns"] = returns
-        data["daily"] = perf.daily_returns(
-            history,
-            capital,
-            data["updated_at"][:10],
-            net["equity"],
-            data.get("income_daily"),
-            data.get("income_range"),
+        # 체결내역 청산 줄에 승/무/패(엔진 청산 기록과 맞춰 btc_trade.outcome으로)
+        btc_view.fill_outcomes(
+            data.get("trades") or [], btc_view.tail_jsonl(btc_view.bt.DIR / "closed.jsonl", 5000)
         )
     return data
 
@@ -421,7 +428,8 @@ def btc_reviews(x_minerva_token: str = Header("")) -> dict:
 
 @router.get("/api/account/binance/series")
 def binance_series(x_minerva_token: str = Header("")) -> dict:
-    """자산 차트: 5분 단위 순평가액(USDT)과 시드."""
+    """자산 차트: 5분 단위 순평가액(USDT)과 시드, 일별 확정 평가액(`realized`, 2026-11-17부터
+    차트 선: 시드 + 입출금 + 확정 손익 누적, 보유 중 평가손익 제외)."""
     _check_account_token(x_minerva_token)
     folder = account_path().parent
     capital = _read(folder / "binance_capital.json") or {}
@@ -434,7 +442,13 @@ def binance_series(x_minerva_token: str = Header("")) -> dict:
         fmt = "%Y-%m-%d %H:%M" if " " in start else "%Y-%m-%d"
         cut = datetime.strptime(start, fmt).replace(tzinfo=timezone.utc).timestamp()
         points = [p for p in points if p["t"] >= cut]
-    return {"seed": capital.get("base"), "points": points}
+    data = _read(folder / "binance.json")
+    realized = []
+    if capital.get("since") and data and data.get("updated_at"):
+        rows = perf.binance_daily(folder, data, capital)
+        realized = [{"date": r["date"], "equity": r["equity"]}
+                    for r in reversed(rows) if r["pnl"] is not None]
+    return {"seed": capital.get("base"), "points": points, "realized": realized}
 
 
 def profile_path() -> Path:

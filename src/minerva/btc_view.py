@@ -19,6 +19,28 @@ from minerva.strategy import soxl
 MAX_TRADES = 500  # 화면 표는 20줄씩 나눠 보인다. 합계는 live_totals(전체)
 
 
+def fill_outcomes(trades: list[dict], closed: list[dict]) -> None:
+    """계좌 탭 체결내역(`binance.parse_trades`)의 청산 체결(실현손익 ≠ 0)에 그 거래의 승패를 붙인다
+    (사용자 2026-11-17 "계좌탭에 매매내역에는 승무패도 적어줘"). 규칙은 `btc_trade.outcome` 하나.
+
+    엔진 청산 기록(`closed.jsonl`, 실전)과 종목이 같고 체결 시각이 진입(`opened_at`) ~ 기록 시각
+    (`at`, 엔진은 손절 체결을 최대 15분 늦게 적는다) 안이면 그 기록의 승패. 못 찾은 청산 체결
+    (엔진 밖 손 매매 등)과 진입 체결은 "outcome": None."""
+    rows = [r for r in closed if r.get("mode") == "live" and r.get("opened_at") and r.get("at")]
+    for t in trades:
+        t["outcome"] = None
+        if not t.get("realized"):
+            continue
+        hit = next(
+            (r for r in reversed(rows)
+             if (r.get("symbol") or bt.SYMBOL) == t.get("symbol")
+             and r["opened_at"] <= str(t.get("time", "")) <= r["at"]),
+            None,
+        )
+        if hit is not None:
+            t["outcome"] = bt.outcome(hit)
+
+
 def tail_jsonl(path: Path, n: int) -> list[dict]:
     """JSONL 파일의 마지막 n줄(객체만). 쓰는 중이라 잘린 줄·깨진 줄은 건너뛴다(500 방지)."""
     if not path.exists():
@@ -167,17 +189,24 @@ def engine_view(now: datetime | None = None) -> dict:
     ai = [{k: e.get(k) for k in keys} for e in events if e.get("event") == "ai_exits"]
     ai = [a for a in ai if a.get("mode") == mode][-10:]
     every = [r for r in tail_jsonl(bt.DIR / "closed.jsonl", 10**9) if r.get("mode") == mode]
-    closed = every[-MAX_TRADES:]
+    # 화면 표의 승/패/무승부 표시(btc_trade.outcome, 손익을 모르면 None)
+    closed = [{**r, "outcome": bt.outcome(r)} for r in every[-MAX_TRADES:]]
     capital = bt._load(bt.CAPITAL_FILE, {}) or {}
     since_at = capital.get("since_at") if capital.get("live") else None
     live_rows = [r for r in every if since_at and (r.get("at") or "") >= since_at]
+    # 승패는 btc_trade.outcome(진입가 ±DRAW_PCT% 안 손절은 무승부). n은 모든 청산 수,
+    # 승률 = wins / (wins + losses)
+    t = bt.tally(live_rows)
     live_totals = {
         "n": len(live_rows),
-        "wins": sum((r.get("pnl") or 0) > 0 for r in live_rows),
+        "wins": t["wins"],
+        "losses": t["losses"],
+        "draws": t["draws"],
+        "winrate": t["winrate"],
         "pnl": sum(r.get("pnl") or 0 for r in live_rows),
     }
     seed = bt.seed(mode, state)
-    n, wins = bt.winrate(mode, now)
+    n, wins, draws = bt.winrate(mode, now)
     equity = last_run.get("equity") if last_run else None
     no_entry = _no_entry_reason()
     return {
@@ -218,8 +247,11 @@ def engine_view(now: datetime | None = None) -> dict:
             "seed": seed,
             "equity": equity,
             "floor": seed * bt.EQUITY_FLOOR if seed else None,
+            # winrate_n = 승패가 난 거래 수(무승부 제외), 무승부는 winrate_draws
             "winrate_n": n,
             "winrate_wins": wins,
+            "winrate_draws": draws,
+            "draw_pct": bt.DRAW_PCT,
             "winrate_min": bt.WINRATE_MIN,
             "winrate_min_trades": bt.WINRATE_MIN_TRADES,
             "winrate_days": bt.WINRATE_DAYS,

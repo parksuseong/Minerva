@@ -116,12 +116,15 @@ def _direction(rows: list[list], now_ms: int) -> str:
 
 
 def own_summary(closed: list[dict], mode: str, last: int = 20) -> dict:
+    from minerva import btc_trade  # btc_trade가 이 모듈을 불러오므로 쓸 때 불러온다
+
     rows = [r for r in closed if r.get("mode") == mode][-last:]
+    t = btc_trade.tally(rows)  # 진입가 근처 손절은 무승부(draws)
     pcts = [r["pct"] for r in rows if r.get("pct") is not None]
     return {
         "mode": mode,
         "trades": len(rows),
-        "wins": sum(1 for r in rows if (r.get("pnl") or 0) > 0),
+        **{k: t[k] for k in ("wins", "losses", "draws")},
         "avg_pct": round(sum(pcts) / len(pcts), 2) if pcts else None,
         "recent": [
             {

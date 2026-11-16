@@ -115,7 +115,8 @@ def test_account_tab_after_start_live(files, monkeypatch):
     assert series["seed"] == 815.53
     v = TestClient(app).get("/api/btc/engine").json()
     assert v["mode"] == "live" and v["live_since"] == since
-    assert v["live_totals"] == {"n": 0, "wins": 0, "pnl": 0}
+    assert v["live_totals"] == {"n": 0, "wins": 0, "losses": 0, "draws": 0, "winrate": None,
+                                "pnl": 0}
 
     # 합계·승률은 표 상한(MAX_TRADES)과 상관없이 실전 시작 뒤 전체 기록으로
     rows = [{"at": "2000-01-01 00:00:00", "mode": "live", "pnl": 99.0}]
@@ -128,6 +129,26 @@ def test_account_tab_after_start_live(files, monkeypatch):
     assert v["live_totals"]["n"] == n and v["live_totals"]["wins"] == n // 2
     assert v["live_totals"]["pnl"] == pytest.approx(n // 2 * 1.0 - (n - n // 2) * 0.5)
     assert len(v["trades"]) == btc_view.MAX_TRADES
+
+
+def test_engine_view_counts_draws(files):
+    d = bt.DIR
+    (d / "mode").write_text("live\n")
+    bt.CAPITAL_FILE.write_text(json.dumps(
+        {"live": True, "since": "2026-11-08", "since_at": "2026-11-08 09:00", "base": 800.0}))
+    _jsonl(d / "closed.jsonl", [
+        {"at": "2026-11-09 01:00:00", "mode": "live", "pnl": 0.3, "why": "trail", "side": "long",
+         "entry": 158.44, "exit": 158.69},  # 진입가 근처 본전 손절 → 무승부
+        {"at": "2026-11-09 02:00:00", "mode": "live", "pnl": 9.0, "why": "tp", "pct": 3.0},
+        {"at": "2026-11-09 03:00:00", "mode": "live", "pnl": -9.0, "why": "stop", "pct": -3.0},
+    ])  # fmt: skip
+    v = btc_view.engine_view(NOW)
+    t = v["live_totals"]
+    assert (t["n"], t["wins"], t["losses"], t["draws"]) == (3, 1, 1, 1)
+    assert t["winrate"] == pytest.approx(0.5) and t["pnl"] == pytest.approx(0.3)
+    assert [r["outcome"] for r in v["trades"]] == ["loss", "win", "draw"]
+    g = v["gauges"]
+    assert (g["winrate_n"], g["winrate_wins"], g["winrate_draws"]) == (2, 1, 1)
 
 
 # ---- 지금 매매하는 종목(신호 가까운 순·바이낸스 종목 버튼·봉 허용 종목) ----
@@ -287,3 +308,35 @@ def test_watch_symbol_always_listed_but_not_traded(files, monkeypatch):
     assert "ANTHROPICUSDT" not in n["traded"]
     assert {r["symbol"] for r in n["rows"]} == {"BTCUSDT"}
     assert "ANTHROPICUSDT" in routes.kline_symbols()
+
+
+def test_account_fills_get_outcome(files):
+    """계좌 탭 체결내역: 청산 체결에 엔진 청산 기록의 승/무/패, 진입·못 맞춘 체결은 None."""
+    acct = files / "account"
+    (acct / "binance_capital.json").write_text(json.dumps(
+        {"live": True, "since": "2026-11-17", "since_at": "2026-11-17 00:00", "base": 800.0}))
+    _jsonl(bt.DIR / "closed.jsonl", [
+        {"at": "2026-11-17 01:15:20", "mode": "live", "symbol": "NVDAUSDT", "side": "long",
+         "entry": 158.44, "exit": 158.69, "pnl": 0.3, "pct": 0.16, "why": "trail",
+         "opened_at": "2026-11-17 00:30:20"},
+        {"at": "2026-11-17 03:00:20", "mode": "live", "symbol": "BTCUSDT", "side": "short",
+         "entry": 100.0, "exit": 97.0, "pnl": 9.0, "pct": 3.0, "why": "tp",
+         "opened_at": "2026-11-17 02:00:20"},
+        {"at": "2026-11-17 05:00:20", "mode": "live", "symbol": "BTCUSDT", "side": "long",
+         "entry": 100.0, "exit": 97.0, "pnl": -9.0, "pct": -3.0, "why": "stop",
+         "opened_at": "2026-11-17 04:00:20"},
+    ])  # fmt: skip
+    fill = {"side": "매도", "qty": 1.0, "price": 1.0, "fee": 0.01}
+    trades = [
+        {**fill, "time": "2026-11-17 04:50:00", "symbol": "BTCUSDT", "realized": -8.9},
+        {**fill, "time": "2026-11-17 04:00:21", "symbol": "BTCUSDT", "realized": 0.0},  # 진입
+        {**fill, "time": "2026-11-17 02:40:00", "symbol": "BTCUSDT", "realized": 9.1},
+        {**fill, "time": "2026-11-17 01:05:00", "symbol": "NVDAUSDT", "realized": 0.4},
+        {**fill, "time": "2026-11-17 06:00:00", "symbol": "BTCUSDT", "realized": 1.0},  # 손 매매
+    ]
+    (acct / "binance.json").write_text(json.dumps({
+        "status": "ok", "updated_at": "2026-11-17 06:01", "equity": 800.0, "net_equity": 800.0,
+        "positions": [], "orders": [], "trades": trades,
+    }))
+    got = TestClient(app).get("/api/account/binance").json()["trades"]
+    assert [t["outcome"] for t in got] == ["loss", None, "win", "draw", None]

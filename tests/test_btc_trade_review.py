@@ -239,7 +239,7 @@ def test_run_saves_sends_and_skips_next_time(files):
     assert [p.name for p in paths] == [f"{tr.trade_id(BTC)}.json", f"{tr.trade_id(NVDA)}.json"]
     assert all(oct(os.stat(p).st_mode & 0o777) == "0o600" for p in paths)
     assert "interventions" in asked[1] and "NVDAUSDT" in asked[1]
-    assert sent[1].startswith("📝 거래 복기 · NVDA 숏 +3.0% (익절) · 수동\n")
+    assert sent[1].startswith("📝 거래 복기 · NVDA 숏 +3.0% (익절) · 승 · 수동\n")
     assert "교훈: 관찰 (검증 안 됨)" in sent[1]
     assert tr.run(NEXT, caller=caller, fetch=flat_bars, send=sent.append) == []
     assert len(sent) == 2

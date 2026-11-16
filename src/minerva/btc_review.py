@@ -39,6 +39,9 @@ KEEP = 60  # 화면에 보내는 최근 복기 수
 AFTER_BARS = 16  # 청산 뒤 4시간(15분봉 16개)
 FMT = "%Y-%m-%d %H:%M:%S"
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# 승패(btc_trade.outcome): 진입가 ±DRAW_PCT% 안에서 난 손절은 무승부
+RESULT_KO = {"win": "승", "loss": "패", "draw": "무승부"}
+
 WHY = {
     "signal": "반대 신호",
     "stop": "손절",
@@ -157,20 +160,13 @@ def excursion(
 
 
 def account_day(day: str, folder: Path | None = None) -> dict | None:
-    """계좌 탭 일별 수익률과 같은 계산(수수료·펀딩 차감)으로 그날 한 줄."""
+    """계좌 탭 일별 수익률과 같은 계산(확정 손익 기준: 실현손익 − 수수료 + 펀딩)으로 그날 한 줄."""
     folder = folder or account_dir()
     data = _read(folder / "binance.json")
     capital = _read(folder / "binance_capital.json")
     if not data or not capital or data.get("status") != "ok" or capital.get("live") is False:
         return None
-    rows = perf.daily_returns(
-        _read(folder / "binance_equity.json") or {},
-        capital,
-        data["updated_at"][:10],
-        data.get("net_equity", data["equity"]),
-        data.get("income_daily"),
-        data.get("income_range"),
-    )
+    rows = perf.binance_daily(folder, data, capital)
     return next((r for r in rows if r["date"] == day), None)
 
 
@@ -186,6 +182,7 @@ def facts(
         row = {k: t.get(k) for k in ("symbol", "side", "qty", "entry", "exit", "pnl", "pct", "why")}
         why = t.get("why")
         row.update(opened_at=t["opened_at"], closed_at=t["at"], why_ko=WHY.get(why, why))
+        row["result"] = RESULT_KO.get(bt.outcome(t))
         row["hold_min"] = round((_ms(t["at"]) - _ms(t["opened_at"])) / 60000)
         try:
             bars = fetch(t["symbol"], _ms(t["opened_at"]) - bt.BAR_MS,
@@ -207,7 +204,7 @@ def facts(
         if e.get("event") == "ai_choose"
     ]
     entries = [{"at": e["at"], "decision": e.get("decision")} for e in runs if _entered(e)]
-    wins = sum(1 for t in trades if (t["pnl"] or 0) > 0)
+    tl = bt.tally(trades)  # 진입가 ±DRAW_PCT% 안 손절은 무승부
     return {
         "day": day,
         "partial": day >= now.strftime("%Y-%m-%d"),
@@ -218,9 +215,11 @@ def facts(
             "tp_pct": bt.fixed_tp_pct(),
             "exit_rule": "trail" if bt.trail_rule() else "fixed",
         },
-        "totals": {"n": len(trades), "wins": wins,
+        "totals": {"n": len(trades), "wins": tl["wins"], "losses": tl["losses"],
+                   "draws": tl["draws"], "winrate": tl["winrate"],
                    "pnl": round(sum(t["pnl"] or 0 for t in trades), 2)},
-        # 계좌 탭과 같은 값: 전날 마감 순평가액 대비라 전날 열린 포지션의 평가손익 변화도 들어간다
+        # 계좌 탭과 같은 값: 확정 손익 기준(그날 체결된 실현손익 − 수수료 + 펀딩,
+        # 보유 중 평가손익 제외)
         "account": account_day(day, folder),
         "trades": trades,
         "entries": entries[:CAP],
@@ -259,8 +258,11 @@ PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매 엔진의 하루를
 반대 신호면 바꿈, 백테스트 손실·7일 평균 하루 변동폭 2% 미만 종목은 신호만 표시
 (2026-11-16부터 승률은 안 봄).
 자료(JSON) 칸: trades(그날 닫힌 거래, mfe_pct=들고 있는 동안 가장 좋았던 %, mae_pct=가장 나빴던 %,
-after=청산 뒤 4시간 가격 변화 %), account(수수료·펀딩 차감 일 손익, 전날 마감 대비라
-전날 연 포지션은 전날 평가손익만큼 trades 합계와 다르다), entries(진입), choices(AI 종목 선택),
+after=청산 뒤 4시간 가격 변화 %, result=승/패/무승부: 진입가 ±0.5% 안 손절은 무승부),
+totals(wins·losses·draws, winrate=이긴 수/(이긴 수+진 수), 무승부 제외),
+account(확정 손익 기준 일 손익: 그날 체결된 실현손익 − 수수료 + 펀딩, 보유 중 평가손익은 안 넣음.
+계좌 전체라 손으로 한 거래·펀딩만큼 trades 합계와 다를 수 있다), entries(진입),
+choices(AI 종목 선택),
 closed_at은 엔진이 기록한 시각(손절·익절 실제 체결은 그보다 최대 15분 이를 수 있음),
 skipped(시장 쉬는 시간 등으로 못 들어간 신호), passed(후보 아닌 종목 신호 수),
 partial(하루가 안 끝남).

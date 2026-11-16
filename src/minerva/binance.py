@@ -6,6 +6,8 @@
 
 수익률: `binance_capital.json`(시드·입출금, USDT)과 `binance_equity.json`(날짜별 마지막 순평가액).
 순평가액 = 지갑 잔고 + 미실현 손익 - 지금 시장가로 닫을 때 낼 수수료(테이커 요율 추정).
+일별 수익률(계좌 탭, 2026-11-17부터 확정 손익 기준)은 `/fapi/v1/income`의 날짜별 실현손익·수수료·
+펀딩으로 내고, 89일 창 밖도 보이게 `binance_income.json`에 쌓는다(`record_income`).
 지갑 잔고에는 이미 낸 수수료·펀딩이 빠져 있다. 자산 차트는 `binance_series.json`(5분 단위).
 
 실전 전(capital `live: false`, 사용자 결정 2026-11-08): 수동 매매 기간은 기록하지 않는다.
@@ -31,6 +33,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from minerva import perf
 from minerva.kis import KST, _write_private
 
 log = logging.getLogger(__name__)
@@ -344,6 +347,19 @@ def record_equity(path: Path, data: dict) -> None:
     _write_private(path, json.dumps(history, sort_keys=True))
 
 
+def record_income(path: Path, data: dict) -> None:
+    """날짜별 실현손익·수수료·펀딩을 쌓아 둔다(`binance_income.json`: {"from", "days"}).
+
+    스냅숏은 최근 89일 income만 받으므로, 계좌 탭 일별 수익률(확정 손익 기준,
+    `perf.daily_returns`)이 그보다 오래된 날도 보이게 남긴다.
+    믿을 수 있는 범위(`income_range`) 안 날만 덮어쓴다."""
+    if data.get("status") != "ok" or data.get("live") is False or not data.get("income_range"):
+        return
+    old = _read(path)
+    days, rng = perf.merge_income(old, data.get("income_daily") or {}, data["income_range"])
+    _write_private(path, json.dumps({"from": rng[0], "days": days}, sort_keys=True))
+
+
 def record_series(path: Path, data: dict, now: datetime) -> None:
     """자산 차트용 순평가액. 5분 칸마다 한 점, 같은 칸이면 최신 값으로 덮는다."""
     if data.get("status") != "ok" or data.get("live") is False:
@@ -373,6 +389,7 @@ def run(out: Path) -> dict:
     _write_private(out, json.dumps(data, ensure_ascii=False))
     record_equity(out.parent / "binance_equity.json", data)
     record_series(out.parent / "binance_series.json", data, now)
+    record_income(out.parent / "binance_income.json", data)
     return data
 
 

@@ -17,6 +17,10 @@
   const short = (sym) => esc(String(sym || "BTCUSDT").replace(/USDT$/, ""));
   const isBtc = (x) => symOf(x) === "BTCUSDT";
   const who = (x, side) => `${short(symOf(x))} ${SIDE[side] || "-"}`;
+  // 승패(서버 btc_trade.outcome, 행의 "outcome"): 진입가 ±0.5% 안에서 난 손절은 무승부.
+  // 색은 손익 칸과 같게(승 up, 패 down, 무 기본)
+  const RES = { win: ["승", "up"], loss: ["패", "down"], draw: ["무", ""] };
+  const resCell = (o) => (RES[o] ? `<span class="${RES[o][1]}">${RES[o][0]}</span>` : "-");
   const WHY = { signal: "반대 신호", stop: "손절", trail: "따라간 손절", tp: "익절", manual: "수동·강제", protect: "손절 실패 정리", weekend: "휴장 전 정리" };
   // 차트 시각은 KST 벽시계를 UTC 자리에 둔 초(U.kst). 엔진 기록 "YYYY-MM-DD HH:MM:SS"(KST)도 같은 방식으로 바꾼다.
   const wall = (s) => {
@@ -64,13 +68,15 @@
   const gaugeHtml = (g) => {
     const eq = g.equity, floor = g.floor;
     const room = eq != null && floor ? (eq / floor - 1) * 100 : null;
+    // winrate_n = 승패가 난 거래(무승부 제외). 승률 = 이김 / (이김 + 짐)
     const wr = g.winrate_n ? (g.winrate_wins / g.winrate_n) * 100 : null;
     const wrOk = g.winrate_n < g.winrate_min_trades || wr >= g.winrate_min * 100;
+    const draws = g.winrate_draws || 0;
     return `<table class="acct"><tbody>
       <tr><td>평가액 / 시드</td><td>${num(eq, 2)} / ${num(g.seed, 2)} USDT · 정지선 ${num(floor, 2)} (시드 −20%)
         ${room == null ? "" : `· 여유 ${pct(room)}`}</td></tr>
-      <tr><td>최근 ${g.winrate_days}일 승률</td><td>${g.winrate_n ? `${g.winrate_wins}/${g.winrate_n} = ${num(wr, 0)}%` : "거래 없음"}
-        · 기준 ${num(g.winrate_min * 100, 0)}% (${g.winrate_min_trades}회 이상부터) <span class="chip ${wrOk ? "good" : "warn"}">${wrOk ? "통과" : "정지"}</span></td></tr>
+      <tr><td>최근 ${g.winrate_days}일 승률</td><td>${g.winrate_n || draws ? `${g.winrate_wins}승 ${g.winrate_n - g.winrate_wins}패 ${draws}무 (승률 ${wr == null ? "-" : `${num(wr, 0)}%`})` : "거래 없음"}
+        · 기준 ${num(g.winrate_min * 100, 0)}% (승패 난 거래 ${g.winrate_min_trades}회 이상부터, 무승부 제외) <span class="chip ${wrOk ? "good" : "warn"}">${wrOk ? "통과" : "정지"}</span></td></tr>
     </tbody></table>`;
   };
 
@@ -114,7 +120,7 @@
   const tradeRows = (rows, key) => rows.map((r, i) => `<tr${window.MinervaUI.pgAttr(key, i)}><td>${esc((r.at || "").slice(5, 16))}</td>
       <td><span class="chip ${r.side === "long" ? "good" : "warn"}">${who(r, r.side)}</span></td>
       <td>${num(r.entry)} → ${num(r.exit)}</td><td>${pct(r.pct)} <span class="mini">×${lev()} ${pct(r.pct == null ? null : r.pct * lev())}</span></td>
-      <td>${r.pnl == null ? "-" : `${r.pnl > 0 ? "+" : ""}${num(r.pnl, 2)}`}</td><td>${esc(WHY[r.why] || r.why)}</td></tr>`).join("");
+      <td>${r.pnl == null ? "-" : `${r.pnl > 0 ? "+" : ""}${num(r.pnl, 2)}`}</td><td>${esc(WHY[r.why] || r.why)}</td><td>${resCell(r.outcome)}</td></tr>`).join("");
   // 들고 있는 포지션을 거래 표 맨 위에 "보유 중"으로 (사용자 2026-11-14). 지금 가격·평가손익은
   // 계좌 조회(/api/account/binance, 1분마다, 마크 가격)에서, 없으면 BTC만 이 화면 봉 종가로.
   const holdRow = (p) => {
@@ -130,9 +136,9 @@
       <td>${num(p.entry)} → ${now == null ? "-" : `지금 ${num(now)}`}</td>
       <td>${pct(u)} <span class="mini">×${lev()} ${pct(u == null ? null : u * lev())}</span></td>
       <td>${pnl == null ? "-" : `${pnl > 0 ? "+" : ""}${num(pnl, 2)}`}</td>
-      <td>평가 중 <span class="mini">${esc((p.opened_at || "").slice(5, 16))} 진입 · 수수료 빼기 전</span></td></tr>`;
+      <td>평가 중 <span class="mini">${esc((p.opened_at || "").slice(5, 16))} 진입 · 수수료 빼기 전</span></td><td>-</td></tr>`;
   };
-  const TRADE_HEAD = "<thead><tr><th>청산</th><th>종목·방향</th><th>진입 → 청산</th><th>가격 변화</th><th>손익 USDT</th><th>이유</th></tr></thead>";
+  const TRADE_HEAD = "<thead><tr><th>청산</th><th>종목·방향</th><th>진입 → 청산</th><th>가격 변화</th><th>손익 USDT</th><th>이유</th><th>승패</th></tr></thead>";
 
   const renderTrades = () => {
     if (!$("bte-trades")) return;
@@ -161,17 +167,19 @@
     }
     const rows = (eng.trades || []).filter((r) => (r.at || "") >= eng.live_since);
     // 합계·승률은 서버가 전체 기록으로 센 값(표는 최근 MAX_TRADES건만 온다)
-    const t = eng.live_totals || { n: rows.length, wins: rows.filter((r) => (r.pnl || 0) > 0).length,
-      pnl: rows.reduce((a, r) => a + (r.pnl || 0), 0) };
-    const sum = t.pnl, wins = t.wins;
+    const count = (k) => rows.filter((r) => r.outcome === k).length;
+    const t = eng.live_totals || { n: rows.length, wins: count("win"), losses: count("loss"),
+      draws: count("draw"), pnl: rows.reduce((a, r) => a + (r.pnl || 0), 0) };
+    const sum = t.pnl, wins = t.wins || 0, losses = t.losses || 0, draws = t.draws || 0;
+    // 승률 = 이김 / (이김 + 짐). 무승부(진입가 근처 손절)는 빼고 따로 센다
     const pct = (w, n) => (n ? `${num((100 * w) / n, 0)}%` : "-");
     const g = eng.gauges || {};
     const days = g.winrate_days || 30;
     const wr30 = g.winrate_n != null
-      ? ` · 최근 ${days}일 ${pct(g.winrate_wins, g.winrate_n)} (${g.winrate_wins}/${g.winrate_n}, ${num((g.winrate_min || 0.5) * 100, 0)}% 아래면 진입 정지)`
+      ? ` · 최근 ${days}일 ${g.winrate_wins}승 ${g.winrate_n - g.winrate_wins}패 ${g.winrate_draws || 0}무 (승률 ${pct(g.winrate_wins, g.winrate_n)}, ${num((g.winrate_min || 0.5) * 100, 0)}% 아래면 진입 정지)`
       : "";
-    $("bte-acct").innerHTML = `<div class="detail" style="font-size:1.05em">승률 <b>${pct(wins, t.n)}</b> (이긴 ${wins} / ${t.n}번)${wr30}</div>
-      <div class="detail">실전 시작 ${esc(eng.live_since)} KST 이후 ${t.n}번 · 이긴 ${wins}번 · 합계 <b>${sum > 0 ? "+" : ""}${num(sum, 2)} USDT</b> (수수료 포함)</div>
+    $("bte-acct").innerHTML = `<div class="detail" style="font-size:1.05em"><b>${wins}승 ${losses}패 ${draws}무</b> (승률 <b>${pct(wins, wins + losses)}</b>)${wr30}</div>
+      <div class="detail">실전 시작 ${esc(eng.live_since)} KST 이후 ${t.n}번 · 합계 <b>${sum > 0 ? "+" : ""}${num(sum, 2)} USDT</b> (수수료 포함) · 무승부 = 진입가 ±${num(g.draw_pct ?? 0.5, 1)}% 안에서 난 손절(손익은 그대로 합계에 들어감)</div>
       <div class="detail">지금: ${posHtml(eng.position)}</div>
       ${rows.length || eng.position ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${holdRow(eng.position)}${tradeRows(rows, "bte-acct")}</tbody></table>${window.MinervaUI.moreBtn("bte-acct", rows.length)}</div>` : ""}`;
   };

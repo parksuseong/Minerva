@@ -85,6 +85,7 @@
 
   const usdt = (v) => (v == null ? "-" : `${num(v)} USDT`);
   const ugain = (v, p) => signed(v, `${v > 0 ? "+" : ""}${usdt(v)} (${pct(p)})`);
+  const OUT = { win: ["승", "up"], loss: ["패", "down"], draw: ["무", ""] };
   const BN = ["bn-daily", "bn-positions", "bn-orders", "bn-trades"];
 
   function renderBinance(d) {
@@ -108,8 +109,12 @@
     const ret = r ? `
       <div class="row"><span>누적 수익률 (수수료 차감, ${esc(r.since)}~, 시드 ${usdt(r.invested)})</span>
         <b class="px">${ugain(r.total, r.total_pct)}</b></div>
-      <div class="row"><span>오늘 수익률 (수수료 차감, 전일 마지막 대비, KST)</span>
-        <span class="px">${r.today == null ? "-" : ugain(r.today, r.today_pct)}</span></div>` : "";
+      ${r.realized_total == null ? "" : `<div class="row"><span>누적 확정 손익 (청산된 거래 − 수수료 + 펀딩)</span>
+        <span class="px">${signed(r.realized_total, `${r.realized_total > 0 ? "+" : ""}${usdt(r.realized_total)}`)}</span></div>`}
+      <div class="row"><span>오늘 수익률 (확정 손익 기준: 오늘 청산된 손익 − 수수료 + 펀딩, KST)</span>
+        <span class="px">${r.today == null ? "-" : ugain(r.today, r.today_pct)}</span></div>
+      <div class="row"><span>보유 중 평가손익 (아직 확정 안 됨, 수익률에 안 넣음)</span>
+        <span class="px">${signed(d.unrealized || 0, usdt(d.unrealized || 0))}</span></div>` : "";
     const fr = d.fee_rate;
     const closeFee = d.close_fee_est || 0;
     let breakdown = "";
@@ -154,23 +159,33 @@
       ["leverage", "레버리지", (v, x) => `${v}배 ${esc(x.margin_type)}`],
       ["pnl", "미실현손익", (v, x) => signed(v, `${num(v)} (${x.pnl_pct == null ? "-" : num(x.pnl_pct)}%)`)]],
     d.positions);
-    // 일별: 순평가액 = 지갑 + 미실현 − 지금 닫을 때 수수료. 수익 = 전날 마감(첫날은 시드) 대비, 입출금 제외
+    // 일별(확정 손익 기준, 2026-11-17): 그날 체결된 실현손익 − 수수료 + 펀딩 ÷ 그날 시작 확정 평가액.
+    // 들고 있는 포지션의 평가손익은 넣지 않는다(자정에 바뀌지 않게). 오늘 줄에만 따로 보인다
     const pctTxt = (v) => v == null ? "-" : `${v > 0 ? "+" : ""}${num(v)}%`;
     const opt = (v, f) => v == null ? "-" : f(v);
     $("bn-daily").innerHTML = (d.daily || []).length ? table([["date", "날짜",
-        (v, x) => esc(v) + (x.days > 1 ? ` <span class="mini">(${x.days}일치, 기록 빠짐)</span>` : "")],
+        (v, x) => esc(v) + (x.open ? ' <span class="mini">(오늘, 지금까지 확정분)</span>' : "")],
       ["pct", "수익률", (v) => signed(v, pctTxt(v))],
-      ["pnl", "손익 (USDT)", (v) => signed(v, num(v))],
-      ["equity", "마감 순평가액", (v, x) => usdt(v) + (x.date === d.updated_at.slice(0, 10) ? " (진행 중)" : "")],
+      ["pnl", "확정 손익 (USDT)", (v) => opt(v, (x) => signed(x, num(x)))],
+      ["equity", "확정 평가액", (v, x) => (x.pnl == null ? "-" : usdt(v))
+        + (x.deposit ? ` <span class="mini">(입출금 ${x.deposit > 0 ? "+" : ""}${num(x.deposit)})</span>` : "")],
       ["realized", "실현손익", (v) => opt(v, (x) => signed(x, num(x)))],
       ["commission", "낸 수수료", (v) => opt(v, num)],
-      ["funding", "펀딩비", (v) => opt(v, (x) => signed(x, num(x)))]], d.daily, "bn-daily")
-      + `<div class="mini">수익률 = 그날 마감 순평가액 ÷ 전날 마감(첫날은 시드) − 1. 순평가액은 낸 수수료·펀딩비가 이미 빠진
-        지갑 + 미실현손익에서 지금 닫을 때 수수료(테이커)까지 뺀 값이에요. 입출금은 빼고 계산해요.</div>` : "없음";
+      ["funding", "펀딩비", (v) => opt(v, (x) => signed(x, num(x)))],
+      ["unrealized", "보유 중 평가손익 (따로)", (v, x) => (x.open && v != null
+        ? signed(v, `${v > 0 ? "+" : ""}${num(v)} <span class="mini">미확정</span>`) : "-")]], d.daily, "bn-daily")
+      + `<div class="mini">확정 손익 기준: 그날(KST) 청산 체결로 확정된 실현손익 − 낸 수수료 + 펀딩비(바이낸스 손익 내역).
+        수익률 = 그 손익 ÷ 그날 시작 확정 평가액(시드 + 입출금 + 전날까지 확정 손익). 들고 있는 포지션의 평가손익은
+        넣지 않아서 지난 날 숫자는 자정이 지나도 바뀌지 않아요. 입출금은 손익에서 빼요. "-"는 손익 내역을 못 받은 날이에요.</div>` : "없음";
     $("bn-orders").innerHTML = table([["time", "시각"], ["symbol", "종목"], ["side", "구분"],
       ["type", "유형"], ["qty", "수량"], ["price", "가격"], ["status", "상태"]], d.orders);
     $("bn-trades").innerHTML = table([["time", "시각"], ["symbol", "종목", (v) => esc(String(v || "").replace(/USDT$/, ""))], ["side", "구분"], ["qty", "수량"],
-      ["price", "체결가"], ["realized", "실현손익", (v) => signed(v, num(v))], ["fee", "수수료"]], d.trades, "bn-trades");
+      ["price", "체결가"], ["realized", "실현손익", (v) => signed(v, num(v))], ["fee", "수수료"],
+      // 청산 체결의 승/무/패(서버가 엔진 청산 기록과 맞춰 붙임, 진입 체결·못 맞춘 체결은 "-")
+      ["outcome", "승패", (v) => (OUT[v] ? `<span class="${OUT[v][1]}">${OUT[v][0]}</span>` : "-")]],
+    d.trades, "bn-trades")
+      + `<div class="mini">승패: 무 = 진입가 ±0.5% 안에서 난 손절(본전 손절), 승률에서 빠져요.
+        엔진 청산 기록에 없는 청산(엔진 밖 손 매매)은 "-"예요.</div>`;
   }
 
   // 자산 차트: 시드 위는 상승색, 아래는 하락색. 시각은 서버가 KST로 옮겨 둔다(UTC로 그린다).
@@ -201,7 +216,12 @@
       const prev = byDay.get(day);
       if (!prev || p.t >= prev.t) byDay.set(day, p);
     }
-    const pts = [...byDay.keys()].sort().map((k) => ({ time: k, value: byDay.get(k).v }));
+    // 2026-11-17부터 선은 확정 평가액(시드 + 입출금 + 확정 손익 누적, 서버 `realized`).
+    // 보유 중 평가손익은 넣지 않는다. 서버가 아직 안 주면 예전처럼 순평가액
+    const realized = Array.isArray(d.realized) && d.realized.length;
+    const pts = realized
+      ? d.realized.map((p) => ({ time: p.date, value: p.equity }))
+      : [...byDay.keys()].sort().map((k) => ({ time: k, value: byDay.get(k).v }));
     if (d.live === false) {
       $("bn-chart-note").textContent = "실전 자동매매를 시작하면 그때부터 그려요";
       if (line) line.setData([]);
@@ -209,7 +229,9 @@
     }
     $("bn-chart-note").textContent = pts.length < 2
       ? "기록이 쌓이는 중이에요 (하루에 한 점, 오늘은 지금 값)"
-      : `하루에 한 점(그날 마지막 값, 오늘은 지금 값) · 가로선 = 시드 ${usdt(d.seed)} · 수수료를 뺀 순평가액`;
+      : realized
+        ? `하루에 한 점(그날까지 확정 손익, 오늘은 지금까지 확정분) · 가로선 = 시드 ${usdt(d.seed)} · 보유 중 평가손익 제외`
+        : `하루에 한 점(그날 마지막 값, 오늘은 지금 값) · 가로선 = 시드 ${usdt(d.seed)} · 수수료를 뺀 순평가액`;
     if (!LC || !pts.length || !$("bn-chart").clientWidth) return;
     const up = css("--up") || "#dc2626", down = css("--down") || "#2563eb";
     const text = css("--muted") || "#6b7280", grid = css("--line") || "#e5e7eb";

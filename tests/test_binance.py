@@ -166,14 +166,20 @@ def test_binance_api_returns_and_token(tmp_path, monkeypatch):
     assert client.get("/api/account/binance").json()["status"] == "not_connected"
 
     (tmp_path / "binance.json").write_text(
-        json.dumps({"status": "ok", "updated_at": "2026-11-08 10:00", "equity": 900.0})
+        json.dumps({"status": "ok", "updated_at": "2026-11-08 10:00", "equity": 900.0,
+                    "unrealized": -55.0,
+                    "income_daily": {"2026-11-07": {"realized": -40.0, "commission": -5.0},
+                                     "2026-11-08": {"realized": 0.0, "commission": -1.0}},
+                    "income_range": ["2026-11-07", None]})
     )
     (tmp_path / "binance_capital.json").write_text(
         json.dumps({"since": "2026-11-07", "base": 1000.0, "deposits": []})
     )
     (tmp_path / "binance_equity.json").write_text(json.dumps({"2026-11-07": 950.0}))
     r = client.get("/api/account/binance").json()["returns"]
-    assert r["total"] == -100.0 and r["today"] == -50.0 and "bot" not in r
+    # 누적은 순평가액 그대로, 오늘은 확정 손익(평가손익 −55는 안 들어감)
+    assert r["total"] == -100.0 and r["today"] == -1.0 and "bot" not in r
+    assert r["today_pct"] == pytest.approx(-1 / 955 * 100) and r["realized_total"] == -46.0
 
     token = tmp_path / "view.token"
     token.write_text("t0k")
@@ -321,6 +327,7 @@ def test_returns_use_net_equity_and_series_api(tmp_path, monkeypatch):
     assert client.get("/api/account/binance/series").json() == {
         "seed": 1000.0,
         "points": [{"t": 1794182400, "v": 1006.0}],
+        "realized": [],  # 손익 내역(income)이 없으면 확정 선은 비운다
     }
 
 
@@ -453,19 +460,94 @@ def test_daily_income_groups_by_kst_day():
     assert out["2026-11-12"]["commission"] == -0.25
 
 
-def test_daily_returns_vs_prev_close_and_deposits():
+def test_daily_returns_realized_and_deposits():
+    """확정 손익 기준: 그날 실현손익 + 수수료 + 펀딩 ÷ 그날 시작 확정 평가액, 입출금은 손익 밖."""
     from minerva import perf
 
-    dep = [{"date": "2026-11-13", "amount": 50.0}]
-    cap = {"since": "2026-11-12", "base": 100.0, "deposits": dep}
-    hist = {"2026-11-11": 90.0, "2026-11-12": 110.0, "2026-11-13": 150.0, "2026-11-14": 1.0}
-    rows = perf.daily_returns(hist, cap, "2026-11-14", 165.0, {"2026-11-14": {"commission": -1.0}})
+    cap = {"since": "2026-11-12", "base": 100.0,
+           "deposits": [{"date": "2026-11-13", "amount": 50.0}]}
+    inc = {
+        "2026-11-12": {"realized": 10.0, "commission": -0.5, "funding": 0.5},
+        "2026-11-13": {"realized": -16.0},
+        "2026-11-14": {"commission": -1.0},
+    }
+    rows = perf.daily_returns(cap, "2026-11-14", inc, ["2026-11-12", None], unrealized=7.0)
     assert [r["date"] for r in rows] == ["2026-11-14", "2026-11-13", "2026-11-12"]
-    first, dep, today = rows[2], rows[1], rows[0]
+    today, dep, first = rows
     assert first["pnl"] == pytest.approx(10.0) and first["pct"] == pytest.approx(10.0)
-    assert dep["pnl"] == pytest.approx(-10.0) and dep["pct"] == pytest.approx(-10 / 160 * 100)
-    assert today["equity"] == 165.0 and today["pct"] == pytest.approx(10.0)
-    assert today["commission"] == -1.0 and dep["commission"] == 0.0
+    assert first["equity"] == pytest.approx(110.0) and "unrealized" not in first
+    # 시작 = 시드 100 + 입금 50 + 전날 확정 10 = 160
+    assert dep["start"] == pytest.approx(160.0) and dep["deposit"] == 50.0
+    assert dep["pnl"] == pytest.approx(-16.0) and dep["pct"] == pytest.approx(-10.0)
+    assert today["start"] == pytest.approx(144.0) and today["pnl"] == pytest.approx(-1.0)
+    assert today["open"] and today["unrealized"] == 7.0  # 평가손익은 따로, 수익률에 안 들어감
+    assert today["cum_pnl"] == pytest.approx(-7.0) and today["funding"] == 0.0
+
+
+def test_daily_returns_empty_day_and_unknown_income():
+    """손익 없는 날은 0, 조회 범위 밖·끝까지 못 받은 날은 None이고 누적에 안 들어간다."""
+    from minerva import perf
+
+    cap = {"since": "2026-11-10", "base": 100.0, "deposits": []}
+    inc = {"2026-11-12": {"realized": 5.0}}
+    rows = perf.daily_returns(cap, "2026-11-13", inc, ["2026-11-11", "2026-11-13"])
+    by = {r["date"]: r for r in rows}
+    assert by["2026-11-10"]["pnl"] is None and by["2026-11-10"]["commission"] is None
+    assert by["2026-11-11"]["pnl"] == 0.0 and by["2026-11-11"]["pct"] == 0.0
+    assert by["2026-11-12"]["pnl"] == 5.0 and by["2026-11-12"]["pct"] == pytest.approx(5.0)
+    assert by["2026-11-13"]["realized"] is None and by["2026-11-13"]["cum_pnl"] == 5.0
+    assert perf.daily_returns(cap, "2026-11-09", inc, None) == []
+
+
+def test_daily_returns_open_position_across_midnight_keeps_past_days(tmp_path):
+    """자정을 넘겨 들고 있는 포지션의 마크 가격이 움직여도 지난 날 숫자는 그대로다.
+    청산된 날에만 실현손익이 잡힌다."""
+    from minerva import perf
+
+    cap = {"since": "2026-11-15", "base": 1000.0, "deposits": []}
+    # 11-15 23:00 롱 진입(수수료만), 자정 넘어 평가손익이 바뀜
+    snap = {"status": "ok", "updated_at": "2026-11-15 23:59", "unrealized": 30.0,
+            "income_daily": {"2026-11-15": {"commission": -1.0}},
+            "income_range": ["2026-11-15", None]}
+    binance.record_income(tmp_path / perf.INCOME_FILE, snap)
+    day1 = perf.binance_daily(tmp_path, snap, cap)
+    assert day1[0]["pnl"] == pytest.approx(-1.0) and day1[0]["unrealized"] == 30.0
+
+    snap2 = {**snap, "updated_at": "2026-11-16 09:00", "unrealized": -80.0}
+    binance.record_income(tmp_path / perf.INCOME_FILE, snap2)
+    rows = {r["date"]: r for r in perf.binance_daily(tmp_path, snap2, cap)}
+    assert rows["2026-11-15"]["pnl"] == pytest.approx(-1.0)  # 어제는 그대로
+    assert rows["2026-11-15"]["pct"] == pytest.approx(-0.1)
+    assert rows["2026-11-16"]["pnl"] == 0.0 and rows["2026-11-16"]["unrealized"] == -80.0
+
+    # 11-16 15:00 청산: 실현 +50, 청산 수수료 −1 → 11-16에만 잡힌다
+    snap3 = {**snap, "updated_at": "2026-11-16 15:00", "unrealized": 0.0,
+             "income_daily": {"2026-11-15": {"commission": -1.0},
+                              "2026-11-16": {"realized": 50.0, "commission": -1.0}}}
+    binance.record_income(tmp_path / perf.INCOME_FILE, snap3)
+    rows = {r["date"]: r for r in perf.binance_daily(tmp_path, snap3, cap)}
+    assert rows["2026-11-15"]["pnl"] == pytest.approx(-1.0)
+    assert rows["2026-11-16"]["pnl"] == pytest.approx(49.0)
+    assert rows["2026-11-16"]["pct"] == pytest.approx(49 / 999 * 100)
+
+
+def test_record_income_keeps_days_older_than_snapshot_window(tmp_path):
+    """스냅숏이 89일 창으로 옛 날을 잃어도 쌓아 둔 날은 남는다. 범위 밖 값으로 덮지 않는다."""
+    from minerva import perf
+
+    path = tmp_path / perf.INCOME_FILE
+    binance.record_income(path, {"status": "ok", "income_range": ["2026-08-01", None],
+                                 "income_daily": {"2026-08-01": {"realized": 3.0}}})
+    binance.record_income(path, {"status": "ok", "income_range": ["2026-08-05", "2026-11-01"],
+                                 "income_daily": {"2026-08-01": {"realized": 99.0},
+                                                  "2026-11-01": {"realized": 99.0},
+                                                  "2026-09-01": {"realized": 1.0}}})
+    got = json.loads(path.read_text())
+    assert got["from"] == "2026-08-01"
+    assert got["days"] == {"2026-08-01": {"realized": 3.0}, "2026-09-01": {"realized": 1.0}}
+    binance.record_income(path, {"status": "ok", "live": False, "income_range": ["x", None]})
+    binance.record_income(path, {"status": "error"})
+    assert json.loads(path.read_text())["from"] == "2026-08-01"
 
 
 def test_binance_api_has_daily(tmp_path, monkeypatch):
@@ -474,30 +556,21 @@ def test_binance_api_has_daily(tmp_path, monkeypatch):
     monkeypatch.delenv("MINERVA_ACCOUNT_TOKEN", raising=False)
     (tmp_path / "binance.json").write_text(json.dumps({
         "status": "ok", "updated_at": "2026-11-08 10:00", "equity": 900.0, "net_equity": 899.0,
+        "unrealized": -100.0,
+        "income_daily": {"2026-11-07": {"realized": -50.0}}, "income_range": ["2026-11-07", None],
     }))
     (tmp_path / "binance_capital.json").write_text(
         json.dumps({"since": "2026-11-07", "base": 1000.0, "deposits": []})
     )
     (tmp_path / "binance_equity.json").write_text(json.dumps({"2026-11-07": 950.0}))
-    daily = TestClient(app).get("/api/account/binance").json()["daily"]
+    client = TestClient(app)
+    daily = client.get("/api/account/binance").json()["daily"]
     got = [(r["date"], round(r["pnl"], 2)) for r in daily]
-    assert got == [("2026-11-08", -51.0), ("2026-11-07", -50.0)]
-
-
-def test_daily_returns_gap_day_and_unknown_income():
-    """기록 빠진 날: 입출금을 다음 행에서 빼고 여러 날치로 표시. 조회 범위 밖 수수료는 None."""
-    from minerva import perf
-
-    cap = {"since": "2026-11-10", "base": 100.0,
-           "deposits": [{"date": "2026-11-11", "amount": 20.0}]}
-    hist = {"2026-11-10": 100.0, "2026-11-12": 130.0}
-    rows = perf.daily_returns(hist, cap, "2026-11-13", 130.0, {}, ["2026-11-12", "2026-11-13"])
-    by = {r["date"]: r for r in rows}
-    assert by["2026-11-12"]["days"] == 2 and by["2026-11-12"]["pnl"] == pytest.approx(10.0)
-    assert by["2026-11-12"]["deposit"] == 20.0
-    assert by["2026-11-10"]["commission"] is None  # 조회 시작 전
-    assert by["2026-11-12"]["commission"] == 0.0
-    assert by["2026-11-13"]["realized"] is None  # 끝까지 못 받은 마지막 날
+    assert got == [("2026-11-08", 0.0), ("2026-11-07", -50.0)]  # 평가손익 −100은 안 들어감
+    assert daily[0]["unrealized"] == -100.0 and daily[0]["open"]
+    s = client.get("/api/account/binance/series").json()
+    assert s["realized"] == [{"date": "2026-11-07", "equity": 950.0},
+                             {"date": "2026-11-08", "equity": 950.0}]
 
 
 def test_fetch_income_pages_until_short_page(monkeypatch):

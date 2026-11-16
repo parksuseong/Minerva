@@ -23,7 +23,7 @@
       return `<tr><td>${esc(String(t.symbol || "").replace(/USDT$/, ""))} ${esc(SIDE[t.side] || t.side)}</td>
         <td>${esc(String(t.opened_at).slice(5, 16))}<br>${esc(String(t.closed_at).slice(5, 16))}</td>
         <td>${num(t.entry, 4)}<br>${num(t.exit, 4)}</td>
-        <td>${esc(t.why_ko || t.why)}</td>
+        <td>${esc(t.why_ko || t.why)}${t.result ? `<br><span class="mini">${esc(t.result)}</span>` : ""}</td>
         <td>${sgn(t.pnl)}<br>${pct(t.pct)}</td>
         <td>${pct(t.mfe_pct)}<br>${pct(t.mae_pct)}</td>
         <td>${a ? `고 ${pct(a.high_pct)}<br>저 ${pct(a.low_pct)}<br>끝 ${pct(a.close_pct)}` : "-"}</td></tr>`;
@@ -43,8 +43,8 @@
     return `<section class="card"${UI.pgAttr("rv", i)}>
       <h2>${esc(r.day)} ${r.partial ? "<span class=\"mini\">(진행 중에 쓴 복기)</span>" : ""}</h2>
       ${rv ? `<p><b>${esc(rv.headline)}</b></p>` : `<p class="mini">AI 복기 없음: ${esc(r.review_error || "-")}</p>`}
-      <p>계좌 하루 손익 ${acc ? `${sgn(acc.pnl)} USDT (${pct(acc.pct)}) · 수수료 ${num(acc.commission)} · 펀딩 ${num(acc.funding)}` : "-"}<br>
-      닫힌 거래 ${t.n || 0}번 (이긴 거래 ${t.wins || 0}) · 합계 ${sgn(t.pnl)} USDT</p>
+      <p>계좌 하루 손익 ${acc ? `${sgn(acc.pnl)} USDT (${pct(acc.pct)}) · 수수료 ${num(acc.commission)} · 펀딩 ${num(acc.funding)}` : "-"}${acc && acc.basis === "realized" ? " <span class=\"mini\">(확정 손익 기준)</span>" : ""}<br>
+      닫힌 거래 ${t.n || 0}번 · ${t.losses == null ? `이긴 거래 ${t.wins || 0}` : `${t.wins || 0}승 ${t.losses}패 ${t.draws || 0}무 (승률 ${t.winrate == null ? "-" : `${num(t.winrate * 100, 0)}%`})`} · 합계 ${sgn(t.pnl)} USDT</p>
       ${trades(r.trades || [])}
       ${rv ? `${list("👍 잘한 점", rv.good)}${list("👎 아쉬운 점", rv.bad)}
         ${rv.rule_check ? `<h3>📏 규칙대로 했나</h3><p>${esc(rv.rule_check)}</p>` : ""}
@@ -67,7 +67,7 @@
     const cf = t.counterfactual || {};
     const touched = (t.interventions || []).length > 0;
     const badge = t.manual ? " <span class=\"mini\">[수동 진입]</span>" : (touched ? " <span class=\"mini\">[손댐]</span>" : "");
-    const head = `${esc(String(t.symbol || "").replace(/USDT$/, ""))} ${esc(SIDE[t.side] || t.side)} ${pct(t.pct)} · ${esc(t.why_ko || t.why || "-")}${badge}`;
+    const head = `${esc(String(t.symbol || "").replace(/USDT$/, ""))} ${esc(SIDE[t.side] || t.side)} ${pct(t.pct)} · ${esc(t.why_ko || t.why || "-")}${t.result ? ` · ${esc(t.result)}` : ""}${badge}`;
     return `<details class="card">
       <summary><b>${head}</b> <span class="mini">${esc(String(t.closed_at || "").slice(5, 16))} 청산 · ${esc(t.hold_min ?? "-")}분 보유 · ${sgn(t.pnl)} USDT</span>
         ${rv ? `<br>${esc(rv.headline)}` : ""}</summary>

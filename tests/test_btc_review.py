@@ -108,14 +108,18 @@ def test_facts_day_filter_and_fields(files):
     assert [t["why_ko"] for t in f["trades"]] == ["손절"]  # 다른 날·드라이런 제외
     assert f["trades"][0]["hold_min"] == 30 and f["trades"][0]["mae_pct"] == -3.0
     assert calls == ["BTCUSDT"]
-    assert f["totals"] == {"n": 1, "wins": 0, "pnl": -9.0}
+    assert f["totals"] == {"n": 1, "wins": 0, "losses": 1, "draws": 0, "winrate": 0.0,
+                           "pnl": -9.0}
+    assert f["trades"][0]["result"] == "패"
     assert f["partial"] is False
     assert f["passed"] == {"ETHUSDT": 1} and f["passed_total"] == 1
     assert f["skipped"][0]["symbol"] == "XAGUSDT"
     assert f["choices"][0]["reason"] == "근거"
     assert f["entries"] == [{"at": "2026-11-15 10:00:20", "decision": "BTC 롱 진입"}]
     assert f["halts"] == ["HALT"] and f["end_position"] == {"symbol": "BTCUSDT"}
-    assert f["account"]["pnl"] == pytest.approx(-9.0)
+    # 확정 손익 기준: 실현 −9 + 수수료 −0.1 (평가액 변화가 아님)
+    assert f["account"]["pnl"] == pytest.approx(-9.1)
+    assert f["account"]["pct"] == pytest.approx(-9.1)
     assert f["account"]["commission"] == -0.1
 
 

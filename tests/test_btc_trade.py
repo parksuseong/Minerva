@@ -913,7 +913,73 @@ def test_mismatch_keeps_a_stop(env, monkeypatch):
 def test_unknown_pnl_not_counted_in_winrate(env):
     for _ in range(8):
         bt._append("closed.jsonl", {"at": "2026-11-05 10:00:00", "mode": "live", "pnl": None})
-    assert bt.winrate("live", NOW) == (0, 0)
+    assert bt.winrate("live", NOW) == (0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "row, want",
+    [
+        # 2026-11-17 NVDA 롱 158.44 → 158.69 = +0.16%: 따라간 손절(본전) → 무승부
+        ({"why": "trail", "side": "long", "entry": 158.44, "exit": 158.69, "pnl": 0.3}, "draw"),
+        ({"why": "stop", "pct": 0.5, "pnl": 1.0}, "draw"),  # 경계 포함
+        ({"why": "stop", "pct": -0.5, "pnl": -2.0}, "draw"),
+        ({"why": "stop", "pct": 0.51, "pnl": 1.0}, "win"),
+        ({"why": "stop", "pct": -0.51, "pnl": -1.0}, "loss"),
+        ({"why": "stop", "pct": -3.0, "pnl": -9.0}, "loss"),
+        ({"why": "trail", "pct": 4.0, "pnl": 12.0}, "win"),
+        ({"why": "stop", "side": "short", "entry": 100.0, "exit": 100.3, "pnl": -1.2}, "draw"),
+        ({"why": "stop", "side": "short", "entry": 100.0, "exit": 100.6, "pnl": -2.0}, "loss"),
+        # 손절이 아닌 청산은 진입가 근처여도 예전처럼 손익으로
+        ({"why": "signal", "pct": 0.1, "pnl": -0.2}, "loss"),
+        ({"why": "tp", "pct": 0.2, "pnl": 0.1}, "win"),
+        ({"why": "manual", "pct": 0.0, "pnl": 0.0}, "loss"),
+        ({"why": "stop", "pct": 0.1, "pnl": None}, None),  # 손익 모름은 어디에도 안 셈
+        ({"why": "stop", "pnl": -0.5}, "loss"),  # 가격 없으면 손익으로
+    ],
+)
+def test_outcome_draw_boundaries(row, want):
+    assert bt.DRAW_PCT == 0.5
+    assert bt.outcome(row) == want
+
+
+def test_tally_and_record_text():
+    rows = [{"why": "stop", "pct": 0.1, "pnl": -0.3}, {"why": "tp", "pct": 3, "pnl": 9},
+            {"why": "stop", "pct": -3, "pnl": -9}, {"why": "stop", "pct": -3, "pnl": -9},
+            {"why": "signal", "pct": 1, "pnl": None}]
+    t = bt.tally(rows)
+    assert (t["wins"], t["losses"], t["draws"], t["n"]) == (1, 2, 1, 4)
+    assert t["winrate"] == pytest.approx(1 / 3)
+    assert bt.record_text(t) == "1승 2패 1무 (승률 33%)"
+    assert bt.tally([{"why": "stop", "pct": 0, "pnl": 0}])["winrate"] is None
+
+
+def test_winrate_halt_excludes_draws(env, monkeypatch):
+    """무승부는 분모에서 빠진다: 4승 4패 5무 = 50%로 정지 안 함(예전 셈이면 4/13 = 31%)."""
+    live(env)
+    rows = [{"pnl": 1.0, "why": "tp", "pct": 3.0}] * 4
+    rows += [{"pnl": -1.0, "why": "stop", "pct": -3.0}] * 4
+    rows += [{"pnl": -0.1, "why": "trail", "pct": 0.2}] * 5
+    for r in rows:
+        bt._append("closed.jsonl", {"at": "2026-11-05 10:00:00", "mode": "live", **r})
+    assert bt.winrate("live", NOW) == (8, 4, 5)
+    assert bt.check_halts("live", {}, 1000.0, NOW, lambda m: None) == []
+
+
+def test_winrate_min_trades_counts_decided_only(env):
+    """정지 최소 거래 수(8)는 승패가 난 거래만 센다: 3승 4패 + 무승부 10번이면 아직 판단 안 함."""
+    live(env)
+    rows = [{"pnl": 1.0, "why": "tp", "pct": 3.0}] * 3
+    rows += [{"pnl": -1.0, "why": "stop", "pct": -3.0}] * 4
+    rows += [{"pnl": -0.2, "why": "stop", "pct": -0.3}] * 10
+    for r in rows:
+        bt._append("closed.jsonl", {"at": "2026-11-05 10:00:00", "mode": "live", **r})
+    assert bt.winrate("live", NOW) == (7, 3, 10)
+    assert bt.check_halts("live", {}, 1000.0, NOW, lambda m: None) == []
+    bt._append("closed.jsonl", {"at": "2026-11-05 10:00:00", "mode": "live", "pnl": -1.0,
+                                "why": "signal", "pct": -0.1})
+    sent = []
+    why = bt.check_halts("live", {}, 1000.0, NOW, sent.append)
+    assert any("승률 3/8" in h and "3승 5패 10무" in h for h in why)
 
 
 def test_ai_fallback_streak_alerts(env, monkeypatch):

@@ -114,13 +114,14 @@ def brief_text(v: dict, now: datetime, price: float | None, ways: dict, since: s
             f"평가액 {eq:,.2f} USDT · 시드 {seed:,.2f} 대비 "
             f"{_pct((eq / seed - 1) * 100)} ({round(eq - seed, 2) + 0.0:+.2f} USDT)"
         )
-    n, w = g.get("winrate_n", 0), g.get("winrate_wins", 0)
+    # winrate_n = 승패가 난 거래(무승부 제외), 무승부는 winrate_draws
+    n, w, d = g.get("winrate_n", 0), g.get("winrate_wins", 0), g.get("winrate_draws", 0)
     floor_txt = (
         f"−20%선 {floor:,.2f} (여유 {_pct((eq / floor - 1) * 100, 1)})"
         if eq and floor
         else "−20%선 -"
     )
-    wr = f"{w}/{n} = {w / n:.0%}" if n else "거래 없음"
+    wr = f"{w}승 {n - w}패 {d}무 ({w / n:.0%})" if n else (f"{d}무 (승률 -)" if d else "거래 없음")
     lines.append(
         f"정지까지: {floor_txt} · {g.get('winrate_days', 30)}일 승률 {wr} "
         f"(기준 {g.get('winrate_min', 0.5):.0%}, {g.get('winrate_min_trades', 8)}회부터)"

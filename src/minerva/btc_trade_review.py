@@ -235,6 +235,8 @@ def facts(row: dict, now: datetime, fetch: Callable = fetch_bars,
     rec.update(
         id=trade_id(row), symbol=sym, opened_at=row["opened_at"], closed_at=row["at"],
         why_ko=WHY.get(why, why), manual=bool(row.get("manual")),
+        # 승/패/무승부(진입가 ±DRAW_PCT% 안 손절은 무승부, btc_trade.outcome)
+        result=btc_review.RESULT_KO.get(bt.outcome(row)),
         tp_custom=bool(row.get("tp_custom")), trail=bool(row.get("trail")),
         hold_min=round((_ms(row["at"]) - _ms(row["opened_at"])) / 60000),
         generated_at=now.strftime("%Y-%m-%d %H:%M"),
@@ -270,6 +272,7 @@ PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매의 거래 하나를
 한 번에 한 포지션, 반대 신호면 바꿈.
 사용자가 손으로 연 포지션은 엔진이 이어받아 같은 규칙으로 관리한다.
 자료(JSON) 칸: pct=진입가 대비 가격 % (3배 전), pnl=USDT, why_ko=청산 이유,
+result=승/패/무승부(손절이 진입가 ±0.5% 안에서 났으면 무승부, 손익은 그대로),
 closed_at=엔진이 기록한 시각(손절·익절 실제 체결은 최대 15분 이를 수 있음),
 mfe_pct/mae_pct=들고 있는 동안 가장 좋았던/나빴던 %,
 after=청산 뒤 가격 변화 %(최대 24시간, partial이면 그보다 짧음, bars=15분봉 수),
@@ -354,7 +357,9 @@ def message(rec: dict) -> str:
     pct = rec.get("pct")
     head = (f"📝 거래 복기 · {bt._name(rec['symbol'])} {SIDE.get(rec['side'], rec['side'])}"
             + (f" {pct:+.1f}%" if isinstance(pct, (int, float)) else "")
-            + f" ({rec.get('why_ko') or '-'})" + (" · 수동" if rec.get("interventions") else ""))
+            + f" ({rec.get('why_ko') or '-'})"
+            + (f" · {rec['result']}" if rec.get("result") else "")
+            + (" · 수동" if rec.get("interventions") else ""))
     rv = rec.get("review")
     if not rv:
         return f"{head}\nAI 복기 없음: {rec.get('review_error') or '-'}"

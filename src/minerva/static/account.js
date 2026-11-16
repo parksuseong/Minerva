@@ -85,8 +85,8 @@
 
   const usdt = (v) => (v == null ? "-" : `${num(v)} USDT`);
   const ugain = (v, p) => signed(v, `${v > 0 ? "+" : ""}${usdt(v)} (${pct(p)})`);
-  const OUT = { win: ["승", "up"], loss: ["패", "down"], draw: ["무", ""] };
-  const BN = ["bn-daily", "bn-positions", "bn-orders", "bn-trades"];
+  // 선물 체결내역은 화면에서 뺐다(사용자 2026-11-17 "화면에서는 보여줄 필요 없을 것 같다"). 승패는 엔진 거래 표에
+  const BN = ["bn-daily", "bn-positions", "bn-orders"];
 
   function renderBinance(d) {
     if (d.status !== "ok" && !d.updated_at) {
@@ -179,13 +179,6 @@
         넣지 않아서 지난 날 숫자는 자정이 지나도 바뀌지 않아요. 입출금은 손익에서 빼요. "-"는 손익 내역을 못 받은 날이에요.</div>` : "없음";
     $("bn-orders").innerHTML = table([["time", "시각"], ["symbol", "종목"], ["side", "구분"],
       ["type", "유형"], ["qty", "수량"], ["price", "가격"], ["status", "상태"]], d.orders);
-    $("bn-trades").innerHTML = table([["time", "시각"], ["symbol", "종목", (v) => esc(String(v || "").replace(/USDT$/, ""))], ["side", "구분"], ["qty", "수량"],
-      ["price", "체결가"], ["realized", "실현손익", (v) => signed(v, num(v))], ["fee", "수수료"],
-      // 청산 체결의 승/무/패(서버가 엔진 청산 기록과 맞춰 붙임, 진입 체결·못 맞춘 체결은 "-")
-      ["outcome", "승패", (v) => (OUT[v] ? `<span class="${OUT[v][1]}">${OUT[v][0]}</span>` : "-")]],
-    d.trades, "bn-trades")
-      + `<div class="mini">승패: 무 = 진입가 ±0.5% 안에서 난 손절(본전 손절), 승률에서 빠져요.
-        엔진 청산 기록에 없는 청산(엔진 밖 손 매매)은 "-"예요.</div>`;
   }
 
   // 자산 차트: 시드 위는 상승색, 아래는 하락색. 시각은 서버가 KST로 옮겨 둔다(UTC로 그린다).

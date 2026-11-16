@@ -196,6 +196,15 @@ def engine_view(now: datetime | None = None) -> dict:
             "ai_tp_range": list(bt.btc_ai.TP_RANGE),
             "margin_frac": bt.margin_frac(),
             "working_type": bt.WORKING_TYPE,
+            "exit_rule": "trail" if bt.trail_rule() else "fixed",
+            # 따라가는 손절(사용자 2026-11-16 "B안"): 꺼져 있으면 None
+            "trail": {
+                "activate_pct": bt.TRAIL_ACTIVATE_PCT,
+                "lock_pct": bt.TRAIL_LOCK_PCT,
+                "trail_pct": bt.TRAIL_PCT,
+            }
+            if bt.trail_rule()
+            else None,
             "symbols": universe_symbols(now),
         },
         # TradFi 약관 미동의로 쉬는 종목 {종목: {"at", "until_ms", "code", ...}}

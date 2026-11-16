@@ -17,7 +17,7 @@
   const short = (sym) => esc(String(sym || "BTCUSDT").replace(/USDT$/, ""));
   const isBtc = (x) => symOf(x) === "BTCUSDT";
   const who = (x, side) => `${short(symOf(x))} ${SIDE[side] || "-"}`;
-  const WHY = { signal: "반대 신호", stop: "손절", tp: "익절", manual: "수동·강제", protect: "손절 실패 정리", weekend: "휴장 전 정리" };
+  const WHY = { signal: "반대 신호", stop: "손절", trail: "따라간 손절", tp: "익절", manual: "수동·강제", protect: "손절 실패 정리", weekend: "휴장 전 정리" };
   // 차트 시각은 KST 벽시계를 UTC 자리에 둔 초(U.kst). 엔진 기록 "YYYY-MM-DD HH:MM:SS"(KST)도 같은 방식으로 바꾼다.
   const wall = (s) => {
     const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(s || "");
@@ -47,7 +47,11 @@
     const sign = p.side === "long" ? 1 : -1;
     const u = c ? (c / p.entry - 1) * 100 * sign : null;
     const d = p.entry < 1000 ? 2 : 1;
-    const tp = p.tp ? ` · 익절 <b>${num(p.tp, d)}</b> (+${num(p.tp_pct, 2)}%)` : " · 익절 없음";
+    const rule = eng && eng.params && eng.params.trail;
+    const tp = p.tp ? ` · 익절 <b>${num(p.tp, d)}</b> (+${num(p.tp_pct, 2)}%)`
+      : p.trail ? ` · 따라가는 중 (최고 <b>${num(p.best, d)}</b>)`
+      : rule ? ` · 익절 없음 · +${num(rule.activate_pct, 1)}% 닿으면 본전 → ${num(rule.trail_pct, 1)}% 따라감`
+      : " · 익절 없음";
     const now = isBtc(p) ? ` · 지금 ${pct(u)} (× ${lev()}배 ${pct(u == null ? null : u * lev())})` : "";
     return `<span class="chip ${p.side === "long" ? "good" : "warn"}">${who(p, p.side)}</span> ${num(p.qty, 3)} ${short(symOf(p))} @ <b>${num(p.entry, d)}</b>${now}<br>
       <span class="mini">손절 <b>${num(p.stop, d)}</b> (−${num(p.stop_pct ?? 3, 2)}%)${tp} · ${esc(p.opened_at || "")} 진입${p.mode === "dry" ? " · 드라이런 가상" : ""}</span>`;

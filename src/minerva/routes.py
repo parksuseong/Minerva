@@ -469,7 +469,8 @@ def trade_status() -> dict:
 
 @router.get("/api/gose")
 def gose_view() -> dict:
-    """고서 탭: 규칙책 요약(저장소), 백테스트 요약, 가상매매(실제 주문 없음), 원전 새 글.
+    """고서 탭: 매매 규칙서(저장소), 규칙책 요약(저장소), 백테스트 요약, 가상매매(실제 주문 없음),
+    원전 새 글.
 
     파일이 없거나 깨졌으면 그 칸은 {"status": "pending"}, 하나라도 없으면 전체도 pending."""
     rulebook = gose.read_json(gose.RULEBOOK) or {"status": "pending"}
@@ -485,4 +486,17 @@ def gose_view() -> dict:
         "backtest": backtest or {"status": "pending"},
         "paper": paper or {"status": "pending"},
         "feed": feed or {"status": "pending"},
+        "spec": gose_spec(),
     }
+
+
+def gose_spec() -> dict:
+    """SCR 3단 + 물타기 매매 규칙서: 저장소 문서(Markdown) 전문과 요약 수치. 다른 에이전트용."""
+    try:
+        md = gose.AVG_SPEC.read_text(encoding="utf-8")
+    except OSError:
+        md = None
+    info = gose.read_json(gose.AVG_INFO)
+    if md is None or info is None:
+        return {"status": "pending"}
+    return dict(info, status="ok", markdown=md, accounts=[k for k, _ in gose.AVG_ACCOUNTS])

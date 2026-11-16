@@ -97,6 +97,9 @@
     details.asset summary { list-style: none; cursor: pointer; }
     details.asset summary::-webkit-details-marker { display: none; }
     .mini { font-size: 12px; color: var(--muted); }
+    .spec pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+      overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+    .spec code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
     .sizer { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 6px 0; }
     .sizer label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
     .sizer input { font: inherit; font-size: 15px; padding: 6px 8px; border: 1px solid var(--line);
@@ -382,11 +385,15 @@
 
   <div class="panel" id="tab-gose" hidden>
     <section class="card">
+      <h2>📘 매매 규칙서 <span class="mini">SCR 3단 + 물타기 · 이 글만 보고 그대로 매매할 수 있게 · 미검증, 가상 계좌만</span></h2>
+      <div id="gose-spec" class="placeholder">불러오는 중…</div>
+    </section>
+    <section class="card">
       <h2>📜 ① 규칙책 요약 <span class="mini">원문 규칙, 미검증 · 우리 말로 줄임 · 원문 글·그림 없음</span></h2>
       <div id="gose-rulebook" class="placeholder">불러오는 중…</div>
     </section>
     <section class="card">
-      <h2>🧾 ② 백테스트 결과 <span class="mini">32개 변형 · 사전 등록 기준</span></h2>
+      <h2>🧾 ② 백테스트 결과 <span class="mini">1~5차 · 사전 등록 기준</span></h2>
       <div id="gose-backtest" class="placeholder">불러오는 중…</div>
     </section>
     <section class="card">
@@ -495,6 +502,6 @@
   <script src="/static/review.js?v=20261116b"></script>
   <script src="/static/trade.js?v=20261111a"></script>
   <script src="/static/office.js?v=20261111a"></script>
-  <script src="/static/gose.js?v=20261117a"></script>
+  <script src="/static/gose.js?v=20261117b"></script>
 </body>
 </html>

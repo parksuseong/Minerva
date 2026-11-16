@@ -4372,6 +4372,7 @@ def test_schedule_down_neither_closes_nor_blocks(env, multi, monkeypatch):
 def trail(monkeypatch):
     monkeypatch.setattr(bt, "AI_EXITS", False)
     monkeypatch.setattr(bt, "EXIT_RULE", "trail")
+    monkeypatch.setattr(bt, "TRAIL_LOCK_PCT", 0.0)  # 계산 시험은 본전 0. 실전 0.2는 따로 시험
 
 
 def _bar(mk: FakeMarket, i: int, high=None, low=None, close=None) -> None:
@@ -4424,7 +4425,7 @@ def _rewind_trail(bar: int) -> None:
     bt._save(bt.DIR / "state.json", st)
 
 
-def test_trail_stop_math_and_rounding():
+def test_trail_stop_math_and_rounding(trail):
     # 롱: +3% 닿으면 본전(틱 올림), 그 뒤 최고가 −3%. 숏은 반대(틱 내림)
     assert bt.trail_stop("long", 100_000.0, 102_999.0, False, "0.10") == (False, None)
     assert bt.trail_stop("long", 100_000.03, 103_000.1, False, "0.10") == (True, 100_000.1)
@@ -4712,3 +4713,21 @@ def test_trail_unconfirmed_move_reused_next_run(env, trail, monkeypatch):
     assert p["stop"] == 100_000.0 and ex.algos[old]["algoStatus"] == "CANCELED"
     assert sum(1 for m, path, _ in ex.writes if m == "POST") == n_posts
     assert [a["triggerPrice"] for a in _new_algos(ex)] == ["100000.0"]
+
+
+def test_trail_lock_covers_fees_and_why_labels(monkeypatch):
+    monkeypatch.setattr(bt, "AI_EXITS", False)
+    monkeypatch.setattr(bt, "EXIT_RULE", "trail")
+    assert bt.TRAIL_LOCK_PCT == 0.2  # 실전 값: 본전 + 수수료·지정가 여유
+    on, stop = bt.trail_stop("long", 100.0, 103.0, False, "0.01")
+    assert on and stop == 100.2  # max(본전 +0.2%, 103 × 0.97 = 99.91)
+    on, stop = bt.trail_stop("short", 100.0, 97.0, False, "0.01")
+    assert on and stop == 99.8
+    # 켜졌지만 손절을 아직 못 옮겼으면 옛 손절 체결은 trail이 아니라 stop
+    pos = {"side": "long", "entry": 100.0, "stop": 97.0, "trail": True}
+    assert bt._stop_why(pos) == "stop"
+    pos["stop"] = 100.2
+    assert bt._stop_why(pos) == "trail"
+    assert bt._stop_why({"side": "short", "entry": 100.0, "stop": 103.0, "trail": True}) == "stop"
+    assert bt._stop_why({"side": "short", "entry": 100.0, "stop": 99.8, "trail": True}) == "trail"
+    assert bt._stop_why({"side": "long", "entry": 100.0, "stop": 100.2}) == "stop"

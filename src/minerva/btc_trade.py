@@ -144,7 +144,9 @@ FIXED_TP_PCT = 3.0
 # (시장가 closePosition 손절은 같은 방향 두 개를 못 걸어 -4130으로 옮기지 못하고 옛 손절이 남는다).
 EXIT_RULE = "trail"
 TRAIL_ACTIVATE_PCT = 3.0
-TRAIL_LOCK_PCT = 0.0
+# 본전 잠금은 수수료·지정가 손절 여유만큼 위로(0이면 마크 가격·0.5% 지정가·왕복 수수료로 대부분
+# 작은 손실이 되어 30일 승률 정지에 진 거래로 잡힌다, 레드팀 2026-11-16)
+TRAIL_LOCK_PCT = 0.2
 TRAIL_PCT = 3.0
 # 수동 포지션 이어받기(사용자 2026-11-13 "수동으로 포지션 정리하거나 사면 주기적으로
 # 확인해. 수동으로 샀어도 알아서 손절과 익절해야 해"). 실행마다(15분) 계좌 전체를 본다.
@@ -731,6 +733,17 @@ def trail_stop(side: str, entry: float, best: float, on: bool, tick: str | None)
 
 def _tighter(side: str, new: float, old: float) -> bool:
     return new > old + 1e-12 if side == "long" else new < old - 1e-12
+
+
+def _stop_why(pos: dict) -> str:
+    """손절 체결의 이름: 손절을 실제로 진입가 −손절%보다 좋게 옮긴 뒤면 "trail", 아니면 "stop".
+    켜짐(trail)만 보면 옮기기 전 옛 손절 체결도 trail로 적힌다(레드팀 2026-11-16)."""
+    if not pos.get("trail"):
+        return "stop"
+    sign = 1 if pos["side"] == "long" else -1
+    base = float(pos["entry"]) * (1 - sign * STOP_PCT)
+    moved = _tighter(pos["side"], float(pos["stop"]), base * (1 + sign * 0.001))
+    return "trail" if moved else "stop"
 
 
 def position_amt(client) -> float:
@@ -1405,7 +1418,8 @@ def _trail_move_text(ctx: Ctx, pos: dict, old: float, new: float, first: bool) -
     name = _name(pos_symbol(pos))
     if first:
         lock = abs(new / float(pos["entry"]) - 1) * 100 <= TRAIL_LOCK_PCT + 0.05
-        where = "본전 " if lock and not TRAIL_LOCK_PCT else ""
+        lock_txt = f"+{TRAIL_LOCK_PCT:g}%" if TRAIL_LOCK_PCT else ""
+        where = f"본전{lock_txt} " if lock else ""
         return (
             f"🪜 {name} +{TRAIL_ACTIVATE_PCT:g}% 도달 → 손절을 {where}{_px(new)}로 "
             f"(전 {_px(old)}, 최고 {_px(pos['best'])})"
@@ -1431,7 +1445,7 @@ def reconcile_dry(ctx: Ctx, state: dict, rows15: list[list], now_ms: int) -> Non
             continue
         o, h, lo, c = float(r[1]), float(r[2]), float(r[3]), float(r[4])
         pos["checked"] = int(r[0])
-        stop_why = "trail" if pos.get("trail") else "stop"
+        stop_why = _stop_why(pos)
         if (lo <= pos["stop"]) if sign > 0 else (h >= pos["stop"]):
             px, why = (min(o, pos["stop"]) if sign > 0 else max(o, pos["stop"])), stop_why
         elif tp and ((h >= tp) if sign > 0 else (lo <= tp)):
@@ -1569,7 +1583,7 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True, qty: float | None =
                     f"✂️ {_name(ctx.symbol)} 이미 손절가 {_px(pos['stop'])}를 지났어요 "
                     "→ 지정가로 닫아요"
                 )
-                protect_close(ctx, state, "trail" if pos.get("trail") else "stop")
+                protect_close(ctx, state, _stop_why(pos))
             else:
                 ctx.say(f"❌ 손절 재설정 실패({why}) → 지정가로 닫아요")
                 protect_close(ctx, state, "protect")
@@ -2079,8 +2093,8 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
                 why = "stop"
             elif pos.get("tp") and abs(px / pos["tp"] - 1) < 0.005:
                 why = "tp"
-        if why == "stop" and pos.get("trail"):
-            why = "trail"  # 따라 올린 손절이 체결됐다
+        if why == "stop":
+            why = _stop_why(pos)  # 따라 올린 손절이 체결됐으면 trail
         state["position"] = None
         state.pop("pending", None)
         state.pop("closing", None)
@@ -2131,8 +2145,8 @@ def reconcile_live(ctx: Ctx, state: dict) -> bool:
                 f"⚡ {_who(ctx.symbol, pos['side'])} {name} 지정가가 걸렸는데 포지션이 남아 "
                 f"있어요({amt:+}) → 지금 호가로 쫓아 닫아요"
             )
-            if label == "stop" and pos.get("trail"):
-                label = "trail"
+            if label == "stop":
+                label = _stop_why(pos)
             protect_close(ctx, state, label)
             return state.get("position") is None
     cancel_engine_entries(c)  # 남은 진입 지정가가 체결되면 수량이 어긋난다
@@ -2368,6 +2382,7 @@ def _move_stop(ctx: Ctx, state: dict, new: float, first: bool) -> None:
             ok = stop_placed(c, r, cid)
     except Rejected as e:
         if e.code in WOULD_TRIGGER:
+            # 새 따라가는 손절가를 이미 지나 닫는다: 따라간 손절로 적는다
             why = "trail" if pos.get("trail") else "stop"
             ctx.event(event="trail_would_trigger", symbol=pos_symbol(pos), stop=new, old=old_px)
             ctx.say(
@@ -4398,9 +4413,9 @@ def run(
         # 따라가는 손절은 봉을 받은 뒤에 옮긴다(대사가 수량·손절을 맞춘 다음)
         try:
             trail_live(ctx.at(pos_symbol(state["position"])), state)
-        except (Rejected, NetworkError) as e:
+        except Exception as e:  # noqa: BLE001 - 따라가기 실패가 신호·청산을 막지 않게
             # 옛 손절이 그대로 지키고 있다: 다음 실행에서 다시
-            ctx.event(event="trail_error", error=str(e))
+            ctx.event(event="trail_error", error=f"{type(e).__name__}: {e}"[:300])
     _save(state_file, state)
 
     acct = _get(client, "/fapi/v2/account")

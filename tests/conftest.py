@@ -11,6 +11,11 @@ from pathlib import Path
 
 _REAL = Path("~/.minerva/btc_trade").expanduser().resolve()
 os.environ["MINERVA_BTC_TRADE_DIR"] = tempfile.mkdtemp(prefix="minerva-test-btc-")
+_TMP = Path(tempfile.mkdtemp(prefix="minerva-test-"))
+# 실제 키·텔레그램·계좌 파일도 못 읽게 없는 경로로(시험은 각자 mock을 쓴다)
+os.environ["MINERVA_BINANCE_ENV"] = str(_TMP / "no-binance.env")
+os.environ["MINERVA_TELEGRAM_ENV"] = str(_TMP / "no-telegram.env")
+os.environ["MINERVA_ACCOUNT_DIR"] = str(_TMP / "account")
 
 
 def pytest_sessionstart(session):

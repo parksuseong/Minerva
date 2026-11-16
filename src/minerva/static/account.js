@@ -132,12 +132,24 @@
         <span class="px">${usdt(d.wallet)} · ${usdt(d.available)}</span></div>
       ${ret}${breakdown}${rate}${err}`;
     // 바이낸스에 걸린 손절·익절 주문의 발동가와 진입가 대비 가격 변화 %(증거금 손익 아님)
-    const exitCell = (v, pct) => v === undefined ? "-" : v == null ? "없음"
-      : `${num(v)} (${pct == null ? "-" : (pct > 0 ? "+" : "") + num(pct)}%)`;
+    // 그 가격에 닫히면 손익(USDT): 방향 × 수량 × (가격 − 진입가) − 왕복 수수료 추정(테이커 0.05%씩)
+    const exitUsdt = (px, x) => {
+      const q = Number(x.qty), e = Number(x.entry);
+      if (!px || !q || !e) return null;
+      const dir = x.side === "롱" ? 1 : -1;
+      return dir * q * (px - e) - q * (e + px) * 0.0005;
+    };
+    const exitCell = (v, pct, x) => {
+      if (v === undefined) return "-";
+      if (v == null) return "없음";
+      const u = x ? exitUsdt(v, x) : null;
+      const money = u == null ? "" : `<br>${signed(u, `${u > 0 ? "+" : ""}${num(u)} USDT`)}`;
+      return `${num(v)} (${pct == null ? "-" : (pct > 0 ? "+" : "") + num(pct)}%)${money}`;
+    };
     $("bn-positions").innerHTML = table([["symbol", "종목"], ["side", "방향"], ["qty", "수량"],
       ["entry", "진입가"],
-      ["stop", "손절가", (v, x) => exitCell(v, x.stop_pct)],
-      ["tp", "익절가", (v, x) => exitCell(v, x.tp_pct)],
+      ["stop", "손절가", (v, x) => exitCell(v, x.stop_pct, x)],
+      ["tp", "익절가", (v, x) => exitCell(v, x.tp_pct, x)],
       ["mark", "현재가"], ["liq", "청산가"],
       ["leverage", "레버리지", (v, x) => `${v}배 ${esc(x.margin_type)}`],
       ["pnl", "미실현손익", (v, x) => signed(v, `${num(v)} (${x.pnl_pct == null ? "-" : num(x.pnl_pct)}%)`)]],

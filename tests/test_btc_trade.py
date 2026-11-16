@@ -5180,5 +5180,89 @@ def test_live_leverage_1x_window_365():
     # 사용자 2026-11-17 "가장 최선을 네가 알아서 선택해" → 시점 시뮬레이션 뒤 1배·365일
     from minerva import btc_universe
 
-    assert bt.LEVERAGE == 1 and btc_universe.LEVERAGE == 1
-    assert btc_universe.WINDOW_DAYS == 365
+    assert bt.LEVERAGE == 1 and bt.LEGACY_LEVERAGE == 3
+    # 종목 선정 백테스트는 365일 창을 고른 시점 시뮬레이션과 같은 3배
+    assert btc_universe.LEVERAGE == 3 and btc_universe.WINDOW_DAYS == 365
+    assert "선정 백테스트 3배" in btc_universe.RULE and "365일" in btc_universe.RULE
+    assert "엔진 실매매는 1배" in btc_universe.RULE and "182" not in btc_universe.RULE
+
+
+def test_pos_leverage_legacy_and_new():
+    assert bt.pos_leverage({"side": "long"}) == 3  # 칸 없는 옛 포지션 = 3배
+    assert bt.pos_leverage(None) == 3
+    assert bt.pos_leverage({"leverage": 1}) == 1
+    assert bt.pos_leverage({"leverage": "bad"}) == 3
+
+
+@pytest.mark.live_constants
+def test_legacy_position_close_text_uses_3x(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    pos = engine_long(ex)  # 배율 칸 없음(배포 전 3배 포지션)
+    ctx = bt.Ctx(ex, FakeMarket(), env["send"], NOW, True)
+    bt._record_close(ctx, pos, 101_000.0, 8.0, "signal")
+    assert any("(+1.00% × 3배)" in m for m in env["sent"]), env["sent"]
+    assert jsonl("closed.jsonl")[-1]["leverage"] == 3
+
+
+@pytest.mark.live_constants
+def test_new_dry_position_stores_leverage_1(env, monkeypatch):
+    ex = FakeExchange()
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["side"] == "long" and pos["leverage"] == 1
+    assert any("1배" in m and "진입 예정" in m for m in env["sent"])
+
+
+@pytest.mark.live_constants
+def test_new_live_position_stores_leverage_1(env, monkeypatch):
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    with_signal(monkeypatch, "long")
+    run(env, ex)
+    pos = state()["position"]
+    assert pos["leverage"] == 1 and ex.leverage == 1
+    assert ("POST", "/fapi/v1/leverage", {"symbol": "BTCUSDT", "leverage": 1}) in ex.writes
+
+
+@pytest.mark.live_constants
+def test_size_qty_at_1x_uses_97pct_of_available():
+    assert bt.LEVERAGE == 1 and bt.FEE_BUFFER == pytest.approx(0.03)
+    qty, why = bt.size_qty(1000.0, 100.0, 1.0, {**FLT, "step": "0.001", "min_notional": 5.0})
+    assert not why and float(qty) == pytest.approx(9.7, abs=0.001)  # 1000 × 0.97 × 1 / 100
+
+
+@pytest.mark.live_constants
+def test_flip_held_3x_position_sets_1x_only_after_close(env, monkeypatch):
+    # 레드팀 2026-11-17: 들고 있는 3배 포지션의 반대 신호에 닫기 전에 1배로 바꾸면 거래소가
+    # 거부할 수 있다(그러면 갈아타기가 청산만으로 끝남). 닫은 뒤에만 1배로 바꾼다
+    live(env)
+    ex = FakeExchange()
+    ex.leverage = 3
+    engine_long(ex)
+    handle = ex._handle
+
+    def strict(method, path, p):
+        if path == "/fapi/v1/leverage" and ex.amt != 0:
+            raise bt.Rejected(-4161, "Leverage reduction is not supported with open positions")
+        return handle(method, path, p)
+
+    monkeypatch.setattr(ex, "_handle", strict)
+    with_signal(monkeypatch, "short")
+    run(env, ex)
+    paths = [(p, x) for m, p, x in ex.writes]
+    lev_at = [i for i, (p, _) in enumerate(paths) if p == "/fapi/v1/leverage"]
+    close_at = [
+        i
+        for i, (p, x) in enumerate(paths)
+        if p == "/fapi/v1/order" and x.get("reduceOnly") == "true"
+    ]
+    assert lev_at and close_at and lev_at[0] > close_at[0]
+    pos = state()["position"]
+    assert pos["side"] == "short" and pos["leverage"] == 1 and ex.leverage == 1
+    last = jsonl("closed.jsonl")[-1]
+    assert last["side"] == "long" and last["leverage"] == 3
+    assert any("× 3배" in m for m in env["sent"])

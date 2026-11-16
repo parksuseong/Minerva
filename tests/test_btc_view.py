@@ -340,3 +340,18 @@ def test_account_fills_get_outcome(files):
     }))
     got = TestClient(app).get("/api/account/binance").json()["trades"]
     assert [t["outcome"] for t in got] == ["loss", None, "win", "draw", None]
+
+
+def test_engine_view_rows_carry_their_leverage(files):
+    # 2026-11-17 1배 전환: 옛 기록(칸 없음)은 3배, 새 기록은 그 배율 그대로 화면에 넘긴다
+    d = bt.DIR
+    pos = {"side": "long", "qty": 1.0, "entry": 100.0, "stop": 97.0, "mode": "dry"}
+    (d / "state.json").write_text(json.dumps({"position": pos, "dry_seed": 800.0}))
+    _jsonl(d / "closed.jsonl", [
+        {"at": "2026-11-09 01:00:00", "mode": "dry", "pnl": 1.0, "why": "tp", "pct": 1.0},
+        {"at": "2026-11-09 02:00:00", "mode": "dry", "pnl": 1.0, "why": "tp", "pct": 1.0,
+         "leverage": 1},
+    ])  # fmt: skip
+    v = btc_view.engine_view(NOW)
+    assert v["position"]["leverage"] == 3
+    assert [r["leverage"] for r in v["trades"]] == [1, 3]

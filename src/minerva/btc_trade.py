@@ -16,8 +16,9 @@ Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70), W=3, 3개 중 3개, 넘어옴(cros
 매매: 롱↔숏 갈아타기. 반대 신호면 닫고 반대로 연다. 같은 방향 신호면 그대로 둔다.
 같은 봉에 롱·숏 신호가 둘 다 나오면 아무것도 하지 않는다(화면 `switchSim`과 같음).
 손절: 진입 체결가에서 3% 떨어진 거래소 조건부 지정가 STOP(수량·reduceOnly, 마크 가격 기준).
-손절 뒤에는 다음 신호까지 쉰다. 레버리지 3배, 교차 마진(바꾸지 않는다).
-크기: 가용 잔고 × margin_frac × (1 − FEE_BUFFER) × 3 / 가격, 종목 수량 단위로 내림.
+손절 뒤에는 다음 신호까지 쉰다. 레버리지 LEVERAGE배(2026-11-17부터 1배, 그 전 3배), 교차 마진.
+포지션마다 연 배율을 `leverage`에 적고, 그 칸이 없는 옛 포지션은 3배(LEGACY_LEVERAGE)로 본다.
+크기: 가용 잔고 × margin_frac × (1 − FEE_BUFFER) × LEVERAGE / 가격, 종목 수량 단위로 내림.
 추격 한도: 실행 시 가격이 신호 봉 종가에서 진입 방향으로 1%(15분·4시간·일봉 방향이 모두 같으면 3%)
 이상 벌어졌으면 들어가지 않는다 (`strategy/btc.entry_gate`).
 
@@ -127,6 +128,8 @@ BAR_MS = 15 * 60_000
 # 조합, 참고). 기대값이 확실하지 않아 깡통 위험부터 줄인다: 1배 + 365일 창.
 # 들고 있던 포지션은 그 배율 그대로 끝까지.
 LEVERAGE = 1
+# leverage 칸이 없는 포지션·청산 기록은 이 배율로 열렸다(2026-11-17 전엔 모두 3배)
+LEGACY_LEVERAGE = 3
 STOP_PCT = 0.03
 # AI가 손절·익절 폭을 고르나. 2026-11-12 사용자 승인으로 끔:
 # 손절 3% 고정·익절 없음(백테스트와 같은 규칙).
@@ -417,6 +420,15 @@ def cid_tags(symbols) -> dict[str, str]:
 def pos_symbol(pos: dict | None) -> str:
     """포지션·pending의 종목. 옛 상태에는 symbol이 없다 → BTCUSDT."""
     return (pos or {}).get("symbol") or SYMBOL
+
+
+def pos_leverage(pos: dict | None) -> int:
+    """그 포지션(또는 청산 기록)을 연 배율. 옛 기록에는 칸이 없다 → LEGACY_LEVERAGE(3배)."""
+    try:
+        lev = int((pos or {}).get("leverage") or 0)
+    except (TypeError, ValueError):
+        lev = 0
+    return lev if lev > 0 else LEGACY_LEVERAGE
 
 
 TERMINAL = ("CANCELED", "FILLED", "EXPIRED", "REJECTED")
@@ -1442,6 +1454,7 @@ def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None,
             "pct": pct,
             "why": why,
             "opened_at": pos.get("opened_at"),
+            "leverage": pos_leverage(pos),
             # 거래별 복기(btc_trade_review)가 손으로 연 포지션·손으로 정한 익절을 알아보게
             "manual": bool(pos.get("manual")),
             "tp_custom": pos.get("tp_custom") or None,
@@ -1463,8 +1476,7 @@ def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None,
     sym = pos_symbol(pos)
     px = _px(exit_px) if exit_px else "?"
     money = f", 손익 {pnl:+.2f} USDT" if pnl is not None else ""
-    lev = pos.get("leverage") or LEVERAGE  # 예전 배율로 연 포지션은 그 배율
-    pc = f" ({pct:+.2f}% × {lev}배)" if pct is not None else ""
+    pc = f" ({pct:+.2f}% × {pos_leverage(pos)}배)" if pct is not None else ""
     res = {"win": " · 승", "loss": " · 패", "draw": " · 무승부(진입가 근처 손절)"}.get(
         outcome({"pnl": pnl, "pct": pct, "why": why}) or "", ""
     )
@@ -2071,6 +2083,8 @@ def adopt_manual(ctx: Ctx, state: dict, row: dict, why: str) -> dict | None:
         "manual": True,
         "fill": "manual",
         "order_style": order_style(),
+        # 손으로 연 포지션은 거래소에 걸린 그 종목 배율(positionRisk), 못 읽으면 엔진 배율
+        "leverage": int(row.get("leverage") or 0) or LEVERAGE,
     }
     if state.get("closed_through_ms"):
         pos["after_ms"] = state.pop("closed_through_ms")
@@ -2807,7 +2821,7 @@ def _backfill_tp(ctx: Ctx, state: dict) -> None:
     _save(DIR / "state.json", state)
     ctx.say(
         f"🎯 {_name(ctx.symbol)} 보유 포지션에 기본 익절 +{FIXED_TP_PCT:g}%"
-        f"(증거금 약 +{FIXED_TP_PCT * LEVERAGE:g}%)을 걸어요: {_px(tp)}"
+        f"(증거금 약 +{FIXED_TP_PCT * pos_leverage(pos):g}%)을 걸어요: {_px(tp)}"
     )
 
 
@@ -2846,7 +2860,7 @@ def _retarget_tp(ctx: Ctx, state: dict) -> None:
     ctx.event(event="tp_retarget", old_pct=old, new_pct=FIXED_TP_PCT, old_tp=was, tp=tp)
     ctx.say(
         f"🎯 {_name(ctx.symbol)} 익절을 +{float(old):g}% {_px(was)} → +{FIXED_TP_PCT:g}% "
-        f"{_px(tp)}로 바꿔요(증거금 약 +{FIXED_TP_PCT * LEVERAGE:g}%)"
+        f"{_px(tp)}로 바꿔요(증거금 약 +{FIXED_TP_PCT * pos_leverage(pos):g}%)"
     )
 
 
@@ -2873,6 +2887,8 @@ def _adopt(state: dict, pending: dict, order: dict) -> dict:
         "opened_at": pending.get("at"),
         "mode": "live",
         "order_style": order_style(),
+        # 배포 전에 시작한 진입(pending에 칸 없음)은 옛 배율로 열렸다
+        "leverage": pos_leverage(pending),
     }
     if pending.get("try", 1) > 1:
         pos["try"] = pending["try"]  # 다시 거는 손절·익절·비상 청산 ID도 앞 시도와 겹치지 않게
@@ -2887,7 +2903,7 @@ MARGIN_NO_CHANGE = -4046  # "No need to change margin type": 이미 교차
 
 
 def leverage_problem(ctx: Ctx, state: dict | None = None) -> str:
-    """그 종목을 교차·3배로 맞춘다(종목마다 따로다: ETH·SOXL·NVDA는 계좌에서 20배였다).
+    """그 종목을 교차·LEVERAGE배로 맞춘다(종목마다 따로다: ETH·SOXL·NVDA는 계좌에서 20배였다).
     문제가 없으면 빈 문자열, 진입하면 안 되면 이유. 조회·변경 실패는 예외로 올리지 않는다.
     약관 미동의(-4411)면 그 종목을 쉬게 하고(알림은 mark_unavailable이 한 번) 이유를 돌려준다."""
     sym = ctx.symbol
@@ -3139,6 +3155,7 @@ def ai_plan(ctx: Ctx, side: str, sig: dict, price: float, now_ms: int) -> dict:
             "price_now": price,
             "packet_error": str(e),
         }
+    data["leverage"] = LEVERAGE  # 이번 진입 배율(지시문 <LEVERAGE> 자리)
     caller = AI_CALLER or (lambda p: btc_ai.call_claude(p, cwd=DIR))
     out = btc_ai.decide(data, caller)
     streak = _load(DIR / "state.json", {}).get("ai_fallbacks", 0)
@@ -3525,7 +3542,14 @@ def position_row(client) -> dict:
     sym = _sym(client)
     rows = _get(client, "/fapi/v2/positionRisk", symbol=sym)
     row = next((x for x in rows if x["symbol"] == sym), None) or {"positionAmt": "0"}
-    return {"amt": float(row["positionAmt"]), "entry": float(row.get("entryPrice") or 0)}
+    out = {"amt": float(row["positionAmt"]), "entry": float(row.get("entryPrice") or 0)}
+    try:
+        lev = int(float(row.get("leverage") or 0))
+    except (TypeError, ValueError):
+        lev = 0
+    if lev > 0:
+        out["leverage"] = lev
+    return out
 
 
 def _entry_filled(ctx: Ctx, oid: str, since_ms: int) -> bool:
@@ -3692,6 +3716,7 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
             "entry_ms": int(ctx.now.timestamp() * 1000),
             "opened_at": _now_iso(ctx.now),
             "mode": "dry",
+            "leverage": LEVERAGE,
         }
         state["last_symbol"] = sym
         ctx.say(
@@ -3738,6 +3763,7 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
         "stop_pct": used["stop_pct"],
         "tp_pct": used["tp_pct"],
         "reason": used["reason"],
+        "leverage": LEVERAGE,
     }
     _save(DIR / "state.json", state)
     fill, err = None, None
@@ -3882,7 +3908,8 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
                 ctx.say(f"🆘 진입 뒤 손절 확인 실패: {e2}. 바이낸스 앱에서 확인하세요!")
     how = fill_line(fill) if fill else "응답을 놓쳐 포지션으로 확인"
     ctx.say(
-        f"{icon} {who} 진입: {pos['qty']} {_name(sym)} @ {_px(pos['entry'])} ({LEVERAGE}배)\n"
+        f"{icon} {who} 진입: {pos['qty']} {_name(sym)} @ {_px(pos['entry'])} "
+        f"({pos_leverage(pos)}배)\n"
         f"{how}\n"
         f"{exits_text(pos['stop'], pos.get('tp'))} 걸어 둠 ({WORKING_TYPE})\n{ai_line}\n"
         f"신호 봉 {sig.get('bar_txt')}{tp_note}"
@@ -4111,20 +4138,26 @@ def pre_close(ctx: Ctx, state: dict) -> bool:
 
 def live_entry_problem(c: Ctx, state: dict) -> str:
     """실전 진입 전 거래소 점검(들고 있는 것을 닫기 전에 한다: 갈아탈 종목에 못 들어가면
-    닫지 않게). 계좌 거래 가능, 그 종목의 엔진 밖 미체결·포지션, 교차·3배. 문제면 이유."""
+    닫지 않게). 계좌 거래 가능, 그 종목의 엔진 밖 미체결·포지션, 교차·LEVERAGE배. 문제면 이유.
+    들고 있는 종목(반대 신호 갈아타기)은 레버리지를 여기서 바꾸지 않는다: 포지션이 열린 채
+    배율을 낮추면 거래소가 거부할 수 있고, 그러면 갈아타기가 청산만으로 끝난다. 그 종목은
+    닫은 뒤 open_position의 ensure_leverage가 새 배율로 맞춘다."""
     sym = c.symbol
+    held = sym == held_symbol(state) and bool(state.get("position"))
     try:
         acct = c.shared.get("acct") or _get(c.client, "/fapi/v2/account")
         c.shared["acct"] = acct
         if not acct.get("canTrade", False):
             return "계좌가 거래 불가(canTrade=false)"
-        if sym != held_symbol(state) or not state.get("position"):
+        if not held:
             if foreign_orders(c.client):
                 return f"엔진이 내지 않은 {sym} 미체결 주문이 있음(단방향이라 섞일 수 있음)"
             if position_amt(c.client) != 0:
                 return f"{sym}에 이미 포지션이 보임"
     except (Rejected, NetworkError) as e:
         return f"거래소 점검 실패({e})"
+    if held:
+        return ""
     return leverage_problem(c, state)
 
 
@@ -4166,7 +4199,8 @@ def _held_packet(ctx: Ctx, pos: dict, opp: bool) -> dict:
         "entry": pos["entry"],
         "price_now": price,
         "pnl_pct": pct,
-        "pnl_pct_x_leverage": round(pct * LEVERAGE, 2) if pct is not None else None,
+        "leverage": pos_leverage(pos),
+        "pnl_pct_x_leverage": round(pct * pos_leverage(pos), 2) if pct is not None else None,
         "bars_held_15m": max(0, (ctx.now_ms - int(pos.get("entry_ms") or ctx.now_ms)) // BAR_MS),
         "stop": pos.get("stop"),
         "tp": pos.get("tp"),
@@ -4318,6 +4352,8 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
         data: dict = {
             "candidates": [_candidate_packet(cands[s]) for s in viable],
             "held": _held_packet(ctx, pos, bool(opp)) if pos else None,
+            # 새로 여는 포지션 배율. 들고 있는 포지션은 held.leverage(연 때 배율)
+            "engine_leverage": LEVERAGE,
             "fallback_rule": options[fallback],
         }
         choice, reason = ai_choose(ctx, options, fallback, data)
@@ -4867,7 +4903,7 @@ def run(
         held_txt = f"{_who(pos_symbol(p), p['side'])} {p['qty']}" if p else "없음"
         send(
             f"🤖 BTC 자동매매 엔진 시작 — {mode_ko}\n"
-            f"{_universe_txt(uni)} · SCR 15분 · Stoch 9/CCI 20/RSI 21 · 3배 · "
+            f"{_universe_txt(uni)} · SCR 15분 · Stoch 9/CCI 20/RSI 21 · {LEVERAGE}배 · "
             "한 번에 한 종목 · 손절·익절은 진입 때 AI(기본 손절 3%) · 롱↔숏 갈아타기\n"
             f"마지막 봉 {summary['bar']}: {decision} · 포지션 {held_txt}"
             + (f"\n진입 정지: {', '.join(halts)}" if halts else "")

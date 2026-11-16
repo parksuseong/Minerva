@@ -81,7 +81,7 @@ def brief_text(v: dict, now: datetime, price: float | None, ways: dict, since: s
             )
         else:
             tp = " · 익절 없음"
-        lev = prm.get("leverage", 3)
+        lev = bt.pos_leverage(p)  # 그 포지션을 연 배율(옛 포지션은 칸이 없어 3배)
         ux = u * lev if u is not None else None
         now_px = f" · 지금 {bt._px(price)} ({_pct(u)}, {lev}배 {_pct(ux)})" if price else ""
         name = bt._name(bt.pos_symbol(p))

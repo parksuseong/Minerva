@@ -240,7 +240,10 @@ def facts(row: dict, now: datetime, fetch: Callable = fetch_bars,
         tp_custom=bool(row.get("tp_custom")), trail=bool(row.get("trail")),
         hold_min=round((_ms(row["at"]) - _ms(row["opened_at"])) / 60000),
         generated_at=now.strftime("%Y-%m-%d %H:%M"),
-        rules={"leverage": bt.LEVERAGE, "now": rule_text()},
+        # 이 거래를 연 배율(옛 기록은 칸이 없어 3배). 엔진이 지금 여는 배율은 engine_leverage
+        leverage=bt.pos_leverage(row),
+        rules={"leverage": bt.pos_leverage(row), "engine_leverage": bt.LEVERAGE,
+               "now": rule_text()},
     )
     entry_ev, hold_ev = related_events(row, events)
     rec["entry_way"] = ("사용자 수동 진입(엔진이 이어받음)" if rec["manual"]
@@ -268,10 +271,12 @@ def facts(row: dict, now: datetime, fetch: Callable = fetch_bars,
 
 
 PROMPT = """너는 바이낸스 USDⓈ-M 선물 자동매매의 거래 하나를 복기하는 트레이더다.
-엔진 규칙(바꾸지 않음): 15분봉 SCR ① 신호, 3배, 손절 진입가 -3%, 지금 청산 규칙은 rules.now,
+엔진 규칙(바꾸지 않음): 15분봉 SCR ① 신호, 이 거래 배율 rules.leverage배(엔진이 지금 새로 여는
+배율은 rules.engine_leverage배), 손절 진입가 -3%, 지금 청산 규칙은 rules.now,
 한 번에 한 포지션, 반대 신호면 바꿈.
 사용자가 손으로 연 포지션은 엔진이 이어받아 같은 규칙으로 관리한다.
-자료(JSON) 칸: pct=진입가 대비 가격 % (3배 전), pnl=USDT, why_ko=청산 이유,
+자료(JSON) 칸: pct=진입가 대비 가격 % (배율 곱하기 전, 증거금 %는 pct × leverage),
+pnl=USDT, why_ko=청산 이유,
 result=승/패/무승부(손절이 진입가 ±0.5% 안에서 났으면 무승부, 손익은 그대로),
 closed_at=엔진이 기록한 시각(손절·익절 실제 체결은 최대 15분 이를 수 있음),
 mfe_pct/mae_pct=들고 있는 동안 가장 좋았던/나빴던 %,

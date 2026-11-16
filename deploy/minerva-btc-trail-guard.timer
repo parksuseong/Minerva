@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Minerva BTC 1-minute trailing-stop guard at second 40 of every minute
+
+[Timer]
+# 엔진(매 15분 20초)과 겹치지 않게 40초. 겹치면 잠금이 막는다.
+OnCalendar=*-*-* *:*:40
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

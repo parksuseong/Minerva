@@ -1317,6 +1317,8 @@ class Ctx:
         self.rows15: list[list] = []
         self.deadline = _clock() + RUN_DEADLINE_S
         self.now_ms = int(now.timestamp() * 1000)
+        # 기록(events.jsonl)에 붙일 출처. 1분 손절 지킴이는 "guard"(엔진 실행은 None)
+        self.source: str | None = None
 
     @property
     def ai_streak(self) -> int | None:
@@ -1341,8 +1343,10 @@ class Ctx:
         self.send(self.tag + text)
 
     def event(self, **kw) -> None:
+        src = {"source": self.source} if self.source else {}
         _append(
-            "events.jsonl", {"at": _now_iso(self.now), "mode": "live" if self.live else "dry", **kw}
+            "events.jsonl",
+            {"at": _now_iso(self.now), "mode": "live" if self.live else "dry", **src, **kw},
         )
 
 
@@ -1431,16 +1435,20 @@ def _trail_bar(pos: dict, h: float, lo: float, tick: str | None) -> float | None
 
 
 def _trail_move_text(ctx: Ctx, pos: dict, old: float, new: float, first: bool) -> str:
+    """손절 이동 알림 글. best가 없는 포지션(손으로 부를 때 등)도 깨지지 않게 진입가로 대신한다."""
     name = _name(pos_symbol(pos))
+    best = pos.get("best") or pos.get("entry")
+    kw = "최저" if pos.get("side") == "short" else "최고"
     if first:
         lock = abs(new / float(pos["entry"]) - 1) * 100 <= TRAIL_LOCK_PCT + 0.05
         lock_txt = f"+{TRAIL_LOCK_PCT:g}%" if TRAIL_LOCK_PCT else ""
         where = f"본전{lock_txt} " if lock else ""
         return (
             f"🪜 {name} +{TRAIL_ACTIVATE_PCT:g}% 도달 → 손절을 {where}{_px(new)}로 "
-            f"(전 {_px(old)}, 최고 {_px(pos['best'])})"
+            f"(전 {_px(old)}, {kw} {_px(best)})"
         )
-    return f"🪜 {name} 손절 따라 올림 {_px(old)} → {_px(new)} (최고 {_px(pos['best'])})"
+    move = "내림" if pos.get("side") == "short" else "올림"
+    return f"🪜 {name} 손절 따라 {move} {_px(old)} → {_px(new)} ({kw} {_px(best)})"
 
 
 def reconcile_dry(ctx: Ctx, state: dict, rows15: list[list], now_ms: int) -> None:
@@ -2477,6 +2485,189 @@ def trail_live(ctx: Ctx, state: dict) -> None:
     if first and pos.get("trail"):
         ctx.event(event="trail_on", symbol=pos_symbol(pos), best=pos["best"], entry=pos["entry"])
     _move_stop(ctx, state, new, first)
+
+
+# ---------------------------------------------------------------- 1분 손절 지킴이
+# 사용자 2026-11-16 23:55 "엔진돌때마다 가격체크하니까 이런건 바로바로 올리면 안돼?" → "추천한데로":
+# 15분 엔진 사이에도 1분마다 마크 가격을 보고 따라가는 손절을 옮긴다. 신호·진입·청산 판단은
+# 그대로 15분 엔진. 이 경로는 손절을 조이기만 한다(느슨하게 하지 않음).
+GUARD_LOCK_S = 5  # 엔진이 잠금을 들고 있으면 이번 분은 건너뜀
+GUARD_DEADLINE_S = 75  # 지정가 추격 청산이 생겨도 이 안에(CLOSE_MARGIN_S 전) 돌아온다
+GUARD_MIN_STEP_PCT = 0.1  # 켜진 뒤에는 손절이 가격의 0.1% 넘게 좋아질 때만 옮긴다(주문 남발 방지)
+GUARD_OFF_FILE = "TRAIL_GUARD_OFF"  # 이 파일이 있으면 지킴이만 쉰다(엔진의 15분 따라가기는 그대로)
+GUARD_ERR_FILE = "trail_guard_error"  # 오류 알림을 한 시간에 한 번만
+GUARD_ERR_GAP_MS = 3_600_000
+
+
+def mark_price(symbol: str) -> float:
+    """공개 마크 가격(premiumIndex, 무게 1). 거래소 손절도 마크 가격으로 걸린다(WORKING_TYPE)."""
+    try:
+        d = _public(f"{BASE}/fapi/v1/premiumIndex?symbol={symbol}", timeout=5)
+        px = float(d["markPrice"])
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise NetworkError(f"{symbol} 마크 가격 조회 실패: {type(e).__name__}") from None
+    if not px > 0:
+        raise NetworkError(f"{symbol} 마크 가격 이상: {px}")
+    return px
+
+
+def guard_skip(state: dict) -> str | None:
+    """지킴이가 이 상태를 건너뛰는 이유(없으면 None). 엔진 trail_live와 같은 대상만 본다:
+    실전 엔진 포지션, 따라가는 손절 규칙(익절·손으로 정한 익절 없음), 청산·진입 진행 중 아님.
+    HALT·NO_ENTRY는 신규 진입만 막는 장치라 지킴이는 계속 돈다(손절을 조이기만 한다)."""
+    if (DIR / GUARD_OFF_FILE).exists():
+        return "off"
+    pos = state.get("position")
+    if not pos:
+        return "flat"
+    if pos.get("mode") != "live":
+        return "not_live_position"
+    if not trails(pos):
+        return "not_trail"  # 규칙이 fixed, 익절이 있음(_to_trail 전), tp_custom
+    if state.get("closing"):
+        return "closing"
+    if state.get("pending"):
+        return "pending"
+    if not pos.get("stop_id") or pos.get("stop_id") == "user":
+        return "no_engine_stop"  # 손절 주문을 엔진이 모른다: 엔진 대사에 맡김
+    return None
+
+
+def _guard_checks(ctx: Ctx, pos: dict) -> str | None:
+    """옮기기 직전 거래소 확인(옮길 때만 부른다). 상태와 다르면 엔진 대사에 맡기고 건너뛴다.
+    통신 오류는 다시 묻지 않고 이번 분을 건너뛴다."""
+    c = ctx.client
+    try:
+        if c.request("GET", "/fapi/v1/positionSide/dual").get("dualSidePosition"):
+            return "hedge_mode"
+        rows = c.request("GET", "/fapi/v2/positionRisk", {"symbol": ctx.symbol})
+        amt = sum(float(r["positionAmt"]) for r in rows if r.get("symbol") == ctx.symbol)
+        algos = c.request("GET", "/fapi/v1/openAlgoOrders", {"symbol": ctx.symbol})
+    except (NetworkError, Rejected) as e:
+        return f"check_failed: {e}"[:200]
+    if isinstance(algos, dict):
+        algos = algos.get("orders") or algos.get("rows") or []
+    want = float(pos["qty"]) * (1 if pos["side"] == "long" else -1)
+    if abs(amt - want) > 1e-9:
+        return f"position_mismatch: {amt:+} != {want:+}"
+    if pos.get("stop_id") not in open_algo_ids([a for a in algos if isinstance(a, dict)]):
+        return "stop_not_open"  # 손절이 걸렸거나 사라졌다: 엔진 대사가 본다
+    return None
+
+
+def trail_guard(
+    now: datetime | None = None,
+    client=None,
+    market_: Market | None = None,
+    send: Callable[[str], Any] = notify.send,
+) -> dict:
+    """1분 손절 지킴이 한 번(잠금을 잡은 뒤 부른다). 마크 가격으로 best를 고치고, +활성%에 닿았으면
+    본전+잠금%로, 그 뒤 best에서 TRAIL_PCT% 뒤로 손절을 옮긴다(trail_stop과 같은 계산, 조이기만).
+    움직일 일이 없으면 거래소에는 마크 가격 한 번만 묻는다. 옮길 때만 포지션·손절을 확인하고
+    _move_stop(새 손절 먼저 → 확인 → 옛 손절 취소, 이미 지났으면 지정가 추격 청산)을 쓴다.
+    best·trail 표시는 엔진 trail_live와 같은 칸에 적어 두 경로가 서로 이어진다."""
+    now = now or datetime.now(KST)
+    if mode() != "live":
+        return {"skip": "dry"}
+    state_file = DIR / "state.json"
+    state = _load(state_file, {})
+    why = guard_skip(state)
+    if why:
+        return {"skip": why}
+    pos = state["position"]
+    sym = pos_symbol(pos)
+    try:
+        mark = mark_price(sym)
+    except NetworkError as e:
+        log.warning("trail guard: %s", e)
+        return {"skip": "mark", "error": str(e)}
+    side = pos["side"]
+    long_ = side == "long"
+    entry = float(pos["entry"])
+    stop = float(pos["stop"])
+    old_best = float(pos.get("best") or entry)
+    best = max(old_best, mark) if long_ else min(old_best, mark)
+    was_on = bool(pos.get("trail"))
+    out = {"symbol": sym, "mark": mark, "best": best, "stop": stop}
+
+    def wanted(tick: str | None) -> tuple[bool, float | None]:
+        on, new = trail_stop(side, entry, best, was_on, tick)
+        if new is None or not _tighter(side, new, stop):
+            return on, None
+        if was_on and abs(new - stop) < stop * GUARD_MIN_STEP_PCT / 100:
+            return on, None  # 켜진 뒤 작은 걸음은 다음 분·다음 엔진 실행에
+        return on, new
+
+    on, new = wanted(None)  # 틱 없이 먼저 판단: 옮길 일이 없으면 거래소에 더 묻지 않는다
+    if new is None:
+        if best != float(pos.get("best") or 0) or (on and not was_on):
+            pos["best"] = best
+            if on and not was_on:  # 손절이 이미 더 좋다(손으로 옮김 등): 켜짐만 적는다
+                pos["trail"] = True
+                pos["trail_on_best"] = best
+            _save(state_file, state)
+        return {**out, "moved": False}
+    ctx = Ctx(client if client is not None else Client(), market_ or Market(sym), send, now, True)
+    ctx.source = "guard"
+    ctx.deadline = _clock() + GUARD_DEADLINE_S
+    ctx = ctx.at(sym)
+    bad = _guard_checks(ctx, pos)
+    if bad:
+        ctx.event(event="trail_guard_skip", symbol=sym, reason=bad, mark=mark, best=best)
+        return {**out, "skip": bad}
+    tick = _tick_or_none(ctx)
+    if tick is None:
+        return {**out, "skip": "tick"}
+    on, new = wanted(tick)
+    pos["best"] = best
+    if on and not was_on:
+        pos["trail"] = True
+        pos["trail_on_best"] = best
+    _save(state_file, state)
+    if new is None:
+        return {**out, "moved": False}
+    if on and not was_on:
+        ctx.event(event="trail_on", symbol=sym, best=best, entry=pos["entry"], mark=mark)
+    _move_stop(ctx, state, new, not was_on)
+    p = state.get("position")
+    return {**out, "new": new, "moved": bool(p) and float(p["stop"]) == new, "flat": not p}
+
+
+def _guard_main() -> int:
+    """`python -m minerva.btc_trade trail-guard`: 실전일 때만, 잠금을 짧게(5초) 기다리고 못 잡으면
+    이번 분은 건너뛴다(엔진이 도는 중). 통신 오류는 조용히 건너뛰고, 예상 못 한 오류만 기록·알림
+    (한 시간에 한 번)하고 1로 끝낸다."""
+    if mode() != "live":
+        return 0
+    lock = _lock(GUARD_LOCK_S)
+    if lock is None:
+        log.info("trail guard: engine lock busy, skip this minute")
+        return 0
+    try:
+        out = trail_guard()
+    except NetworkError as e:
+        log.warning("trail guard: network: %s", e)
+        return 0
+    except Exception as e:  # noqa: BLE001 — 지킴이 오류가 엔진을 막지 않게, 알림은 아껴서
+        log.exception("trail guard failed")
+        msg = f"{type(e).__name__}: {e}"[:300]
+        _append(
+            "events.jsonl",
+            {"at": _now_iso(datetime.now(KST)), "event": "trail_guard_error", "error": msg},
+        )
+        try:
+            last = int((DIR / GUARD_ERR_FILE).read_text().strip() or 0)
+        except (OSError, ValueError):
+            last = 0
+        if _ms_now() - last > GUARD_ERR_GAP_MS:
+            _write_private(DIR / GUARD_ERR_FILE, str(_ms_now()))
+            notify.send(f"⚠️ 1분 손절 지킴이 오류(15분 엔진은 그대로 손절을 옮겨요): {msg}")
+        return 1
+    finally:
+        lock.close()
+    if out.get("new") is not None or out.get("skip") not in (None, "flat", "dry", "off"):
+        print(json.dumps(out, ensure_ascii=False))
+    return 0
 
 
 def _backfill_tp(ctx: Ctx, state: dict) -> None:
@@ -4901,12 +5092,14 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="?",
         default="run",
-        choices=["run", "recover", "preflight", "start-live", "status"],
+        choices=["run", "recover", "preflight", "start-live", "status", "trail-guard"],
     )
     parser.add_argument("--confirm", action="store_true", help="start-live: 실전 시작 확인")
     parser.add_argument("--notify", action="store_true", help="preflight: 결과를 텔레그램으로")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
+    if args.command == "trail-guard":
+        return _guard_main()
     if args.command == "status":
         print(json.dumps(status(), ensure_ascii=False, indent=1))
         return 0

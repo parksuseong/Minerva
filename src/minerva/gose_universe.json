@@ -1,0 +1,1684 @@
+{
+ "made": "2026-11-16",
+ "vix": "^VIX",
+ "note": "원문 종목 12개 + 바이낸스 USDT-M TradFi 주식·ETF 기초자산(야후 티커). 원자재·FX·상장 전·인버스·변동성 상품 제외.",
+ "symbols": [
+  {
+   "ticker": "000660.KS",
+   "name": "SK hynix Inc.",
+   "group": "binance",
+   "perps": [
+    "SKHYNIXUSDT"
+   ]
+  },
+  {
+   "ticker": "005380.KS",
+   "name": "Hyundai Motor Company",
+   "group": "binance",
+   "perps": [
+    "HYUNDAIUSDT"
+   ]
+  },
+  {
+   "ticker": "005930.KS",
+   "name": "Samsung Electronics Co., Ltd.",
+   "group": "binance",
+   "perps": [
+    "SAMSUNGUSDT"
+   ]
+  },
+  {
+   "ticker": "009150.KS",
+   "name": "Samsung Electro-Mechanics Co., Ltd.",
+   "group": "binance",
+   "perps": [
+    "SAMSUNGEMUSDT"
+   ]
+  },
+  {
+   "ticker": "035420.KS",
+   "name": "NAVER Corporation",
+   "group": "binance",
+   "perps": [
+    "NAVERUSDT"
+   ]
+  },
+  {
+   "ticker": "042700.KS",
+   "name": "HANMI Semiconductor Co., Ltd.",
+   "group": "binance",
+   "perps": [
+    "HANMIUSDT"
+   ]
+  },
+  {
+   "ticker": "0625.HK",
+   "name": "SHEIN Global Holdings Limited",
+   "group": "binance",
+   "perps": [
+    "HK0625USDT"
+   ]
+  },
+  {
+   "ticker": "066570.KS",
+   "name": "LG Electronics Inc.",
+   "group": "binance",
+   "perps": [
+    "LGELECTRONICSUSDT"
+   ]
+  },
+  {
+   "ticker": "069500.KS",
+   "name": "KODEX 200",
+   "group": "binance",
+   "perps": [
+    "KODEX200USDT"
+   ]
+  },
+  {
+   "ticker": "0700.HK",
+   "name": "Tencent Holdings Limited",
+   "group": "binance",
+   "perps": [
+    "HK0700USDT",
+    "TENCENTUSDT"
+   ]
+  },
+  {
+   "ticker": "0992.HK",
+   "name": "Lenovo Group Limited",
+   "group": "binance",
+   "perps": [
+    "HK0992USDT"
+   ]
+  },
+  {
+   "ticker": "1024.HK",
+   "name": "Kuaishou Technology",
+   "group": "binance",
+   "perps": [
+    "KUAISHOUUSDT"
+   ]
+  },
+  {
+   "ticker": "1211.HK",
+   "name": "BYD Company Limited",
+   "group": "binance",
+   "perps": [
+    "BYDUSDT"
+   ]
+  },
+  {
+   "ticker": "1810.HK",
+   "name": "Xiaomi Corporation",
+   "group": "binance",
+   "perps": [
+    "HK1810USDT"
+   ]
+  },
+  {
+   "ticker": "3690.HK",
+   "name": "Meituan",
+   "group": "binance",
+   "perps": [
+    "MEITUANUSDT"
+   ]
+  },
+  {
+   "ticker": "9992.HK",
+   "name": "Pop Mart International Group Limited",
+   "group": "binance",
+   "perps": [
+    "POPMARTUSDT"
+   ]
+  },
+  {
+   "ticker": "AAOI",
+   "name": "Applied Optoelectronics, Inc.",
+   "group": "binance",
+   "perps": [
+    "AAOIUSDT"
+   ]
+  },
+  {
+   "ticker": "AAPL",
+   "name": "Apple Inc.",
+   "group": "both",
+   "perps": [
+    "AAPLUSDT"
+   ]
+  },
+  {
+   "ticker": "ABBV",
+   "name": "AbbVie Inc.",
+   "group": "binance",
+   "perps": [
+    "ABBVUSDT"
+   ]
+  },
+  {
+   "ticker": "ACN",
+   "name": "Accenture plc",
+   "group": "binance",
+   "perps": [
+    "ACNUSDT"
+   ]
+  },
+  {
+   "ticker": "ADBE",
+   "name": "Adobe Inc.",
+   "group": "binance",
+   "perps": [
+    "ADBEUSDT"
+   ]
+  },
+  {
+   "ticker": "AGPU",
+   "name": "Axe Compute Inc.",
+   "group": "binance",
+   "perps": [
+    "AGPUUSDT"
+   ]
+  },
+  {
+   "ticker": "AKAM",
+   "name": "Akamai Technologies, Inc.",
+   "group": "binance",
+   "perps": [
+    "AKAMUSDT"
+   ]
+  },
+  {
+   "ticker": "ALAB",
+   "name": "Astera Labs, Inc.",
+   "group": "binance",
+   "perps": [
+    "ALABUSDT"
+   ]
+  },
+  {
+   "ticker": "AMAT",
+   "name": "Applied Materials, Inc.",
+   "group": "binance",
+   "perps": [
+    "AMATUSDT"
+   ]
+  },
+  {
+   "ticker": "AMC",
+   "name": "AMC Entertainment Holdings, Inc.",
+   "group": "binance",
+   "perps": [
+    "AMCUSDT"
+   ]
+  },
+  {
+   "ticker": "AMD",
+   "name": "Advanced Micro Devices, Inc.",
+   "group": "binance",
+   "perps": [
+    "AMDUSDT"
+   ]
+  },
+  {
+   "ticker": "AMGN",
+   "name": "Amgen Inc.",
+   "group": "binance",
+   "perps": [
+    "AMGNUSDT"
+   ]
+  },
+  {
+   "ticker": "AMZN",
+   "name": "Amazon.com, Inc.",
+   "group": "both",
+   "perps": [
+    "AMZNUSDT"
+   ]
+  },
+  {
+   "ticker": "ANET",
+   "name": "Arista Networks, Inc.",
+   "group": "binance",
+   "perps": [
+    "ANETUSDT"
+   ]
+  },
+  {
+   "ticker": "APLD",
+   "name": "Applied Digital Corporation",
+   "group": "binance",
+   "perps": [
+    "APLDUSDT"
+   ]
+  },
+  {
+   "ticker": "APP",
+   "name": "AppLovin Corporation",
+   "group": "binance",
+   "perps": [
+    "APPUSDT"
+   ]
+  },
+  {
+   "ticker": "ARM",
+   "name": "Arm Holdings plc",
+   "group": "binance",
+   "perps": [
+    "ARMUSDT"
+   ]
+  },
+  {
+   "ticker": "ASML",
+   "name": "ASML Holding N.V.",
+   "group": "binance",
+   "perps": [
+    "ASMLUSDT"
+   ]
+  },
+  {
+   "ticker": "ASTS",
+   "name": "AST SpaceMobile, Inc.",
+   "group": "binance",
+   "perps": [
+    "ASTSUSDT"
+   ]
+  },
+  {
+   "ticker": "AVGO",
+   "name": "Broadcom Inc.",
+   "group": "binance",
+   "perps": [
+    "AVGOUSDT"
+   ]
+  },
+  {
+   "ticker": "AXTI",
+   "name": "AXT, Inc.",
+   "group": "binance",
+   "perps": [
+    "AXTIUSDT"
+   ]
+  },
+  {
+   "ticker": "BABA",
+   "name": "Alibaba Group Holding Limited",
+   "group": "binance",
+   "perps": [
+    "BABAUSDT"
+   ]
+  },
+  {
+   "ticker": "BAC",
+   "name": "Bank of America Corporation",
+   "group": "binance",
+   "perps": [
+    "BACUSDT"
+   ]
+  },
+  {
+   "ticker": "BE",
+   "name": "Bloom Energy Corporation",
+   "group": "binance",
+   "perps": [
+    "BEUSDT"
+   ]
+  },
+  {
+   "ticker": "BITO",
+   "name": "ProShares Bitcoin ETF",
+   "group": "binance",
+   "perps": [
+    "BITOUSDT"
+   ]
+  },
+  {
+   "ticker": "BMNR",
+   "name": "Bitmine Immersion Technologies, Inc.",
+   "group": "binance",
+   "perps": [
+    "BMNRUSDT"
+   ]
+  },
+  {
+   "ticker": "BNC",
+   "name": "BNB Standard Corporation",
+   "group": "binance",
+   "perps": [
+    "BNCUSDT"
+   ]
+  },
+  {
+   "ticker": "BOT",
+   "name": "Robostrategy, Inc.",
+   "group": "binance",
+   "perps": [
+    "BOTUSDT"
+   ]
+  },
+  {
+   "ticker": "BRK-B",
+   "name": "Berkshire Hathaway Inc.",
+   "group": "binance",
+   "perps": [
+    "BRKBUSDT"
+   ]
+  },
+  {
+   "ticker": "BSP",
+   "name": "Bending Spoons S.p.A.",
+   "group": "binance",
+   "perps": [
+    "BSPUSDT"
+   ]
+  },
+  {
+   "ticker": "BWET",
+   "name": "Breakwave Tanker Shipping ETF",
+   "group": "binance",
+   "perps": [
+    "BWETUSDT"
+   ]
+  },
+  {
+   "ticker": "BX",
+   "name": "Blackstone Inc.",
+   "group": "binance",
+   "perps": [
+    "BXUSDT"
+   ]
+  },
+  {
+   "ticker": "CAT",
+   "name": "Caterpillar Inc.",
+   "group": "binance",
+   "perps": [
+    "CATUSDT"
+   ]
+  },
+  {
+   "ticker": "CBRS",
+   "name": "Cerebras Systems Inc.",
+   "group": "binance",
+   "perps": [
+    "CBRSUSDT"
+   ]
+  },
+  {
+   "ticker": "CEG",
+   "name": "Constellation Energy Corporation",
+   "group": "binance",
+   "perps": [
+    "CEGUSDT"
+   ]
+  },
+  {
+   "ticker": "CIEN",
+   "name": "Ciena Corporation",
+   "group": "binance",
+   "perps": [
+    "CIENUSDT"
+   ]
+  },
+  {
+   "ticker": "COHR",
+   "name": "Coherent Corp.",
+   "group": "binance",
+   "perps": [
+    "COHRUSDT"
+   ]
+  },
+  {
+   "ticker": "COIN",
+   "name": "Coinbase Global, Inc.",
+   "group": "binance",
+   "perps": [
+    "COINUSDT"
+   ]
+  },
+  {
+   "ticker": "COST",
+   "name": "Costco Wholesale Corporation",
+   "group": "binance",
+   "perps": [
+    "COSTUSDT"
+   ]
+  },
+  {
+   "ticker": "CRCL",
+   "name": "Circle Internet Group",
+   "group": "binance",
+   "perps": [
+    "CRCLUSDT"
+   ]
+  },
+  {
+   "ticker": "CRDO",
+   "name": "Credo Technology Group Holding Ltd",
+   "group": "binance",
+   "perps": [
+    "CRDOUSDT"
+   ]
+  },
+  {
+   "ticker": "CRM",
+   "name": "Salesforce, Inc.",
+   "group": "binance",
+   "perps": [
+    "CRMUSDT"
+   ]
+  },
+  {
+   "ticker": "CRML",
+   "name": "Critical Metals Corp.",
+   "group": "binance",
+   "perps": [
+    "CRMLUSDT"
+   ]
+  },
+  {
+   "ticker": "CRWD",
+   "name": "CrowdStrike Holdings, Inc.",
+   "group": "binance",
+   "perps": [
+    "CRWDUSDT"
+   ]
+  },
+  {
+   "ticker": "CRWV",
+   "name": "CoreWeave, Inc.",
+   "group": "binance",
+   "perps": [
+    "CRWVUSDT"
+   ]
+  },
+  {
+   "ticker": "CSCO",
+   "name": "Cisco Systems, Inc.",
+   "group": "binance",
+   "perps": [
+    "CSCOUSDT"
+   ]
+  },
+  {
+   "ticker": "CVNA",
+   "name": "Carvana Co.",
+   "group": "binance",
+   "perps": [
+    "CVNAUSDT"
+   ]
+  },
+  {
+   "ticker": "CYPH",
+   "name": "Cypherpunk Technologies Inc.",
+   "group": "binance",
+   "perps": [
+    "CYPHUSDT"
+   ]
+  },
+  {
+   "ticker": "DDOG",
+   "name": "Datadog, Inc.",
+   "group": "binance",
+   "perps": [
+    "DDOGUSDT"
+   ]
+  },
+  {
+   "ticker": "DELL",
+   "name": "Dell Technologies Inc.",
+   "group": "binance",
+   "perps": [
+    "DELLUSDT"
+   ]
+  },
+  {
+   "ticker": "DIS",
+   "name": "The Walt Disney Company",
+   "group": "binance",
+   "perps": [
+    "DISUSDT"
+   ]
+  },
+  {
+   "ticker": "DJT",
+   "name": "Trump Media & Technology Group Corp.",
+   "group": "binance",
+   "perps": [
+    "DJTUSDT"
+   ]
+  },
+  {
+   "ticker": "DKNG",
+   "name": "DraftKings Inc.",
+   "group": "binance",
+   "perps": [
+    "DKNGUSDT"
+   ]
+  },
+  {
+   "ticker": "DRAM",
+   "name": "Roundhill Memory ETF",
+   "group": "binance",
+   "perps": [
+    "DRAMUSDT"
+   ]
+  },
+  {
+   "ticker": "EBAY",
+   "name": "eBay Inc.",
+   "group": "binance",
+   "perps": [
+    "EBAYUSDT"
+   ]
+  },
+  {
+   "ticker": "EIDO",
+   "name": "iShares MSCI Indonesia ETF",
+   "group": "binance",
+   "perps": [
+    "EIDOUSDT"
+   ]
+  },
+  {
+   "ticker": "EQT",
+   "name": "EQT Corporation",
+   "group": "binance",
+   "perps": [
+    "EQTUSDT"
+   ]
+  },
+  {
+   "ticker": "EWJ",
+   "name": "iShares MSCI Japan ETF",
+   "group": "binance",
+   "perps": [
+    "EWJUSDT"
+   ]
+  },
+  {
+   "ticker": "EWT",
+   "name": "iShares MSCI Taiwan ETF",
+   "group": "binance",
+   "perps": [
+    "EWTUSDT"
+   ]
+  },
+  {
+   "ticker": "EWY",
+   "name": "iShares MSCI South Korea ETF",
+   "group": "binance",
+   "perps": [
+    "EWYUSDT"
+   ]
+  },
+  {
+   "ticker": "EWZ",
+   "name": "iShares MSCI Brazil ETF",
+   "group": "binance",
+   "perps": [
+    "EWZUSDT"
+   ]
+  },
+  {
+   "ticker": "EWZS",
+   "name": "iShares MSCI Brazil Small-Cap ETF",
+   "group": "binance",
+   "perps": [
+    "EWZSUSDT"
+   ]
+  },
+  {
+   "ticker": "FLEX",
+   "name": "Flex Ltd.",
+   "group": "binance",
+   "perps": [
+    "FLEXUSDT"
+   ]
+  },
+  {
+   "ticker": "FLNC",
+   "name": "Fluence Energy, Inc.",
+   "group": "binance",
+   "perps": [
+    "FLNCUSDT"
+   ]
+  },
+  {
+   "ticker": "FRHC",
+   "name": "Freedom Holdings Corp.",
+   "group": "binance",
+   "perps": [
+    "FRHCUSDT"
+   ]
+  },
+  {
+   "ticker": "FWDI",
+   "name": "Forward Industries, Inc.",
+   "group": "binance",
+   "perps": [
+    "FWDIUSDT"
+   ]
+  },
+  {
+   "ticker": "GDX",
+   "name": "VanEck Gold Miners ETF",
+   "group": "binance",
+   "perps": [
+    "GDXUSDT"
+   ]
+  },
+  {
+   "ticker": "GEV",
+   "name": "GE Vernova Inc.",
+   "group": "binance",
+   "perps": [
+    "GEVUSDT"
+   ]
+  },
+  {
+   "ticker": "GLW",
+   "name": "Corning Incorporated",
+   "group": "binance",
+   "perps": [
+    "GLWUSDT"
+   ]
+  },
+  {
+   "ticker": "GME",
+   "name": "GameStop Corp.",
+   "group": "binance",
+   "perps": [
+    "GMEUSDT"
+   ]
+  },
+  {
+   "ticker": "GOOGL",
+   "name": "Alphabet Inc.",
+   "group": "both",
+   "perps": [
+    "GOOGLUSDT"
+   ]
+  },
+  {
+   "ticker": "GPRO",
+   "name": "GoPro, Inc.",
+   "group": "binance",
+   "perps": [
+    "GPROUSDT"
+   ]
+  },
+  {
+   "ticker": "GS",
+   "name": "The Goldman Sachs Group, Inc.",
+   "group": "binance",
+   "perps": [
+    "GSUSDT"
+   ]
+  },
+  {
+   "ticker": "GTLB",
+   "name": "GitLab Inc.",
+   "group": "binance",
+   "perps": [
+    "GTLBUSDT"
+   ]
+  },
+  {
+   "ticker": "HD",
+   "name": "The Home Depot, Inc.",
+   "group": "binance",
+   "perps": [
+    "HDUSDT"
+   ]
+  },
+  {
+   "ticker": "HIMS",
+   "name": "Hims & Hers Health, Inc.",
+   "group": "binance",
+   "perps": [
+    "HIMSUSDT"
+   ]
+  },
+  {
+   "ticker": "HOOD",
+   "name": "Robinhood Markets, Inc.",
+   "group": "binance",
+   "perps": [
+    "HOODUSDT"
+   ]
+  },
+  {
+   "ticker": "HPE",
+   "name": "Hewlett Packard Enterprise Company",
+   "group": "binance",
+   "perps": [
+    "HPEUSDT"
+   ]
+  },
+  {
+   "ticker": "HUT",
+   "name": "Hut 8 Corp.",
+   "group": "binance",
+   "perps": [
+    "HUTUSDT"
+   ]
+  },
+  {
+   "ticker": "IBKR",
+   "name": "Interactive Brokers Group, Inc.",
+   "group": "binance",
+   "perps": [
+    "IBKRUSDT"
+   ]
+  },
+  {
+   "ticker": "IBM",
+   "name": "International Business Machines Corporation",
+   "group": "binance",
+   "perps": [
+    "IBMUSDT"
+   ]
+  },
+  {
+   "ticker": "INTC",
+   "name": "Intel Corporation",
+   "group": "binance",
+   "perps": [
+    "INTCUSDT"
+   ]
+  },
+  {
+   "ticker": "INTW",
+   "name": "GraniteShares 2x Long INTC Daily ETF",
+   "group": "binance",
+   "perps": [
+    "INTWUSDT"
+   ]
+  },
+  {
+   "ticker": "IONQ",
+   "name": "IonQ, Inc.",
+   "group": "binance",
+   "perps": [
+    "IONQUSDT"
+   ]
+  },
+  {
+   "ticker": "IREN",
+   "name": "IREN Limited",
+   "group": "binance",
+   "perps": [
+    "IRENUSDT"
+   ]
+  },
+  {
+   "ticker": "IWM",
+   "name": "iShares Russell 2000 ETF",
+   "group": "binance",
+   "perps": [
+    "IWMUSDT"
+   ]
+  },
+  {
+   "ticker": "JPM",
+   "name": "JPMorgan Chase & Co.",
+   "group": "binance",
+   "perps": [
+    "JPMUSDT"
+   ]
+  },
+  {
+   "ticker": "KLAC",
+   "name": "KLA Corporation",
+   "group": "binance",
+   "perps": [
+    "KLACUSDT"
+   ]
+  },
+  {
+   "ticker": "KO",
+   "name": "The Coca-Cola Company",
+   "group": "binance",
+   "perps": [
+    "KOUSDT"
+   ]
+  },
+  {
+   "ticker": "KORU",
+   "name": "Direxion Daily South Korea Bull 3X Shares",
+   "group": "binance",
+   "perps": [
+    "KORUUSDT"
+   ]
+  },
+  {
+   "ticker": "KSTR",
+   "name": "KraneShares China Technology & Semiconductor STAR 50 Index ETF",
+   "group": "binance",
+   "perps": [
+    "KSTRUSDT"
+   ]
+  },
+  {
+   "ticker": "LITE",
+   "name": "Lumentum Holdings Inc.",
+   "group": "binance",
+   "perps": [
+    "LITEUSDT"
+   ]
+  },
+  {
+   "ticker": "LLY",
+   "name": "Eli Lilly and Company",
+   "group": "binance",
+   "perps": [
+    "LLYUSDT"
+   ]
+  },
+  {
+   "ticker": "LRCX",
+   "name": "Lam Research Corporation",
+   "group": "binance",
+   "perps": [
+    "LRCXUSDT"
+   ]
+  },
+  {
+   "ticker": "LYTE",
+   "name": "Roundhill Photonics & Optics ETF",
+   "group": "binance",
+   "perps": [
+    "LYTEUSDT"
+   ]
+  },
+  {
+   "ticker": "MARA",
+   "name": "MARA Holdings, Inc.",
+   "group": "binance",
+   "perps": [
+    "MARAUSDT"
+   ]
+  },
+  {
+   "ticker": "MCD",
+   "name": "McDonald's Corporation",
+   "group": "binance",
+   "perps": [
+    "MCDUSDT"
+   ]
+  },
+  {
+   "ticker": "MDB",
+   "name": "MongoDB, Inc.",
+   "group": "binance",
+   "perps": [
+    "MDBUSDT"
+   ]
+  },
+  {
+   "ticker": "MDT",
+   "name": "Medtronic plc",
+   "group": "binance",
+   "perps": [
+    "MDTUSDT"
+   ]
+  },
+  {
+   "ticker": "MELI",
+   "name": "MercadoLibre, Inc.",
+   "group": "binance",
+   "perps": [
+    "MELIUSDT"
+   ]
+  },
+  {
+   "ticker": "META",
+   "name": "Meta Platforms, Inc.",
+   "group": "both",
+   "perps": [
+    "METAUSDT"
+   ]
+  },
+  {
+   "ticker": "MP",
+   "name": "MP Materials Corp.",
+   "group": "binance",
+   "perps": [
+    "MPUSDT"
+   ]
+  },
+  {
+   "ticker": "MRK",
+   "name": "Merck & Co., Inc.",
+   "group": "binance",
+   "perps": [
+    "MRKUSDT"
+   ]
+  },
+  {
+   "ticker": "MRNA",
+   "name": "Moderna, Inc.",
+   "group": "binance",
+   "perps": [
+    "MRNAUSDT"
+   ]
+  },
+  {
+   "ticker": "MRVL",
+   "name": "Marvell Technology, Inc.",
+   "group": "binance",
+   "perps": [
+    "MRVLUSDT"
+   ]
+  },
+  {
+   "ticker": "MSFT",
+   "name": "Microsoft Corporation",
+   "group": "both",
+   "perps": [
+    "MSFTUSDT"
+   ]
+  },
+  {
+   "ticker": "MSTR",
+   "name": "Strategy Inc",
+   "group": "binance",
+   "perps": [
+    "MSTRUSDT"
+   ]
+  },
+  {
+   "ticker": "MSTU",
+   "name": "T-Rex 2X Long MSTR Daily Target ETF",
+   "group": "binance",
+   "perps": [
+    "MSTUUSDT"
+   ]
+  },
+  {
+   "ticker": "MU",
+   "name": "Micron Technology, Inc.",
+   "group": "binance",
+   "perps": [
+    "MUUSDT"
+   ]
+  },
+  {
+   "ticker": "MUU",
+   "name": "Direxion Daily MU Bull 2X Shares",
+   "group": "binance",
+   "perps": [
+    "MUUUSDT"
+   ]
+  },
+  {
+   "ticker": "MVLL",
+   "name": "GraniteShares 2x Long MRVL Daily ETF",
+   "group": "binance",
+   "perps": [
+    "MVLLUSDT"
+   ]
+  },
+  {
+   "ticker": "NBIS",
+   "name": "Nebius Group N.V.",
+   "group": "binance",
+   "perps": [
+    "NBISUSDT"
+   ]
+  },
+  {
+   "ticker": "NET",
+   "name": "Cloudflare, Inc.",
+   "group": "binance",
+   "perps": [
+    "NETUSDT"
+   ]
+  },
+  {
+   "ticker": "NFLX",
+   "name": "Netflix, Inc.",
+   "group": "binance",
+   "perps": [
+    "NFLXUSDT"
+   ]
+  },
+  {
+   "ticker": "NKE",
+   "name": "NIKE, Inc.",
+   "group": "binance",
+   "perps": [
+    "NKEUSDT"
+   ]
+  },
+  {
+   "ticker": "NOK",
+   "name": "Nokia Oyj",
+   "group": "binance",
+   "perps": [
+    "NOKUSDT"
+   ]
+  },
+  {
+   "ticker": "NOW",
+   "name": "ServiceNow, Inc.",
+   "group": "binance",
+   "perps": [
+    "NOWUSDT"
+   ]
+  },
+  {
+   "ticker": "NU",
+   "name": "Nu Holdings Ltd.",
+   "group": "binance",
+   "perps": [
+    "NUUSDT"
+   ]
+  },
+  {
+   "ticker": "NVDA",
+   "name": "NVIDIA Corporation",
+   "group": "both",
+   "perps": [
+    "NVDAUSDT"
+   ]
+  },
+  {
+   "ticker": "NVDL",
+   "name": "GraniteShares 2x Long NVDA Daily ETF",
+   "group": "binance",
+   "perps": [
+    "NVDLUSDT"
+   ]
+  },
+  {
+   "ticker": "NVO",
+   "name": "Novo Nordisk A/S",
+   "group": "binance",
+   "perps": [
+    "NVOUSDT"
+   ]
+  },
+  {
+   "ticker": "OKLO",
+   "name": "Oklo Inc.",
+   "group": "binance",
+   "perps": [
+    "OKLOUSDT"
+   ]
+  },
+  {
+   "ticker": "ONDS",
+   "name": "Ondas Inc.",
+   "group": "binance",
+   "perps": [
+    "ONDSUSDT"
+   ]
+  },
+  {
+   "ticker": "ORCL",
+   "name": "Oracle Corporation",
+   "group": "binance",
+   "perps": [
+    "ORCLUSDT"
+   ]
+  },
+  {
+   "ticker": "OXY",
+   "name": "Occidental Petroleum Corporation",
+   "group": "binance",
+   "perps": [
+    "OXYUSDT"
+   ]
+  },
+  {
+   "ticker": "PANW",
+   "name": "Palo Alto Networks, Inc.",
+   "group": "binance",
+   "perps": [
+    "PANWUSDT"
+   ]
+  },
+  {
+   "ticker": "PATH",
+   "name": "UiPath, Inc.",
+   "group": "binance",
+   "perps": [
+    "PATHUSDT"
+   ]
+  },
+  {
+   "ticker": "PAYP",
+   "name": "PayPay Corporation",
+   "group": "binance",
+   "perps": [
+    "PAYPUSDT"
+   ]
+  },
+  {
+   "ticker": "PDD",
+   "name": "PDD Holdings Inc.",
+   "group": "binance",
+   "perps": [
+    "PDDUSDT"
+   ]
+  },
+  {
+   "ticker": "PENG",
+   "name": "Penguin Solutions, Inc.",
+   "group": "binance",
+   "perps": [
+    "PENGUSDT"
+   ]
+  },
+  {
+   "ticker": "PFE",
+   "name": "Pfizer Inc.",
+   "group": "binance",
+   "perps": [
+    "PFEUSDT"
+   ]
+  },
+  {
+   "ticker": "PLTR",
+   "name": "Palantir Technologies Inc.",
+   "group": "binance",
+   "perps": [
+    "PLTRUSDT"
+   ]
+  },
+  {
+   "ticker": "PYPL",
+   "name": "PayPal Holdings, Inc.",
+   "group": "binance",
+   "perps": [
+    "PYPLUSDT"
+   ]
+  },
+  {
+   "ticker": "QCOM",
+   "name": "QUALCOMM Incorporated",
+   "group": "binance",
+   "perps": [
+    "QCOMUSDT"
+   ]
+  },
+  {
+   "ticker": "QQQ",
+   "name": "Invesco QQQ Trust",
+   "group": "both",
+   "perps": [
+    "QQQUSDT"
+   ]
+  },
+  {
+   "ticker": "RAM",
+   "name": "Roundhill T-REX 2x Long DRAM Daily Target ETF",
+   "group": "binance",
+   "perps": [
+    "RAMUSDT"
+   ]
+  },
+  {
+   "ticker": "RDDT",
+   "name": "Reddit, Inc.",
+   "group": "binance",
+   "perps": [
+    "RDDTUSDT"
+   ]
+  },
+  {
+   "ticker": "RDW",
+   "name": "Redwire Corporation",
+   "group": "binance",
+   "perps": [
+    "RDWUSDT"
+   ]
+  },
+  {
+   "ticker": "RIVN",
+   "name": "Rivian Automotive, Inc.",
+   "group": "binance",
+   "perps": [
+    "RIVNUSDT"
+   ]
+  },
+  {
+   "ticker": "RKLB",
+   "name": "Rocket Lab Corporation",
+   "group": "binance",
+   "perps": [
+    "RKLBUSDT"
+   ]
+  },
+  {
+   "ticker": "RUM",
+   "name": "RUM Group Inc.",
+   "group": "binance",
+   "perps": [
+    "RUMUSDT"
+   ]
+  },
+  {
+   "ticker": "SECZ",
+   "name": "Securitize Corp.",
+   "group": "binance",
+   "perps": [
+    "SECZUSDT"
+   ]
+  },
+  {
+   "ticker": "SHAZ",
+   "name": "SharonAI Holdings Inc.",
+   "group": "binance",
+   "perps": [
+    "SHAZUSDT"
+   ]
+  },
+  {
+   "ticker": "SHOP",
+   "name": "Shopify Inc.",
+   "group": "binance",
+   "perps": [
+    "SHOPUSDT"
+   ]
+  },
+  {
+   "ticker": "SKHY",
+   "name": "SK hynix Inc.",
+   "group": "binance",
+   "perps": [
+    "SKHYUSDT"
+   ]
+  },
+  {
+   "ticker": "SKUU",
+   "name": "Graniteshares 2x Long SK Hynix Daily ETF",
+   "group": "binance",
+   "perps": [
+    "SKUUUSDT"
+   ]
+  },
+  {
+   "ticker": "SMCI",
+   "name": "Super Micro Computer, Inc.",
+   "group": "binance",
+   "perps": [
+    "SMCIUSDT"
+   ]
+  },
+  {
+   "ticker": "SMH",
+   "name": "VanEck Semiconductor ETF",
+   "group": "binance",
+   "perps": [
+    "SMHUSDT"
+   ]
+  },
+  {
+   "ticker": "SMR",
+   "name": "NuScale Power Corporation",
+   "group": "binance",
+   "perps": [
+    "SMRUSDT"
+   ]
+  },
+  {
+   "ticker": "SNDK",
+   "name": "Sandisk Corporation",
+   "group": "binance",
+   "perps": [
+    "SNDKUSDT"
+   ]
+  },
+  {
+   "ticker": "SNOW",
+   "name": "Snowflake Inc.",
+   "group": "binance",
+   "perps": [
+    "SNOWUSDT"
+   ]
+  },
+  {
+   "ticker": "SNPS",
+   "name": "Synopsys, Inc.",
+   "group": "binance",
+   "perps": [
+    "SNPSUSDT"
+   ]
+  },
+  {
+   "ticker": "SNXX",
+   "name": "Tradr 2X Long Sndk Daily ETF",
+   "group": "binance",
+   "perps": [
+    "SNXXUSDT"
+   ]
+  },
+  {
+   "ticker": "SOFI",
+   "name": "SoFi Technologies, Inc.",
+   "group": "binance",
+   "perps": [
+    "SOFIUSDT"
+   ]
+  },
+  {
+   "ticker": "SONY",
+   "name": "Sony Group Corporation",
+   "group": "binance",
+   "perps": [
+    "SONYUSDT"
+   ]
+  },
+  {
+   "ticker": "SOXL",
+   "name": "Direxion Daily Semiconductor Bull 3X Shares",
+   "group": "both",
+   "perps": [
+    "SOXLUSDT"
+   ]
+  },
+  {
+   "ticker": "SOXX",
+   "name": "iShares Semiconductor ETF",
+   "group": "source",
+   "perps": []
+  },
+  {
+   "ticker": "SPCX",
+   "name": "Space Exploration Technologies Corp.",
+   "group": "binance",
+   "perps": [
+    "SPCXUSDT"
+   ]
+  },
+  {
+   "ticker": "SPY",
+   "name": "State Street SPDR S&P 500 ETF Trust",
+   "group": "both",
+   "perps": [
+    "SPYUSDT"
+   ]
+  },
+  {
+   "ticker": "STM",
+   "name": "STMicroelectronics N.V.",
+   "group": "binance",
+   "perps": [
+    "STMUSDT"
+   ]
+  },
+  {
+   "ticker": "STRC",
+   "name": "Strategy Inc",
+   "group": "binance",
+   "perps": [
+    "STRCUSDT"
+   ]
+  },
+  {
+   "ticker": "STXX",
+   "name": "Tradr 2X Long STX Daily ETF",
+   "group": "binance",
+   "perps": [
+    "STXXUSDT"
+   ]
+  },
+  {
+   "ticker": "TEAM",
+   "name": "Atlassian Corporation",
+   "group": "binance",
+   "perps": [
+    "TEAMUSDT"
+   ]
+  },
+  {
+   "ticker": "TEM",
+   "name": "Tempus AI, Inc.",
+   "group": "binance",
+   "perps": [
+    "TEMUSDT"
+   ]
+  },
+  {
+   "ticker": "TER",
+   "name": "Teradyne, Inc.",
+   "group": "binance",
+   "perps": [
+    "TERUSDT"
+   ]
+  },
+  {
+   "ticker": "TMF",
+   "name": "Direxion Daily 20+ Year Treasury Bull 3X Shares",
+   "group": "binance",
+   "perps": [
+    "TMFUSDT"
+   ]
+  },
+  {
+   "ticker": "TQQQ",
+   "name": "ProShares UltraPro QQQ",
+   "group": "both",
+   "perps": [
+    "TQQQUSDT"
+   ]
+  },
+  {
+   "ticker": "TSLA",
+   "name": "Tesla, Inc.",
+   "group": "both",
+   "perps": [
+    "TSLAUSDT"
+   ]
+  },
+  {
+   "ticker": "TSLL",
+   "name": "Direxion Daily TSLA Bull 2X Shares",
+   "group": "binance",
+   "perps": [
+    "TSLLUSDT"
+   ]
+  },
+  {
+   "ticker": "TSM",
+   "name": "Taiwan Semiconductor Manufacturing Company Limited",
+   "group": "binance",
+   "perps": [
+    "TSMUSDT"
+   ]
+  },
+  {
+   "ticker": "TTWO",
+   "name": "Take-Two Interactive Software, Inc.",
+   "group": "binance",
+   "perps": [
+    "TTWOUSDT"
+   ]
+  },
+  {
+   "ticker": "TWST",
+   "name": "Twist Bioscience Corporation",
+   "group": "binance",
+   "perps": [
+    "TWSTUSDT"
+   ]
+  },
+  {
+   "ticker": "TXN",
+   "name": "Texas Instruments Incorporated",
+   "group": "binance",
+   "perps": [
+    "TXNUSDT"
+   ]
+  },
+  {
+   "ticker": "UBER",
+   "name": "Uber Technologies, Inc.",
+   "group": "binance",
+   "perps": [
+    "UBERUSDT"
+   ]
+  },
+  {
+   "ticker": "UNH",
+   "name": "UnitedHealth Group Incorporated",
+   "group": "binance",
+   "perps": [
+    "UNHUSDT"
+   ]
+  },
+  {
+   "ticker": "URNM",
+   "name": "Sprott Uranium Miners ETF",
+   "group": "binance",
+   "perps": [
+    "URNMUSDT"
+   ]
+  },
+  {
+   "ticker": "USAR",
+   "name": "USA Rare Earth, Inc.",
+   "group": "binance",
+   "perps": [
+    "USARUSDT"
+   ]
+  },
+  {
+   "ticker": "V",
+   "name": "Visa Inc.",
+   "group": "binance",
+   "perps": [
+    "VUSDT"
+   ]
+  },
+  {
+   "ticker": "VKTX",
+   "name": "Viking Therapeutics, Inc.",
+   "group": "binance",
+   "perps": [
+    "VKTXUSDT"
+   ]
+  },
+  {
+   "ticker": "VRT",
+   "name": "Vertiv Holdings Co",
+   "group": "binance",
+   "perps": [
+    "VRTUSDT"
+   ]
+  },
+  {
+   "ticker": "VST",
+   "name": "Vistra Corp.",
+   "group": "binance",
+   "perps": [
+    "VSTUSDT"
+   ]
+  },
+  {
+   "ticker": "WDC",
+   "name": "Western Digital Corporation",
+   "group": "binance",
+   "perps": [
+    "WDCUSDT"
+   ]
+  },
+  {
+   "ticker": "WEN",
+   "name": "The Wendy's Company",
+   "group": "binance",
+   "perps": [
+    "WENUSDT"
+   ]
+  },
+  {
+   "ticker": "WMT",
+   "name": "Walmart Inc.",
+   "group": "binance",
+   "perps": [
+    "WMTUSDT"
+   ]
+  },
+  {
+   "ticker": "XBI",
+   "name": "State Street SPDR S&P Biotech ETF",
+   "group": "binance",
+   "perps": [
+    "XBIUSDT"
+   ]
+  },
+  {
+   "ticker": "XLE",
+   "name": "State Street Energy Select Sector SPDR ETF",
+   "group": "binance",
+   "perps": [
+    "XLEUSDT"
+   ]
+  },
+  {
+   "ticker": "XOM",
+   "name": "ExxonMobil Holdings Corporation",
+   "group": "binance",
+   "perps": [
+    "XOMUSDT"
+   ]
+  },
+  {
+   "ticker": "ZCSH",
+   "name": "The Zcash ETF",
+   "group": "binance",
+   "perps": [
+    "ZCSHUSDT"
+   ]
+  },
+  {
+   "ticker": "ZM",
+   "name": "Zoom Communications, Inc.",
+   "group": "binance",
+   "perps": [
+    "ZMUSDT"
+   ]
+  },
+  {
+   "ticker": "ZS",
+   "name": "Zscaler, Inc.",
+   "group": "binance",
+   "perps": [
+    "ZSUSDT"
+   ]
+  }
+ ],
+ "skipped": {
+  "XAUUSDT": "not equity (COMMODITY)",
+  "XAGUSDT": "not equity (COMMODITY)",
+  "XPTUSDT": "not equity (COMMODITY)",
+  "XPDUSDT": "not equity (COMMODITY)",
+  "COPPERUSDT": "not equity (COMMODITY)",
+  "CLUSDT": "not equity (COMMODITY)",
+  "BZUSDT": "not equity (COMMODITY)",
+  "NATGASUSDT": "not equity (COMMODITY)",
+  "OPENAIUSDT": "pre-IPO, no history",
+  "ANTHROPICUSDT": "pre-IPO, no history",
+  "UVXYUSDT": "inverse/vol product (excluded by no-short policy)",
+  "SQQQUSDT": "inverse/vol product (excluded by no-short policy)",
+  "SOXSUSDT": "inverse/vol product (excluded by no-short policy)",
+  "TZAUSDT": "inverse/vol product (excluded by no-short policy)",
+  "MINIMAXUSDT": "HK_EQUITY unmapped",
+  "ZHIPUUSDT": "HK_EQUITY unmapped",
+  "SPCXUSD1": "duplicate quote (USD1)",
+  "TBTUSDT": "inverse/vol product (excluded by no-short policy)",
+  "GIGADEVUSDT": "HK_EQUITY unmapped",
+  "CSOPSKHYNIX2LUSDT": "HK_EQUITY unmapped",
+  "CSOPSAMSUNG2LUSDT": "HK_EQUITY unmapped",
+  "ZHONGJIUSDT": "HK_EQUITY unmapped",
+  "CXMTUSDT": "CN_EQUITY unmapped",
+  "UNITREEUSDT": "CN_EQUITY unmapped",
+  "SKDDUSDT": "inverse/vol product (excluded by no-short policy)",
+  "USDBRLUSDT": "not equity (FX)",
+  "MOONSHOTUSDT": "pre-IPO, no history",
+  "OURAUSDT": "pre-IPO, no history"
+ }
+}

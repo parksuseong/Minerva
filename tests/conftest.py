@@ -16,6 +16,8 @@ _TMP = Path(tempfile.mkdtemp(prefix="minerva-test-"))
 os.environ["MINERVA_BINANCE_ENV"] = str(_TMP / "no-binance.env")
 os.environ["MINERVA_TELEGRAM_ENV"] = str(_TMP / "no-telegram.env")
 os.environ["MINERVA_ACCOUNT_DIR"] = str(_TMP / "account")
+# 고서 가상매매 폴더(~/.minerva/gose)도 임시로
+os.environ["MINERVA_GOSE_DIR"] = str(_TMP / "gose")
 
 
 def pytest_sessionstart(session):

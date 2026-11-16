@@ -151,7 +151,7 @@
         <span class="mini">${esc(c.reason || "")}${c.levels ? ` · 수준 ${esc(c.levels)}` : ""}${c.confidence ? ` · ${esc(c.confidence)}` : ""}</span><br>
         우리 점검: ${esc(c.check || "-")} SCR · 판단: <b class="${c.verdict === "추천" ? (c.side === "long" ? "up" : "down") : ""}">${esc(c.verdict || "-")}</b>
         <span class="mini">(${esc(c.verdict_reason || "")})${c.perp ? ` · 바이낸스 ${esc(c.perp)}` : ""}</span></li>`).join("");
-      return `<div class="asset"><b>${esc(e.title)}</b> <span class="mini">${esc(e.date)} · ${esc(e.category)}</span>
+      return `<div class="asset"><b>${esc(e.title)}</b> <span class="mini">${esc(e.date)}${e.category ? ` · ${esc(e.category)}` : ""}</span>
         ${e.error ? `<p class="mini">분석 실패: ${esc(e.error)}</p>` : `<p>${esc(e.summary || "").replace(/\n/g, "<br>")}</p>`}
         ${rules ? `<details><summary>규칙 변경 후보 ${(e.rules || []).length}개</summary><ul>${rules}</ul></details>` : ""}
         ${calls ? `<h3>매매 의견</h3><ul>${calls}</ul>` : ""}</div>`;

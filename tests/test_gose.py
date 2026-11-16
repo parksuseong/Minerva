@@ -315,7 +315,7 @@ def test_build_backtest_counts_and_caveats():
         "main": {"n": 40, "win": 55.0, "mean": 1.0},
         "port_main_1x": {"cagr": 10.0, "mdd": -20.0},
         "random": {"pct": 96.0},
-        "feed_syms_main": {"n": 5, "mean": -0.2},
+        "src_syms_main": {"n": 5, "mean": -0.2},
         "bh_same_syms_main": {"cagr": 12.0, "mdd": -30.0},
         "pass": True,
         "fail_reasons": [],
@@ -351,5 +351,5 @@ def test_route_ok_and_broken_file(gdir):
 
 def test_rulebook_has_no_feed_identifiers():
     text = gose.RULEBOOK.read_text() + gose.UNIVERSE_SEED.read_text()
-    for bad in ("http", "feed", "logNo", "2241", "2242", "2243"):
+    for bad in ("http", "".join(("b", "log")), "logNo", "2241", "2242", "2243"):
         assert bad not in text

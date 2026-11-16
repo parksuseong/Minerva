@@ -1,6 +1,6 @@
 # 매일 23:10 KST: 글쓴이가 주로 저녁에 올린다. Persistent=true: 꺼져 놓친 실행은 기동 직후 한 번.
 [Unit]
-Description=Run Minerva gose feed check daily at 23:10 KST
+Description=Run Minerva gose source check daily at 23:10 KST
 
 [Timer]
 OnCalendar=*-*-* 23:10:00 Asia/Seoul

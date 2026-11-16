@@ -584,10 +584,10 @@ def _row(sid: str, spec: dict, tag: str, v: dict, bonf: float, n_tested: int) ->
         "reason": "통과" if verified else _reason(v, bonf),
     }
     if basic and not verified:
-        feed = v.get("feed_syms_main") or {}
+        src = v.get("src_syms_main") or {}
         row["caveats"] = [
             f"무작위 {rnd.get('pct')}백분위: {n_tested}개를 함께 시험한 기준({bonf})에 못 미쳐요",
-            f"원문 12종목만 보면 평균 {feed.get('mean')}% ({feed.get('n')}번)",
+            f"원문 12종목만 보면 평균 {src.get('mean')}% ({src.get('n')}번)",
             f"포트폴리오 연 {port.get('cagr')}% · 최대 낙폭 {port.get('mdd')}%, "
             f"같은 종목 그냥 보유 연 {bh.get('cagr')}% · {bh.get('mdd')}%",
             "손절 없는 같은 규칙(원문 청산)은 탈락",

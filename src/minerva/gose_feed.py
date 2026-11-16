@@ -1,5 +1,5 @@
 """고서: 매일 원전 새 글을 확인해 규칙책 갱신 후보와 롱·숏 의견을 정리한다(사용자 2026-11-16
-"매일 한번씩 원전를 확인해서 고서에 업데이트 해야할게 있으면 해. 만약 숏이든 롱이든
+"매일 한번씩 원전을 확인해서 고서에 업데이트 해야할게 있으면 해. 만약 숏이든 롱이든
 추천 할거있으면 추천하고"). 주문은 어디에도 없다.
 
 `python -m minerva.gose_feed run [--dry]` (타이머 `minerva-gose-feed.timer`, 매일 23:10 KST)
@@ -15,7 +15,7 @@
 5. 기록: `rulebook/updates.jsonl`(비공개 전체), 화면용 `~/.minerva/gose/feed_updates.json`
    (글 번호·주소·그림 없음, 최근 KEEP개). 새 글이 있으면 텔레그램 한 번, 없으면 로그만.
 
-원전 주소(아이디)는 저장소에 두지 않는다: 비공개 `~/.minerva/feed/config.json`의 `feed_id`.
+원전 주소(아이디)는 저장소에 두지 않는다: 비공개 `~/.minerva/feed/config.json`의 `id`와 주소 틀.
 `--dry`: 새 글만 찾아 보여 준다(Claude·텔레그램·쓰기 없음).
 """
 
@@ -41,9 +41,8 @@ from minerva import btc_ai, gose
 
 KST = timezone(timedelta(hours=9))
 UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
-LIST_URL = "SOURCE_URL"
-RSS_URL = "SOURCE_URL"
-POST_URL = "SOURCE_URL"
+# 원전 주소 틀(list_url·rss_url·post_url·referer)은 저장소에 두지 않고 비공개 config.json에서 읽는다
+URL_KEYS = ("list_url", "rss_url", "post_url", "referer")
 PAGE_SIZE = 30
 MAX_PAGES = 4
 MAX_POSTS = 10
@@ -70,15 +69,26 @@ SIDE_KO = {"long": "롱", "short": "숏"}
 
 
 def feed_dir() -> Path:
-    return Path(os.environ.get("MINERVA_feed_DIR", "~/.minerva/feed")).expanduser()
+    return Path(os.environ.get("MINERVA_FEED_DIR", "~/.minerva/feed")).expanduser()
+
+
+def _config() -> dict:
+    return gose.read_json(feed_dir() / "config.json") or {}
 
 
 def feed_id() -> str:
-    data = gose.read_json(feed_dir() / "config.json") or {}
-    bid = data.get("feed_id")
+    bid = _config().get("id")
     if not isinstance(bid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{2,40}", bid):
-        raise SystemExit("feed config.json에 feed_id가 없다")
+        raise SystemExit("원전 config.json에 id가 없다")
     return bid
+
+
+def url(key: str, **kw) -> str:
+    """비공개 config.json의 주소 틀에 값을 넣는다. 없으면 SystemExit."""
+    tpl = _config().get(key)
+    if key not in URL_KEYS or not isinstance(tpl, str) or not tpl.startswith("https://"):
+        raise SystemExit(f"원전 config.json에 {key}가 없다")
+    return tpl.format(**kw)
 
 
 def _get(url: str, referer: str | None = None, timeout: float = 20) -> bytes:
@@ -151,8 +161,8 @@ def fetch_list(bid: str, known: dict, get: Callable = _get, sleep: Callable = ti
         for p in range(1, MAX_PAGES + 1):
             if p > 1:
                 sleep(DELAY)
-            raw = get(LIST_URL.format(bid=bid, n=PAGE_SIZE, p=p),
-                      referer=f"SOURCE_URL")
+            raw = get(url("list_url", bid=bid, n=PAGE_SIZE, p=p),
+                      referer=url("referer", bid=bid))
             page = parse_list(json.loads(raw))
             seen += page
             if not page or any(x["id"] in known for x in page):
@@ -160,7 +170,7 @@ def fetch_list(bid: str, known: dict, get: Callable = _get, sleep: Callable = ti
         return seen, "list"
     except (OSError, ValueError) as e:
         print(f"목록 JSON 실패({type(e).__name__}), RSS로", file=sys.stderr)
-    return parse_rss(get(RSS_URL.format(bid=bid))), "rss"
+    return parse_rss(get(url("rss_url", bid=bid))), "rss"
 
 
 def new_posts(listed: list[dict], known: dict, limit: int = MAX_POSTS) -> tuple[list[dict], int]:
@@ -510,12 +520,25 @@ def perp_for(ticker: str, perps: set[str]) -> str | None:
 # ---------------------------------------------------------------- 기록·알림
 
 
+# 사용자 2026-11-17: 고서에는 출처를 가리키는 말·주소를 올리지 않는다. 화면·알림에서 그 말을 바꾼다
+# (출처 낱말은 유니코드 이스케이프로 둔다: 저장소에 그 낱말을 남기지 않으려고)
+SOURCE_WORDS = (
+    ("\ube14\ub85c\uadf8", "원전"),
+    ("\ube14\ub85c\uac70", "원저자"),
+    ("포스팅", "글"),
+    ("작성자", "원저자"),
+    ("작가", "원저자"),
+)
+
+
 def scrub(text: str, bid: str = "") -> str:
-    """화면용: 주소·긴 숫자(글 번호)·원전 아이디를 지운다."""
+    """화면·알림용: 주소·긴 숫자(글 번호)·출처 아이디·출처를 가리키는 말을 지운다."""
     t = re.sub(r"https?://\S+", "", text or "")
     t = re.sub(r"\b\d{9,}\b", "", t)
     if bid:
         t = re.sub(re.escape(bid), "", t, flags=re.I)
+    for a, b in SOURCE_WORDS:
+        t = t.replace(a, b)
     return re.sub(r"[ \t]{2,}", " ", t).strip()
 
 
@@ -524,8 +547,9 @@ def web_entry(rec: dict, bid: str = "") -> dict:
     a = rec.get("analysis") or {}
     return {
         "date": rec["date"],
-        "title": scrub(rec["title"], bid),
-        "category": rec["cat"],
+        # 원래 글 제목·분류 이름은 화면에 두지 않는다(출처가 드러남). 요약 첫 문장을 제목으로
+        "title": scrub((a.get("summary") or "").split(".")[0][:60], bid) or "새 장",
+        "category": "",
         "summary": scrub(a.get("summary", ""), bid),
         "rules": [{**r, "rule_paraphrase": scrub(r["rule_paraphrase"], bid),
                    "conflict": scrub(r["conflict"], bid) if r.get("conflict") else None}
@@ -552,16 +576,29 @@ def save_records(records: list[dict], bid: str, now: datetime) -> None:
     with os.fdopen(fd, "a") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    web = gose.gose_dir() / "feed_updates.json"
-    old = (gose.read_json(web) or {}).get("entries") or []
-    new = [web_entry(r, bid) for r in records]
-    entries = sorted(new + old, key=lambda e: e.get("date") or "", reverse=True)[:KEEP]
-    gose._write(web, {"status": "ok", "generated_at": _kst(now), "label": LABEL,
-                      "entries": entries})
+    rebuild_web(bid, now)
+
+
+def rebuild_web(bid: str, now: datetime) -> None:
+    """화면용 사본을 비공개 전체 기록(updates.jsonl)에서 다시 만든다(화면 규칙이 바뀌어도 옛 줄까지
+    같은 규칙으로 지운다)."""
+    path = feed_dir() / "rulebook" / "updates.jsonl"
+    recs = []
+    for line in path.read_text().splitlines() if path.exists() else []:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("date"):
+            recs.append(r)
+    entries = sorted((web_entry(r, bid) for r in recs), key=lambda e: e.get("date") or "",
+                     reverse=True)[:KEEP]
+    gose._write(gose.gose_dir() / "feed_updates.json",
+                {"status": "ok", "generated_at": _kst(now), "label": LABEL, "entries": entries})
 
 
 def message(records: list[dict], remaining: int = 0) -> str:
-    lines = [f"📜 고서 · 원전 새 글 {len(records)}개"
+    lines = [f"📜 고서 · 새 장 {len(records)}개"
              + (f" (남은 글 {remaining}개는 다음에)" if remaining else "") + f"\n({LABEL})"]
     n_rules = 0
     for r in records:
@@ -569,14 +606,14 @@ def message(records: list[dict], remaining: int = 0) -> str:
         n_rules += len(a.get("new_or_changed_rules", []))
         one = ((a.get("summary") or "").splitlines()[0][:140] if a
                else f"분석 실패: {r.get('error')}")
-        lines.append(f"\n• [{r['cat']}] {r['title']} ({r['date'][5:]})\n  {one}")
+        lines.append(f"\n• {r['date'][5:]}\n  {scrub(one)}")
         for c in a.get("calls", []):
             inst = c["instrument"] if c["instrument"].upper() == c["symbol"] else (
                 f"{c['instrument']}→{c['symbol']}")
             perp = f" · 바이낸스 {c['perp']}" if c.get("perp") else ""
             lines.append(
                 f"  - 원전 의견: {inst} {SIDE_KO[c['side']]}"
-                f" ({c['author_reason_paraphrase'][:80]})"
+                f" ({scrub(c['author_reason_paraphrase'][:80])})"
                 f" · 우리 점검: {c.get('check_text')} SCR · 판단: {c.get('verdict')}"
                 f" ({c.get('verdict_reason')}){perp}")
     if n_rules:
@@ -587,7 +624,7 @@ def message(records: list[dict], remaining: int = 0) -> str:
 
 def process(post: dict, now: datetime, get: Callable, sleep: Callable, caller, fetch,
             perps: Callable[[], set[str]]) -> dict:
-    page = get(POST_URL.format(bid=feed_id(), no=post["id"])).decode("utf-8", "ignore")
+    page = get(url("post_url", bid=feed_id(), no=post["id"])).decode("utf-8", "ignore")
     body, files = store_post(post, page, get, sleep)
     rec = {**post, "analyzed_at": _kst(now), "images": len(files), "analysis": None,
            "error": None}

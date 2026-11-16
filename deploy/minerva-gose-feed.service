@@ -1,7 +1,7 @@
 # 고서 원전 새 글: 공개 글 목록 → 본문·그림 저장(비공개 ~/.minerva/feed) → Claude 요약·규칙 변경 후보·매매 의견 → 우리 일·주·월 SCR 점검 → ~/.minerva/gose/feed_updates.json + 텔레그램(새 글 있을 때만). 주문 없음.
 # 설치: sudo cp deploy/minerva-gose-feed.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-gose-feed.timer
 [Unit]
-Description=Minerva gose feed daily check (read-only, no orders)
+Description=Minerva gose source daily check (read-only, no orders)
 After=network-online.target
 Wants=network-online.target
 

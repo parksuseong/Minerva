@@ -169,7 +169,7 @@ def test_build_paper_and_run_without_fetch(gdir):
     paper = gose.build_paper(["W", "SHORT", "NONE"], "^VIX", bars[250][0], bars[-1][0])
     assert paper["virtual"] and paper["symbols_used"] == 1
     assert paper["symbols_short"] == ["SHORT", "NONE"]
-    assert len(paper["accounts"]) == len(gose.ACCOUNTS)
+    assert len(paper["accounts"]) == len(gose.ACCOUNTS) + len(gose.AVG_ACCOUNTS)
     a = next(x for x in paper["accounts"] if x["key"] == "1A")
     assert a["curve"][0][0] == bars[250][0] and a["n_closed"] > 0
 
@@ -351,5 +351,44 @@ def test_route_ok_and_broken_file(gdir):
 
 def test_rulebook_has_no_feed_identifiers():
     text = gose.RULEBOOK.read_text() + gose.UNIVERSE_SEED.read_text()
+    text += gose.AVG_SPEC.read_text() + gose.AVG_INFO.read_text()
     for bad in ("http", "".join(("b", "log")), "logNo", "2241", "2242", "2243"):
         assert bad not in text
+
+
+def test_avg_accounts_one_symbol_each_and_own_sizing(gdir):
+    bars = _trend_bars(n=700, seed=7, drift=0.0)
+    for sym in ("SOXL", "SOXX", "W"):
+        gose._write(gdir / "bars" / f"{sym}.json", {"bars": bars})
+    start = bars[300][0]
+    paper = gose.build_paper(["W"], "^VIX", start, bars[-1][0])
+    keys = [a["key"] for a in paper["accounts"]]
+    assert keys[-2:] == ["avg-SOXL", "avg-SOXX"]
+    a = paper["accounts"][-2]
+    assert a["strategy"] == "avg" and a["symbols"] == ["SOXL"] and a["curve"][0][0] == start
+    assert a["n_closed"] > 0 and a["win_rate"] == 100.0
+    for c in a["closed"]:
+        assert c["exit_date"] >= c["entry_date"] >= start and 0 <= c["adds"] <= 2
+        assert abs(c["exit_px"] / c["entry_px"] - 1.10) < 1e-3 or c["exit_px"] > c["entry_px"] * 1.1
+    for p in a["open"]:
+        assert p["tp_px"] == round(p["avg"] * 1.1, 4) or abs(p["tp_px"] - p["avg"] * 1.1) < 1e-3
+        for k in ("adds", "invested", "avg", "mae_now_pct", "mae_worst_pct", "days_held"):
+            assert k in p
+        # 첫 체결 = 시작 자산/3 (사이클 시작 때 현금)
+        assert p["fills"][0][3] <= a["equity"]
+    # 오늘 신호는 SIG일 때만, 종목도 그 계좌 것만
+    assert all(s["sym"] == "SOXL" for s in a["signals"])
+    assert a["reference"]["from"] == gose.AVG_REF_START
+
+
+def test_avg_account_without_bars(gdir):
+    a = gose.build_avg_account("avg-SOXL", "SOXL", None, "2026-11-16", "2026-11-17")
+    assert a["data"] is False and a["equity"] == gose.CAPITAL and a["open"] == []
+
+
+def test_route_returns_spec_markdown(gdir):
+    d = TestClient(app).get("/api/gose").json()
+    s = d["spec"]
+    assert s["status"] == "ok" and s["accounts"] == ["avg-SOXL", "avg-SOXX"]
+    assert "SIG_t" in s["markdown"] and "평단 × 1.10" in s["markdown"]
+    assert s["params"]["max_adds"] == 2 and s["params"]["stop"] is None

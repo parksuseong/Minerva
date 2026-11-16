@@ -9,6 +9,93 @@
   const pct = (v, d = 2) => (v == null ? "-" : `<span class="${cls(v)}">${v > 0 ? "+" : ""}${num(v, d)}%</span>`);
   const usd = (v) => (v == null ? "-" : `$${num(v, 2)}`);
 
+  // 규칙서 Markdown(저장소 gose_spec.md)을 작게 그린다: 제목·목록·표·코드 블록·굵게·`코드`.
+  function inline(t) {
+    return esc(t).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  }
+  function md(text) {
+    const out = [];
+    const lines = String(text || "").split("\n");
+    let i = 0;
+    while (i < lines.length) {
+      const l = lines[i];
+      if (l.startsWith("```")) {
+        const buf = [];
+        i += 1;
+        while (i < lines.length && !lines[i].startsWith("```")) { buf.push(lines[i]); i += 1; }
+        out.push(`<pre><code>${esc(buf.join("\n"))}</code></pre>`);
+        i += 1;
+        continue;
+      }
+      const h = /^(#{1,3}) (.*)$/.exec(l);
+      if (h) { const n = Math.min(h[1].length + 1, 4); out.push(`<h${n}>${inline(h[2])}</h${n}>`); i += 1; continue; }
+      if (l.startsWith("|")) {
+        const rows = [];
+        while (i < lines.length && lines[i].startsWith("|")) { rows.push(lines[i]); i += 1; }
+        const cells = (r) => r.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+        const body = rows.filter((r) => !/^\|[\s|:-]+\|$/.test(r));
+        const [head, ...rest] = body;
+        out.push(`<div class="scroll"><table class="acct"><thead><tr>${cells(head).map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead>
+          <tbody>${rest.map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+        continue;
+      }
+      const li = /^(\s*)(- |\d+\. )(.*)$/.exec(l);
+      if (li) {
+        const ordered = /\d/.test(li[2]);
+        const items = [];
+        while (i < lines.length) {
+          const m = /^(\s*)(- |\d+\. )(.*)$/.exec(lines[i]);
+          if (m) { items.push({ sub: m[1].length > 0, t: m[3] }); i += 1; continue; }
+          if (/^\s{2,}\S/.test(lines[i]) && items.length) { items[items.length - 1].t += ` ${lines[i].trim()}`; i += 1; continue; }
+          break;
+        }
+        const tag = ordered ? "ol" : "ul";
+        out.push(`<${tag}>${items.map((x) => `<li${x.sub ? " style=\"margin-left:16px\"" : ""}>${inline(x.t)}</li>`).join("")}</${tag}>`);
+        continue;
+      }
+      if (l.trim()) out.push(`<p>${inline(l)}</p>`);
+      i += 1;
+    }
+    return out.join("");
+  }
+
+  function spec(s) {
+    if (!s || s.status !== "ok") return "<p class=\"placeholder\">규칙서를 아직 못 읽었어요</p>";
+    const rows = (s.summary || []).map((r) => `<tr><td><b>${esc(r.sym)}</b></td><td class="mini">${esc(r.period)}</td>
+      <td>${pct(r.cagr, 1)}</td><td>${pct(r.mdd, 1)}</td><td>${num(r.cycles, 0)} · ${num(r.win, 0)}%</td>
+      <td>${pct(r.mae_worst, 1)}</td><td>${num(r.hold_max_bars, 0)}</td><td>${pct(r.bh_cagr, 1)} · ${pct(r.bh_mdd, 1)}</td>
+      <td>${r.random_p == null ? "-" : num(r.random_p, 2)}</td></tr>`).join("");
+    return `<div class="spec">
+      <p><b>${esc(s.title)}</b> · <span class="mini">${esc(s.label)} · ${esc(s.made)} 판 · 가상 계좌 ${esc((s.accounts || []).join(", "))}</span></p>
+      <h3>한눈에</h3>
+      <pre><code>${esc([
+        "신호  일봉 종가에 스토캐(5)>20 · CCI(20)>−100 · RSI(14, 단순식)>30, 그중 하나가 오늘 위로 돌파,",
+        "      그리고 직전 10봉(직전 신호 다음 봉부터) 안에 스토캐≤20 · CCI≤−100 · RSI≤33 이 각각 한 번 이상",
+        "매수  무포지션이면 다음 날 시가에 1단위(사이클 시작 자산/3)",
+        "추가  보유 중 또 신호면 다음 날 시가에 1단위 더, 최대 2번(최대 투입 = 자산 100%)",
+        "익절  평단(수수료 포함)×1.10 지정가 전량, 추가할 때마다 다시 계산",
+        "손절  없음 · 보유 기간 제한 없음 · 수수료 편도 0.05% · 레버리지 없음",
+      ].join("\n"))}</code></pre>
+      <h3>솔직한 주의점</h3>
+      <ul>${(s.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+      <h3>백테스트 수치 <span class="mini">가상 계좌와 같은 코드</span></h3>
+      <div class="scroll"><table class="acct"><thead><tr><th>종목</th><th>기간</th><th>연복리</th><th>최대 낙폭</th>
+        <th>사이클 · 승률</th><th>평단 대비 최저</th><th>최장 보유(거래일)</th><th>그냥 보유</th><th>무작위 p</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+      <p class="mini">무작위 p = 같은 횟수로 아무 날 들어가 같은 방식으로 익절했을 때 이 규칙보다 연복리가 같거나 높았던 비율(클수록 신호가 의미 없음).</p>
+      <details><summary>규칙서 전문 (다른 에이전트용, <code>/api/gose</code>의 <code>spec.markdown</code>)</summary>${md(s.markdown)}</details>
+    </div>`;
+  }
+
+  function rounds(s) {
+    const rs = (s && s.rounds) || [];
+    if (!rs.length) return "";
+    return `<h3>4·5차 (원저자 패턴 재현 · 물타기 익절 고르기)</h3>
+      <div class="scroll"><table class="acct"><thead><tr><th>차수</th><th>무엇</th><th>결과</th><th>판정</th></tr></thead><tbody>
+      ${rs.map((r) => `<tr><td>${num(r.round, 0)}차</td><td>${esc(r.what)}</td><td class="mini">${esc(r.result)}</td><td><b>${esc(r.verdict)}</b></td></tr>`).join("")}
+      </tbody></table></div>`;
+  }
+
   function rulebook(r) {
     if (!r || r.status === "pending") return "<p class=\"placeholder\">규칙책 요약을 아직 못 읽었어요</p>";
     const t = r.totals || {};
@@ -89,7 +176,45 @@
       <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
   }
 
+  // "SCR 3단 + 물타기" 계좌: 한 종목, 사이클 상태(추가 횟수·평단·익절가·평단 대비 낙폭·보유 일수)
+  function avgCycle(p, title) {
+    if (!p) return "";
+    const fills = (p.fills || []).map((f) => `${esc(f[1])} ${num(f[2], 4)} (${usd(f[3])})`).join(" · ");
+    return `<div class="asset"><b>${esc(title)}</b> ${esc(p.sym)} · ${esc(p.entry_date)} 시작 · 보유 ${num(p.days_held, 0)}일(${num(p.bars_held, 0)}거래일)<br>
+      추가 ${p.adds}/2번 · 넣은 돈 ${usd(p.invested)} · 평단 ${num(p.avg, 4)} · <b>익절가 ${num(p.tp_px, 4)}</b><br>
+      지금 ${num(p.last_px, 4)} <span class="mini">${esc(p.last_date)}</span> · 평가 ${pct(p.ret_pct)} ·
+      평단 대비 지금 ${pct(p.mae_now_pct)} · 사이클 최저 ${pct(p.mae_worst_pct)}
+      <div class="mini">체결: ${fills}</div></div>`;
+  }
+
+  function avgAccount(a, cap) {
+    const sig = (a.signals || []).map((s) => `<li>${esc(s.date)} 신호 → <b>${esc(s.action)}</b>
+      ${s.amount ? `<span class="mini">약 ${usd(s.amount)} · 종가 ${num(s.close, 4)}</span>` : ""}</li>`).join("");
+    const closed = (a.closed || []).slice(0, 20).map((c) => `<tr><td>${esc(c.entry_date)}<br>${esc(c.exit_date)}</td>
+      <td>${num(c.entry_px, 4)}<br>${num(c.exit_px, 4)}</td><td>${c.adds}</td><td>${pct(c.ret_pct)}</td><td>${pct(c.mae_worst_pct)}</td>
+      <td>${num(c.days_held, 0)}일</td></tr>`).join("");
+    const ind = a.last_ind || {};
+    const ref = a.reference || {};
+    return `<section class="card">
+      <h2>${esc(a.key)} · ${esc(a.name)} <span class="mini">${esc((a.symbols || []).join(""))}만 · 손절 없음 · 📘 규칙서대로</span></h2>
+      <p><b>${pct(a.return_pct)}</b> 시작 뒤 · 평가 ${usd(a.equity)} / ${usd(cap)} · 현금 ${usd(a.cash)} · 최대 낙폭 ${pct(a.mdd_pct)}<br>
+        닫힌 사이클 ${a.n_closed}번 · 승률 ${a.win_rate == null ? "-" : `${num(a.win_rate, 1)}%`}
+        <span class="mini">(손절이 없어 닫힌 건 다 익절)</span></p>
+      ${a.data === false ? "<p class=\"mini\">일봉 자료가 아직 없어요</p>" : ""}
+      ${spark(a.curve, cap)}
+      ${(a.open || []).length ? avgCycle(a.open[0], "열린 사이클") : "<p>무포지션 · 다음 신호를 기다려요</p>"}
+      ${sig ? `<h3>오늘 신호 <span class="mini">다음 시가 체결 예정</span></h3><ul>${sig}</ul>` : "<p class=\"mini\">오늘 신호 없음</p>"}
+      <p class="mini">마지막 봉 ${esc(a.last_bar || "-")} · 스토캐 ${num(ind.stoch_k, 1)} · CCI ${num(ind.cci, 1)} · RSI ${num(ind.rsi, 1)} ·
+        마지막 신호 ${esc(a.last_sig || "-")}</p>
+      ${ref.open ? `<details><summary>참고: ${esc(ref.from)}부터 이 규칙을 돌렸다면 지금</summary>
+        <p class="mini">${esc(ref.note || "")}</p>${avgCycle(ref.open, "규칙상 열린 사이클")}</details>` : ""}
+      ${closed ? `<details><summary>닫힌 사이클 (최근 20)</summary><div class="scroll"><table class="acct"><thead><tr>
+        <th>시작·익절</th><th>평단·익절가</th><th>추가</th><th>수익</th><th>평단 대비 최저</th><th>보유</th></tr></thead><tbody>${closed}</tbody></table></div></details>` : ""}
+    </section>`;
+  }
+
   function account(a, cap) {
+    if (a.strategy === "avg") return avgAccount(a, cap);
     const sig = (a.signals || []).map((s) => `<li>${esc(s.date)} <b>${esc(s.sym)}</b> ${esc(s.action)}
       ${s.slot === false ? "<span class=\"mini\">(자리 없음, 건너뜀 예정)</span>" : ""}
       <span class="mini">종가 ${num(s.close, 4)} · ${esc(s.reason)}</span></li>`).join("");
@@ -128,10 +253,10 @@
     const accts = p.accounts || [];
     const summary = accts.map((a) => `<tr><td>${esc(a.key)}${a.round === 2 ? ` <span class="mini">${esc(a.label || "2차")}</span>` : ""}</td><td>${pct(a.return_pct)}</td>
       <td>${a.win_rate == null ? "-" : `${num(a.win_rate, 1)}%`} <span class="mini">(${a.n_closed})</span></td>
-      <td>${(a.open || []).length}</td><td>${(a.signals || []).length}</td></tr>`).join("");
+      <td>${a.strategy === "avg" ? `${(a.open || []).length ? `추가 ${a.open[0].adds}/2` : 0}` : (a.open || []).length}</td><td>${(a.signals || []).length}</td></tr>`).join("");
     $("gose-paper-status").innerHTML = `<b>가상(실제 주문 없음)</b> · 시작 ${esc(p.start)} · 자료 ${esc(p.data_through || "-")}까지 ·
       종목 ${num(p.symbols_used, 0)}개${(p.failures || []).length ? ` · 받기 실패 ${p.failures.length}개(옛 자료 사용)` : ""}<br>
-      <span class="mini">전략마다 ${usd(r.capital)} · 동시 ${r.max_positions}종목 · 새 포지션은 전날 평가액의 ${num((r.size_frac || 0) * 100, 0)}% ·
+      <span class="mini">전략마다 ${usd(r.capital)} · (avg- 계좌는 📘 규칙서 크기: 한 종목, 자산/3씩 최대 3번) · 동시 ${r.max_positions}종목 · 새 포지션은 전날 평가액의 ${num((r.size_frac || 0) * 100, 0)}% ·
       수수료 편도 ${num((r.fee_per_side || 0) * 100, 2)}% · ${esc(r.fill || "")} 체결 · 시작일 뒤 신호만 · ${esc(p.generated_at || "")} 계산</span>
       <div class="scroll"><table class="acct"><thead><tr><th>계좌</th><th>시작 뒤</th><th>승률(닫힌 수)</th><th>보유</th><th>오늘 신호</th></tr></thead>
       <tbody>${summary}</tbody></table></div>`;
@@ -163,8 +288,9 @@
     fetch("/api/gose")
       .then((r) => r.json())
       .then((d) => {
+        if ($("gose-spec")) $("gose-spec").innerHTML = spec(d.spec);
         $("gose-rulebook").innerHTML = rulebook(d.rulebook);
-        $("gose-backtest").innerHTML = backtest(d.backtest);
+        $("gose-backtest").innerHTML = backtest(d.backtest) + rounds(d.spec);
         paper(d.paper);
         $("gose-feed").innerHTML = feed(d.feed);
       })

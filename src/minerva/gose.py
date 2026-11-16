@@ -12,6 +12,9 @@
    수수료 편도 0.05%, 체결은 다음 날 시가(손절은 그 가격). 같은 날 진입은 신호일·종목 이름 순,
    자리가 차면 건너뛴다. → `paper.json`
 
+   "SCR 3단 + 물타기" 계좌 `avg-SOXL`·`avg-SOXX`(`gose_rules_avg`, 규칙서 `gose_spec.md`)는
+   이 공용 규칙을 쓰지 않는다: 한 종목만, 사이클 시작 자산/3 단위, 추가 2번, 평단×1.10 익절.
+
    2차(그림 판독 정의) 계좌 `3v2-loose`·`11v2a`는 `gose_rules_v2`로 같은 방식. `11v2a`는 UVXY
    일봉(신호원, 매매 안 함)의 신호로 SOXL·SOXX·QQQ·SPY만 산다.
 
@@ -34,12 +37,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from minerva import gose_rules as R
+from minerva import gose_rules_avg as A
 from minerva import gose_rules_v2 as V
 
 KST = timezone(timedelta(hours=9))
 HERE = Path(__file__).parent
 UNIVERSE_SEED = HERE / "gose_universe.json"
 RULEBOOK = HERE / "gose_rulebook.json"
+AVG_SPEC = HERE / "gose_spec.md"
+AVG_INFO = HERE / "gose_avg.json"
 
 CAPITAL = 10_000.0
 MAX_POS = 10
@@ -58,6 +64,10 @@ ACCOUNTS_V2 = [("3v2-loose", "3v2-loose", None), ("11v2a", "11v2a", None)]
 ACCOUNTS = [(sid, sid, None) for sid in R.STRATEGIES] + [("3-c0/S10", "3-c0", 0.10)] + ACCOUNTS_V2
 V2_LABEL = "2차(그림 판독 정의)"
 VOL_TICKER = "UVXY"  # 2차 변동성 신호원(UVIX 대리). 매매하지 않는다
+# "SCR 3단 + 물타기"(5차): 계좌 하나에 한 종목, 자기 크기 규칙. (계좌 키, 종목)
+AVG_ACCOUNTS = [("avg-SOXL", "SOXL"), ("avg-SOXX", "SOXX")]
+AVG_NAME = "SCR 3단 + 물타기 (익절 10%)"
+AVG_REF_START = "2019-01-01"  # 참고: 백테스트 시험 구간 시작부터 돌렸다면 지금 상태
 
 
 def _rules(sid: str):
@@ -426,6 +436,143 @@ def run_account(trades: list[dict], closes: dict, calendar: list[str]) -> dict:
     }
 
 
+def _r(v: float | None, d: int = 4) -> float | None:
+    return None if v is None else round(v, d)
+
+
+def _avg_open_row(o: dict, sym: str) -> dict:
+    return {
+        "sym": sym,
+        "side": "long",
+        "entry_date": o["entry_date"],
+        "entry_px": _r(o["avg"]),
+        "avg": _r(o["avg"]),
+        "tp_px": _r(o["tp_px"]),
+        "adds": o["adds"],
+        "adds_left": o["adds_left"],
+        "unit": round(o["unit"], 2),
+        "shares": _r(o["shares"], 6),
+        "fills": [[f[0], f[1], _r(f[2]), round(f[3], 2)] for f in o["fills"]],
+        "last_px": _r(o["last_px"]),
+        "last_date": o["last_date"],
+        "invested": round(o["invested"], 2),
+        "value": round(o["value"], 2),
+        "pnl": round(o["value"] - o["invested"], 2),
+        "ret_pct": round(o["ret"] * 100, 2),
+        "mae_now_pct": round(o["mae_now"] * 100, 2),
+        "mae_worst_pct": round(o["mae"] * 100, 2),
+        "bars_held": o["bars_held"],
+        "days_held": o["days_held"],
+        "reason_in": "SIG(스토캐·CCI·RSI 3단 과매도 탈출)",
+    }
+
+
+def build_avg_account(key: str, sym: str, bars: list | None, start: str, today: str) -> dict:
+    """SCR 3단 + 물타기 가상 계좌 하나(`gose_rules_avg.simulate`, START부터 현금 1만 달러)."""
+    base = {
+        "key": key,
+        "sid": "avg",
+        "strategy": "avg",
+        "name": AVG_NAME,
+        "rule_ids": [],
+        "side": "long",
+        "timeframe": "D",
+        "stop_pct": None,
+        "max_hold": None,
+        "symbols": [sym],
+        "skipped": 0,
+        "rules_avg": {"tp": A.TP, "max_adds": A.MAX_ADDS, "unit": "사이클 시작 자산/3"},
+    }
+    if not bars or len(bars) < MIN_BARS:
+        return dict(
+            base,
+            equity=CAPITAL,
+            cash=CAPITAL,
+            return_pct=0.0,
+            mdd_pct=0.0,
+            n_closed=0,
+            win_rate=None,
+            curve=[],
+            open=[],
+            closed=[],
+            signals=[],
+            data=False,
+        )
+    tb = [tuple(b) for b in bars]
+    ind = A.indicators(tb)
+    sigs = A.signals(ind)
+    res = A.simulate(tb, start=start, capital=CAPITAL, ind=ind, sigs=sigs)
+    ref = A.simulate(tb, start=AVG_REF_START, capital=CAPITAL, ind=ind, sigs=sigs)
+    curve = [[d, round(v, 2)] for d, v in res["curve"]]
+    closed = [
+        {
+            "sym": sym,
+            "entry_date": c["entry_date"],
+            "exit_date": c["exit_date"],
+            "entry_px": _r(c["avg"]),
+            "exit_px": _r(c["exit_px"]),
+            "adds": c["adds"],
+            "invested": round(c["invested"], 2),
+            "pnl": round(c["pnl"], 2),
+            "ret_pct": round(c["ret"] * 100, 2),
+            "mae_worst_pct": round(c["mae"] * 100, 2),
+            "days_held": c["days_held"],
+            "bars_held": c["bars_held"],
+            "reason_in": "SIG",
+            "reason_out": f"익절(평단×{1 + A.TP:.2f})",
+        }
+        for c in res["cycles"]
+    ]
+    wins = sum(1 for c in closed if c["pnl"] > 0)
+    sig_rows = []
+    fresh = (
+        datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(tb[-1][0], "%Y-%m-%d")
+    ).days <= SIGNAL_FRESH_DAYS
+    nxt = res["next"]
+    if nxt and fresh:
+        action = {
+            "entry": "매수(1단위, 사이클 시작)",
+            "add": "추가 매수(물타기)",
+            "capped": "추가 한도(2번) 다 씀 · 할 일 없음",
+        }[nxt["kind"]]
+        sig_rows.append(
+            {
+                "sym": sym,
+                "date": nxt["signal_date"],
+                "kind": nxt["kind"],
+                "close": _r(nxt["close"]),
+                "amount": round(nxt["amount"], 2),
+                "reason": "SIG",
+                "action": action,
+            }
+        )
+    last_ind = {k: _r(ind[k][-1], 2) for k in ("S", "C", "R")}
+    ro = ref["open"]
+    return dict(
+        base,
+        data=True,
+        equity=round(res["equity"], 2),
+        cash=round(res["cash"], 2),
+        return_pct=round((res["equity"] / CAPITAL - 1) * 100, 2),
+        mdd_pct=round(_mdd(curve) * 100, 2),
+        n_closed=len(closed),
+        win_rate=round(wins / len(closed) * 100, 1) if closed else None,
+        curve=curve,
+        open=[_avg_open_row(res["open"], sym)] if res["open"] else [],
+        closed=closed[-CLOSED_KEEP:][::-1],
+        signals=sig_rows,
+        last_bar=tb[-1][0],
+        last_ind={"stoch_k": last_ind["S"], "cci": last_ind["C"], "rsi": last_ind["R"]},
+        last_sig=tb[sigs[-1]][0] if sigs else None,
+        reference={
+            "from": AVG_REF_START,
+            "note": "참고: 시험 구간 시작부터 이 규칙을 돌렸다면 지금 상태(가상 계좌에는 안 넣음)",
+            "open": _avg_open_row(ro, sym) if ro else None,
+            "n_closed": len(ref["cycles"]),
+        },
+    )
+
+
 def account_signals(pending: list[dict], acct: dict, side: str) -> list[dict]:
     """오늘 신호(다음 시가 체결 예정).
 
@@ -506,6 +653,11 @@ def build_paper(
                     signal_source_through=vol[-1][0] if vol else None,
                 )
         accounts.append(acct)
+    for key, sym in AVG_ACCOUNTS:
+        bars = load_bars(sym)
+        if bars:
+            latest = max(latest, bars[-1][0])
+        accounts.append(build_avg_account(key, sym, bars, start, today))
     return {
         "status": "ok",
         "virtual": True,
@@ -534,7 +686,8 @@ def run(now: datetime | None = None, fetch: bool = True) -> dict:
     syms = [s["ticker"] for s in uni["symbols"]]
     vix = uni.get("vix", "^VIX")
     vol = uni.get("vol", VOL_TICKER)
-    failures = refresh_all(syms + [vix, vol], now.timestamp()) if fetch else []
+    extra = [s for _, s in AVG_ACCOUNTS if s not in syms]
+    failures = refresh_all(syms + extra + [vix, vol], now.timestamp()) if fetch else []
     paper = build_paper(syms, vix, st["start"], today, failures, vol_ticker=vol)
     _write(gose_dir() / "paper.json", paper)
     return paper

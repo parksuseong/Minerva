@@ -12,7 +12,11 @@
    수수료 편도 0.05%, 체결은 다음 날 시가(손절은 그 가격). 같은 날 진입은 신호일·종목 이름 순,
    자리가 차면 건너뛴다. → `paper.json`
 
-`python -m minerva.gose backtest <results.json>` 백테스트 결과에서 요약 줄만 `backtest.json`으로.
+   2차(그림 판독 정의) 계좌 `3v2-loose`·`11v2a`는 `gose_rules_v2`로 같은 방식. `11v2a`는 UVXY
+   일봉(신호원, 매매 안 함)의 신호로 SOXL·SOXX·QQQ·SPY만 산다.
+
+`python -m minerva.gose backtest <results.json> [--round2 <results2.json>]` 백테스트 결과에서
+요약 줄만 `backtest.json`으로(2차 변형은 `round: 2`로 뒤에 붙는다).
 웹(`/api/gose`)은 이 폴더 파일과 저장소 파일만 읽는다. 주문·키 없음.
 """
 
@@ -30,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from minerva import gose_rules as R
+from minerva import gose_rules_v2 as V
 
 KST = timezone(timedelta(hours=9))
 HERE = Path(__file__).parent
@@ -47,8 +52,23 @@ ADJUST_TOL = 0.005
 SIGNAL_FRESH_DAYS = 5
 CLOSED_KEEP = 60
 
-# (계좌 키, 전략 키, 손절). 원문 청산(손절 없음·시간 청산) 16개 + 3-c0 10% 손절 하나.
-ACCOUNTS = [(sid, sid, None) for sid in R.STRATEGIES] + [("3-c0/S10", "3-c0", 0.10)]
+# (계좌 키, 전략 키, 손절). 원문 청산(손절 없음·시간 청산) 16개 + 3-c0 10% 손절 하나
+# + 2차(그림 판독 정의, `gose_rules_v2`) 두 개(원문 청산).
+ACCOUNTS_V2 = [("3v2-loose", "3v2-loose", None), ("11v2a", "11v2a", None)]
+ACCOUNTS = [(sid, sid, None) for sid in R.STRATEGIES] + [("3-c0/S10", "3-c0", 0.10)] + ACCOUNTS_V2
+V2_LABEL = "2차(그림 판독 정의)"
+VOL_TICKER = "UVXY"  # 2차 변동성 신호원(UVIX 대리). 매매하지 않는다
+
+
+def _rules(sid: str):
+    """전략 키 → 규칙 모듈(1차 R 또는 2차 V). 두 모듈의 키는 겹치지 않는다."""
+    return V if sid in V.STRATEGIES else R
+
+
+def _allowed(sid: str, sym: str) -> bool:
+    """변동성 신호 전략은 정해진 종목만 산다(나머지 전략은 전 종목)."""
+    only = V.TICKERS.get(sid) if sid in V.STRATEGIES else None
+    return only is None or sym in only
 
 
 def gose_dir() -> Path:
@@ -206,16 +226,38 @@ def _trade_row(sym: str, t: dict, stop: bool) -> dict:
     }
 
 
-def collect(sym: str, bars: list, vix: list | None, start: str, today: str) -> dict:
-    """한 종목에서 계좌별 후보 거래(신호일 ≥ start)와 오늘 신호를 모은다."""
+def collect(
+    sym: str,
+    bars: list,
+    vix: list | None,
+    start: str,
+    today: str,
+    vol: list | None = None,
+    vol_hits: dict | None = None,
+) -> dict:
+    """한 종목에서 계좌별 후보 거래(신호일 ≥ start)와 오늘 신호를 모은다.
+
+    vol·vol_hits: 2차 변동성 신호원(UVXY) 일봉과 미리 계산한 신호(`V.compute_vol_hits`).
+    """
     ctx = R.prepare([tuple(b) for b in bars], vix)
     tb = ctx["bars"]
+    ctx2 = None
     fresh = (
         datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(tb[-1][0], "%Y-%m-%d")
     ).days <= SIGNAL_FRESH_DAYS
     out = {}
     for key, sid, stop in ACCOUNTS:
-        res = R.simulate(sid, tb, stop_pct=stop, fee=FEE, ctx=ctx)
+        if not _allowed(sid, sym):
+            out[key] = {"trades": [], "pending": []}
+            continue
+        if _rules(sid) is V:
+            if ctx2 is None:
+                if vol and vol_hits is None:
+                    vol_hits = V.compute_vol_hits(vol, ("11v2a",))
+                ctx2 = V.prepare(tb, vol, vol_hits=vol_hits, base=ctx)
+            res = V.simulate(sid, tb, stop_pct=stop, fee=FEE, ctx=ctx2)
+        else:
+            res = R.simulate(sid, tb, stop_pct=stop, fee=FEE, ctx=ctx)
         rows = [_trade_row(sym, t, stop) for t in res["trades"] if t["signal_date"] >= start]
         if res["open"] is not None and res["open"]["signal_date"] >= start:
             rows.append(_trade_row(sym, res["open"], stop))
@@ -408,11 +450,19 @@ def account_signals(pending: list[dict], acct: dict, side: str) -> list[dict]:
 
 
 def build_paper(
-    syms: list[str], vix_ticker: str, start: str, today: str, failures: list[dict] | None = None
+    syms: list[str],
+    vix_ticker: str,
+    start: str,
+    today: str,
+    failures: list[dict] | None = None,
+    vol_ticker: str = VOL_TICKER,
 ) -> dict:
     """캐시된 봉으로 모든 계좌를 다시 계산한다(네트워크 없음)."""
     vix_raw = load_bars(vix_ticker)
     vix = [tuple(b) for b in vix_raw] if vix_raw else None
+    vol_raw = load_bars(vol_ticker)
+    vol = [tuple(b) for b in vol_raw] if vol_raw else None
+    hits = V.compute_vol_hits(vol, ("11v2a",)) if vol else None
     per = {key: {"trades": [], "pending": []} for key, _, _ in ACCOUNTS}
     closes: dict[str, dict] = {}
     cal: set[str] = set()
@@ -427,14 +477,14 @@ def build_paper(
         recent = {b[0]: b[4] for b in bars if b[0] >= start}
         closes[sym] = recent
         cal.update(recent)
-        got = collect(sym, bars, vix, start, today)
+        got = collect(sym, bars, vix, start, today, vol=vol, vol_hits=hits)
         for key in per:
             per[key]["trades"].extend(got[key]["trades"])
             per[key]["pending"].extend(got[key]["pending"])
     calendar = sorted(cal)
     accounts = []
     for key, sid, stop in ACCOUNTS:
-        spec = R.STRATEGIES[sid]
+        spec = _rules(sid).STRATEGIES[sid]
         acct = run_account(per[key]["trades"], closes, calendar)
         acct["signals"] = account_signals(per[key]["pending"], acct, spec["side"])
         acct.update(
@@ -447,6 +497,14 @@ def build_paper(
             stop_pct=stop,
             max_hold=spec["max_hold"],
         )
+        if sid in V.STRATEGIES:
+            acct.update(round=2, label=V2_LABEL)
+            if sid in V.TICKERS:
+                acct.update(
+                    symbols=list(V.TICKERS[sid]),
+                    signal_source=vol_ticker,
+                    signal_source_through=vol[-1][0] if vol else None,
+                )
         accounts.append(acct)
     return {
         "status": "ok",
@@ -475,8 +533,9 @@ def run(now: datetime | None = None, fetch: bool = True) -> dict:
     st = load_state(today)
     syms = [s["ticker"] for s in uni["symbols"]]
     vix = uni.get("vix", "^VIX")
-    failures = refresh_all(syms + [vix], now.timestamp()) if fetch else []
-    paper = build_paper(syms, vix, st["start"], today, failures)
+    vol = uni.get("vol", VOL_TICKER)
+    failures = refresh_all(syms + [vix, vol], now.timestamp()) if fetch else []
+    paper = build_paper(syms, vix, st["start"], today, failures, vol_ticker=vol)
     _write(gose_dir() / "paper.json", paper)
     return paper
 
@@ -494,61 +553,116 @@ def _reason(v: dict, bonf_pct: float) -> str:
     return f"기본 3관문은 넘었지만 무작위 {rnd}백분위 < 다중검정 기준 {bonf_pct}"
 
 
-def build_backtest(results: dict) -> dict:
-    """백테스트 results.json → 화면용 요약 줄(전략 순서 → 손절 없음, 10%)."""
+def _row(sid: str, spec: dict, tag: str, v: dict, bonf: float, n_tested: int) -> dict:
+    m = v.get("main") or {}
+    port = v.get("port_main_1x") or {}
+    rnd = v.get("random") or {}
+    bh = v.get("bh_same_syms_main") or {}
+    basic = bool(v.get("pass"))
+    verified = bool(v.get("bonferroni_pass"))
+    row = {
+        "variant": f"{sid}/{tag}",
+        "sid": sid,
+        "name": spec["name"],
+        "rule_ids": spec["rule_ids"],
+        "side": spec["side"],
+        "stop": STOP_LABEL[tag],
+        "n": m.get("n", 0),
+        "win": m.get("win"),
+        "mean": m.get("mean"),
+        "median": m.get("median"),
+        "worst": m.get("worst"),
+        "hold_days": m.get("avg_hold_days"),
+        "cagr": port.get("cagr"),
+        "mdd": port.get("mdd"),
+        "bh_cagr": bh.get("cagr"),
+        "bh_mdd": bh.get("mdd"),
+        "random_pct": rnd.get("pct"),
+        "basic_pass": basic,
+        "verified": verified,
+        "verdict": "통과" if verified else ("근접(다중검정 미통과)" if basic else "탈락"),
+        "reason": "통과" if verified else _reason(v, bonf),
+    }
+    if basic and not verified:
+        feed = v.get("feed_syms_main") or {}
+        row["caveats"] = [
+            f"무작위 {rnd.get('pct')}백분위: {n_tested}개를 함께 시험한 기준({bonf})에 못 미쳐요",
+            f"원문 12종목만 보면 평균 {feed.get('mean')}% ({feed.get('n')}번)",
+            f"포트폴리오 연 {port.get('cagr')}% · 최대 낙폭 {port.get('mdd')}%, "
+            f"같은 종목 그냥 보유 연 {bh.get('cagr')}% · {bh.get('mdd')}%",
+            "손절 없는 같은 규칙(원문 청산)은 탈락",
+        ]
+    return row
+
+
+def _v2_caveats(v: dict) -> list[str]:
+    """2차 변형 주의점: 2021-22 하락장 성적, 종목 쏠림(변동성 신호 전략)."""
+    out = []
+    sub = (v.get("subs") or {}).get("2021-22") or {}
+    if not sub.get("n"):
+        out.append("2021-22 하락장에 신호 0번(그 시기를 시험하지 못함)")
+    elif (sub.get("mean") or 0) <= 0:
+        out.append(f"2021-22 하락장 평균 {sub.get('mean')}% 손실({sub.get('n')}번)")
+    per = v.get("per_sym_main") or {}
+    if "SOXL" in per and len(per) > 1:
+        others = [x.get("mean") for k, x in per.items() if k != "SOXL" and x.get("n")]
+        if others:
+            lo, hi = min(others), max(others)
+            out.append(
+                f"SOXL 쏠림: SOXL 평균 {per['SOXL'].get('mean')}%({per['SOXL'].get('n')}번), "
+                f"나머지 {lo}~{hi}%"
+            )
+    return out
+
+
+def build_backtest(results: dict, results2: dict | None = None) -> dict:
+    """백테스트 results.json(1차) [+ results2.json(2차)] → 화면용 요약 줄.
+
+    순서: 1차 전략 → 2차 전략, 각각 손절 없음·10%. 2차 줄은 round=2와 주의점(caveats)을 단다.
+    다중검정 기준은 2차가 있으면 2차 meta(1·2차 합계 기준)를 쓴다.
+    """
     meta = results.get("meta", {})
-    bonf = meta.get("bonferroni_pct", 99.84)
+    meta2 = (results2 or {}).get("meta") or {}
+    bonf = meta2.get("bonferroni_pct", meta.get("bonferroni_pct", 99.84))
+    n1 = len(results.get("variants") or {})
+    n2 = len((results2 or {}).get("variants") or {})
+    n_tested = meta2.get("variants") or (n1 + n2) or 32
     rows = []
-    for sid, spec in R.STRATEGIES.items():
-        for tag in ("N", "S10"):
-            v = (results.get("variants") or {}).get(f"{sid}/{tag}")
-            if v is None:
-                continue
-            m = v.get("main") or {}
-            port = v.get("port_main_1x") or {}
-            rnd = v.get("random") or {}
-            bh = v.get("bh_same_syms_main") or {}
-            basic = bool(v.get("pass"))
-            verified = bool(v.get("bonferroni_pass"))
-            row = {
-                "variant": f"{sid}/{tag}",
-                "sid": sid,
-                "name": spec["name"],
-                "rule_ids": spec["rule_ids"],
-                "side": spec["side"],
-                "stop": STOP_LABEL[tag],
-                "n": m.get("n", 0),
-                "win": m.get("win"),
-                "mean": m.get("mean"),
-                "median": m.get("median"),
-                "worst": m.get("worst"),
-                "hold_days": m.get("avg_hold_days"),
-                "cagr": port.get("cagr"),
-                "mdd": port.get("mdd"),
-                "bh_cagr": bh.get("cagr"),
-                "bh_mdd": bh.get("mdd"),
-                "random_pct": rnd.get("pct"),
-                "basic_pass": basic,
-                "verified": verified,
-                "verdict": "통과" if verified else ("근접(다중검정 미통과)" if basic else "탈락"),
-                "reason": "통과" if verified else _reason(v, bonf),
-            }
-            if basic and not verified:
-                feed = v.get("feed_syms_main") or {}
-                row["caveats"] = [
-                    f"무작위 {rnd.get('pct')}백분위: 32개를 함께 시험한 기준({bonf})에 못 미쳐요",
-                    f"원문 12종목만 보면 평균 {feed.get('mean')}% ({feed.get('n')}번)",
-                    f"포트폴리오 연 {port.get('cagr')}% · 최대 낙폭 {port.get('mdd')}%, "
-                    f"같은 종목 그냥 보유 연 {bh.get('cagr')}% · {bh.get('mdd')}%",
-                    "손절 없는 같은 규칙(원문 청산)은 탈락",
-                ]
-            rows.append(row)
+    for src, mod, rnd in ((results, R, 1), (results2 or {}, V, 2)):
+        for sid, spec in mod.STRATEGIES.items():
+            for tag in ("N", "S10"):
+                v = (src.get("variants") or {}).get(f"{sid}/{tag}")
+                if v is None:
+                    continue
+                row = _row(sid, spec, tag, v, bonf, n_tested)
+                if rnd == 2:
+                    row["round"] = 2
+                    row["label"] = V2_LABEL
+                    notes = _v2_caveats(v)
+                    if notes:
+                        row["caveats"] = notes + row.get("caveats", [])
+                rows.append(row)
+    r2 = [r for r in rows if r.get("round") == 2]
     return {
         "status": "ok",
         "made_at": datetime.now(KST).isoformat(timespec="seconds"),
         "verified": sum(1 for r in rows if r["verified"]),
         "basic_pass": sum(1 for r in rows if r["basic_pass"]),
         "variants": len(rows),
+        "rounds": {
+            "1": {
+                "variants": len(rows) - len(r2),
+                "verified": sum(1 for r in rows if r["verified"] and not r.get("round")),
+            },
+            "2": {
+                "variants": len(r2),
+                "verified": sum(1 for r in r2 if r["verified"]),
+                "label": V2_LABEL,
+                "vol_series": meta2.get("vol_series"),
+            },
+        }
+        if r2
+        else None,
         "meta": {
             "main": meta.get("main"),
             "ten": meta.get("ten"),
@@ -556,12 +670,13 @@ def build_backtest(results: dict) -> dict:
             "fee_per_side": meta.get("fee_per_side"),
             "shuffles": meta.get("shuffles"),
             "bonferroni_pct": bonf,
+            "tested": n_tested,
         },
         "gates": [
             "최근 5년 거래 30번 이상",
             "2021-22 · 2023-24 · 2025-26 기간 평균 수익이 모두 + (수수료 뒤)",
             "같은 종목·같은 보유 일수 무작위 진입 1000번보다 평균이 높음(95백분위 초과)",
-            f"32개를 함께 시험하니 우연을 빼려면 {bonf}백분위 초과(다중검정)",
+            f"{n_tested}개를 함께 시험하니 우연을 빼려면 {bonf}백분위 초과(다중검정)",
         ],
         "rows": rows,
     }
@@ -574,6 +689,7 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--no-fetch", action="store_true", help="캐시만 쓰고 받지 않음")
     pb = sub.add_parser("backtest", help="results.json → backtest.json")
     pb.add_argument("results")
+    pb.add_argument("--round2", help="2차(그림 판독 정의) results2.json")
     a = ap.parse_args(argv)
     if a.cmd == "run":
         p = run(fetch=not a.no_fetch)
@@ -585,11 +701,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     src = Path(a.results)
     res = json.loads(src.read_text())
-    out = build_backtest(res)
+    src2 = Path(a.round2) if a.round2 else None
+    res2 = json.loads(src2.read_text()) if src2 else None
+    out = build_backtest(res, res2)
     d = gose_dir()
     d.mkdir(parents=True, exist_ok=True)
-    if src.resolve() != (d / "results.json").resolve():
-        shutil.copyfile(src, d / "results.json")
+    for f, name in ((src, "results.json"), (src2, "results2.json")):
+        if f is not None and f.resolve() != (d / name).resolve():
+            shutil.copyfile(f, d / name)
     _write(d / "backtest.json", out)
     print(f"변형 {out['variants']} · 기본 통과 {out['basic_pass']} · 검증 통과 {out['verified']}")
     return 0

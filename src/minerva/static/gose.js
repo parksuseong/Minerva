@@ -36,22 +36,36 @@
     if (!b || b.status === "pending") return "<p class=\"placeholder\">백테스트 요약이 아직 없어요</p>";
     const m = b.meta || {};
     const main = (m.main || []).join(" ~ ");
-    const near = (b.rows || []).filter((r) => r.basic_pass && !r.verified);
-    const rows = (b.rows || []).map((r) => `<tr>
+    const all = b.rows || [];
+    const near = all.filter((r) => r.basic_pass && !r.verified);
+    // 2차 줄은 주의점(2021-22 성적, 종목 쏠림)을 판정 칸 아래에 붙인다
+    const tr = (r) => `<tr>
       <td><b>${esc(r.variant)}</b><br><span class="mini">${esc(r.name)}</span></td>
       <td>${esc(r.stop)}</td><td>${num(r.n, 0)}</td><td>${r.win == null ? "-" : `${num(r.win, 1)}%`}</td>
       <td>${pct(r.mean)}</td><td>${pct(r.cagr, 1)}</td><td>${pct(r.mdd, 1)}</td>
       <td>${r.random_pct == null ? "-" : num(r.random_pct, 1)}</td>
-      <td><b class="${r.verified ? "up" : ""}">${esc(r.verdict)}</b><br><span class="mini">${esc(r.reason)}</span></td></tr>`).join("");
+      <td><b class="${r.verified ? "up" : ""}">${esc(r.verdict)}</b><br><span class="mini">${esc(r.reason)}</span>
+        ${r.round === 2 && (r.caveats || []).length ? `<ul class="mini">${r.caveats.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>` : ""}</td></tr>`;
+    const head = `<thead><tr><th>변형</th><th>손절</th><th>거래</th><th>승률</th><th>평균</th>
+        <th>연수익</th><th>최대 낙폭</th><th>무작위 백분위</th><th>판정</th></tr></thead>`;
+    const r1 = all.filter((r) => r.round !== 2);
+    const r2 = all.filter((r) => r.round === 2);
+    const rd = b.rounds || {};
+    const rows = r1.map(tr).join("");
+    const rows2 = r2.length ? `<h3>${esc((rd["2"] || {}).label || "2차")} ${r2.length}개 변형 · 검증 통과 ${(rd["2"] || {}).verified ?? 0}개</h3>
+      <p class="mini">1차 결과를 본 뒤 그림 판독으로 뜻을 정해 다시 등록한 규칙. 변동성 신호는 UVXY 일봉·주봉(UVIX 대리)으로 보고 지수 ETF만 삼.
+        특히 3v2는 2021-22 하락장에서 손실, 11v2a는 2021-22 신호 0번이고 수익이 SOXL에 쏠려 있어요.</p>
+      <div class="scroll"><table class="acct">${head}<tbody>${r2.map(tr).join("")}</tbody></table></div>` : "";
     const nearHtml = near.map((r) => `<div class="asset"><b>${esc(r.variant)}</b> ${esc(r.name)} · 손절 ${esc(r.stop)}
       <ul>${(r.caveats || []).map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>`).join("");
-    return `<p style="font-size:18px;margin:4px 0"><b>검증 통과 ${b.verified}개</b> <span class="mini">/ ${b.variants}개 변형</span></p>
+    return `<p style="font-size:18px;margin:4px 0"><b>검증 통과 ${b.verified}개</b> <span class="mini">/ ${r2.length ? "1·2차 합계 " : ""}${b.variants}개 변형</span></p>
       <p class="mini">최근 5년(${esc(main)}, 진입일 기준) · 종목 ${num(m.symbols, 0)}개 · 수수료 편도 ${num((m.fee_per_side || 0) * 100, 2)}% ·
         다음 날 시가 체결 · 1배. 결과를 보기 전에 규칙과 통과 기준을 먼저 적어 두고 돌렸어요.</p>
       <details><summary>통과 기준</summary><ol>${(b.gates || []).map((g) => `<li>${esc(g)}</li>`).join("")}</ol></details>
       ${near.length ? `<h3>근접 ${near.length}개 (검증 통과 아님)</h3>${nearHtml}` : ""}
-      <div class="scroll"><table class="acct"><thead><tr><th>변형</th><th>손절</th><th>거래</th><th>승률</th><th>평균</th>
-        <th>연수익</th><th>최대 낙폭</th><th>무작위 백분위</th><th>판정</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${r2.length ? `<h3>1차 ${r1.length}개 변형</h3>` : ""}
+      <div class="scroll"><table class="acct">${head}<tbody>${rows}</tbody></table></div>
+      ${rows2}
       <p class="mini">평균 = 거래 한 번 수수료 뒤 수익. 연수익·최대 낙폭 = 그날 열린 거래를 같은 비중으로 묶은 계좌.
         무작위 백분위 = 같은 종목·같은 보유 일수로 아무 날 들어간 1000번 중 몇 %보다 나았나. 과거 결과는 미래를 보장하지 않아요.</p>`;
   }
@@ -86,8 +100,12 @@
       <td>${esc(c.entry_date)}<br>${esc(c.exit_date)}</td><td>${num(c.entry_px, 4)}<br>${num(c.exit_px, 4)}</td>
       <td>${pct(c.ret_pct)}</td><td class="mini">${esc(c.reason_out)}</td></tr>`).join("");
     const stop = a.stop_pct ? `손절 ${num(a.stop_pct * 100, 0)}%` : "원문 청산(손절 없음)";
+    const v2 = a.round === 2 ? ` · <b>${esc(a.label || "2차")}</b>` : "";
+    const src = a.signal_source ? `<p class="mini">신호: ${esc(a.signal_source)} 일봉(매매 안 함${a.signal_source_through ? `, ${esc(a.signal_source_through)}까지` : ", 자료 없음"}) →
+      ${esc((a.symbols || []).join("·"))}만 매수</p>` : "";
     return `<section class="card">
-      <h2>${esc(a.key)} · ${esc(a.name)} <span class="mini">${esc(stop)} · ${esc((a.rule_ids || []).join(", "))}${a.side === "short" ? " · 숏(참고)" : ""}</span></h2>
+      <h2>${esc(a.key)} · ${esc(a.name)} <span class="mini">${esc(stop)} · ${esc((a.rule_ids || []).join(", "))}${a.side === "short" ? " · 숏(참고)" : ""}${v2}</span></h2>
+      ${src}
       <p><b>${pct(a.return_pct)}</b> 시작 뒤 · 평가 ${usd(a.equity)} / ${usd(cap)} · 최대 낙폭 ${pct(a.mdd_pct)}<br>
         닫힌 거래 ${a.n_closed}번 · 승률 ${a.win_rate == null ? "-" : `${num(a.win_rate, 1)}%`} ·
         보유 ${(a.open || []).length}/10 · 자리 없어 건너뜀 ${a.skipped}번</p>
@@ -108,7 +126,7 @@
     }
     const r = p.rules || {};
     const accts = p.accounts || [];
-    const summary = accts.map((a) => `<tr><td>${esc(a.key)}</td><td>${pct(a.return_pct)}</td>
+    const summary = accts.map((a) => `<tr><td>${esc(a.key)}${a.round === 2 ? ` <span class="mini">${esc(a.label || "2차")}</span>` : ""}</td><td>${pct(a.return_pct)}</td>
       <td>${a.win_rate == null ? "-" : `${num(a.win_rate, 1)}%`} <span class="mini">(${a.n_closed})</span></td>
       <td>${(a.open || []).length}</td><td>${(a.signals || []).length}</td></tr>`).join("");
     $("gose-paper-status").innerHTML = `<b>가상(실제 주문 없음)</b> · 시작 ${esc(p.start)} · 자료 ${esc(p.data_through || "-")}까지 ·

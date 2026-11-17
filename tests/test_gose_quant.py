@@ -1,4 +1,4 @@
-"""gose_quant(퀀트 기법 Q1~Q6) 점검 — 작은 합성 일봉, 네트워크 없음."""
+"""gose_quant(퀀트 기법 Q1~Q6·P1) 점검 — 작은 합성 일봉, 네트워크 없음."""
 
 from __future__ import annotations
 
@@ -223,20 +223,19 @@ def test_q6_pending_on_last_month_end():
 # ---------------------------------------------------------------- 미래 봉을 쓰지 않음
 
 
-@pytest.mark.parametrize("sid", Q.PER_SYMBOL)
-def test_appending_future_bar_keeps_past_signals(sid):
-    """봉을 하나 더 붙여도 지난 봉의 진입·청산 판단과 거래가 그대로다(그날까지 자료만 씀)."""
-    closes = [a * b / 100 for a, b in zip(walk(700, seed=7), wave(700, period=400, amp=0.35))]
-    bars = make_bars(closes)
-    assert any(t["exit_i"] > 300 for t in Q.simulate(sid, bars)["trades"])  # 시험할 거래가 있다
-    for k in range(300, 700, 5):
-        short = Q.prepare(bars[:k])
-        longer = Q.prepare(bars[: k + 1])
+def _check_causal(sid, bars, vix=None, step=5):
+    def vx(k):  # 그 봉 날짜까지의 VIX만(미래 VIX 봉도 같이 붙인다)
+        return None if vix is None else [v for v in vix if v[0] <= bars[k - 1][0]]
+
+    assert any(t["exit_i"] > 300 for t in Q.simulate(sid, bars, vix=vix)["trades"])
+    for k in range(300, len(bars), step):
+        short = Q.prepare(bars[:k], vx(k))
+        longer = Q.prepare(bars[: k + 1], vx(k + 1))
         for i in range(k - 40, k):
             assert Q.entry(sid, short, i) == Q.entry(sid, longer, i), (sid, k, i)
             assert Q.exit_(sid, short, i) == Q.exit_(sid, longer, i), (sid, k, i)
-        a = Q.simulate(sid, bars[:k])
-        b = Q.simulate(sid, bars[: k + 1])
+        a = Q.simulate(sid, bars[:k], vix=vx(k))
+        b = Q.simulate(sid, bars[: k + 1], vix=vx(k + 1))
         done = [t for t in b["trades"] if t["exit_i"] < k]
         assert [(t["entry_i"], t["exit_i"]) for t in a["trades"]] == [
             (t["entry_i"], t["exit_i"]) for t in done
@@ -248,6 +247,124 @@ def test_appending_future_bar_keeps_past_signals(sid):
                 assert got["signal_date"] == sd and got["entry_i"] == k
             else:
                 assert any(t["exit_i"] == k for t in b["trades"])
+
+
+@pytest.mark.parametrize("sid", [s for s in Q.PER_SYMBOL if s != "P1"])
+def test_appending_future_bar_keeps_past_signals(sid):
+    """봉을 하나 더 붙여도 지난 봉의 진입·청산 판단과 거래가 그대로다(그날까지 자료만 씀)."""
+    closes = [a * b / 100 for a, b in zip(walk(700, seed=7), wave(700, period=400, amp=0.35))]
+    _check_causal(sid, make_bars(closes))
+
+
+def gappy(n=900, seed=3):
+    """갭이 있는 일봉(시가 = 전날 종가 × 갭) + 구간마다 30 위아래를 오가는 VIX."""
+    rng = random.Random(seed)
+    d, c, bars, vix = date(2015, 1, 5), 100.0, [], []
+    for i in range(n):
+        while d.weekday() >= 5:
+            d += timedelta(days=1)
+        o = c * (1 + rng.gauss(-0.002, 0.012))
+        c = o * (1 + rng.gauss(0.0006, 0.012))
+        bars.append((d.isoformat(), o, max(o, c) * 1.004, min(o, c) * 0.996, c))
+        if i % 3 == 0:  # VIX는 사흘에 이틀만(날짜가 빠진 날은 그 앞 값을 씀)
+            vix.append((d.isoformat(), 0, 0, 0, 40.0 if (i // 60) % 2 else 20.0))
+        d += timedelta(days=1)
+    return bars, vix
+
+
+def test_p1_appending_future_bar_keeps_past_signals():
+    bars, vix = gappy()
+    res = Q.simulate("P1", bars, vix=vix)
+    assert len(res["trades"]) >= 5
+    assert {t["reason_out"] for t in res["trades"]} >= {"익절 2%"}
+    _check_causal("P1", bars, vix, step=3)
+
+
+# ---------------------------------------------------------------- P1 공포장 반등
+
+
+def _p1_bars(closes, gap_open=None, start=date(2020, 3, 2)):
+    """make_bars + 마지막 봉 시가를 gap_open으로(전날 저가 아래면 갭 하락)."""
+    b = make_bars(closes, start=start)
+    if gap_open is not None:
+        d, o, h, lo, c = b[-1]
+        b[-1] = (d, gap_open, max(h, gap_open), min(lo, gap_open), c)
+    return b
+
+
+def _vix_on(bars, level):
+    return [(x[0], 0, 0, 0, level) for x in bars]
+
+
+def test_p1_signal_needs_five_downs_gap_and_vix():
+    closes = [100.0, 101.0, 100.0, 99.0, 98.0, 97.0, 96.0]  # 마지막 5일 연속 하락
+    bars = _p1_bars(closes, gap_open=95.0)  # 전날 저가 = 97×0.99 = 96.03 > 95
+    i = len(bars) - 1
+    ctx = Q.prepare(bars, _vix_on(bars, 35.0))
+    assert Q.entry("P1", ctx, i) == "5일 연속 하락 · 갭 하락 · VIX 35.0"
+    assert Q.exit_("P1", ctx, i) is None
+    # VIX 30은 안 됨(초과여야), VIX 없음도 안 됨
+    assert Q.entry("P1", Q.prepare(bars, _vix_on(bars, 30.0)), i) is None
+    assert Q.entry("P1", Q.prepare(bars), i) is None
+    # 하락 4일뿐
+    b4 = _p1_bars([100.0, 99.0, 102.0, 99.0, 98.0, 97.0, 96.0], gap_open=95.0)
+    assert Q.entry("P1", Q.prepare(b4, _vix_on(b4, 35.0)), i) is None
+    # 갭 없음(시가 ≥ 전날 저가)
+    nogap = _p1_bars(closes, gap_open=96.5)
+    assert Q.entry("P1", Q.prepare(nogap, _vix_on(nogap, 35.0)), i) is None
+
+
+def test_p1_vix_uses_latest_date_not_after():
+    bars = _p1_bars([100.0, 101.0, 100.0, 99.0, 98.0, 97.0, 96.0], gap_open=95.0)
+    last = bars[-1][0]
+    prev = bars[-2][0]
+    # 그날 VIX가 없으면 그 앞 가장 늦은 값(35)
+    assert Q.prepare(bars, [(prev, 0, 0, 0, 35.0)])["vix"][-1] == 35.0
+    # 다음 날 VIX(50)는 보지 않는다
+    nxt = (date.fromisoformat(last) + timedelta(days=1)).isoformat()
+    ctx = Q.prepare(bars, [(prev, 0, 0, 0, 20.0), (nxt, 0, 0, 0, 50.0)])
+    assert ctx["vix"][-1] == 20.0 and Q.entry("P1", ctx, len(bars) - 1) is None
+    # 같은 날짜 값은 쓴다
+    assert Q.prepare(bars, [(prev, 0, 0, 0, 20.0), (last, 0, 0, 0, 31.0)])["vix"][-1] == 31.0
+
+
+def test_p1_exit_fill_rules():
+    e = 100.0  # 익절가 102
+    assert Q.p1_exit(e, 3, ("d", 103.0, 104.0, 102.5, 103.5)) == (103.0, "익절 2%(시가)")
+    assert Q.p1_exit(e, 3, ("d", 101.0, 102.5, 100.0, 101.0)) == (pytest.approx(102.0), "익절 2%")
+    assert Q.p1_exit(e, 3, ("d", 101.0, 101.9, 100.0, 101.0)) is None
+    assert Q.p1_exit(e, 0, ("d", 100.0, 102.0, 99.0, 101.0)) == (pytest.approx(102.0), "익절 2%")
+    # 40일째 시가: 시가가 익절가 위면 익절, 아니면 시간 청산(그날 고가는 안 봄)
+    assert Q.p1_exit(e, 40, ("d", 90.0, 110.0, 89.0, 95.0)) == (90.0, "40일 보유 시가 청산")
+    assert Q.p1_exit(e, 40, ("d", 102.5, 110.0, 89.0, 95.0)) == (102.5, "익절 2%(시가)")
+    assert Q.p1_exit(e, 39, ("d", 90.0, 91.0, 89.0, 90.0)) is None
+
+
+def test_p1_simulate_entry_next_open_and_time_exit():
+    closes = [100.0, 101.0, 100.0, 99.0, 98.0, 97.0, 96.0]
+    bars = _p1_bars(closes, gap_open=95.0)
+    # 다음 날부터 40일 넘게 계속 내려 익절이 안 난다
+    tail = make_bars([95.0 - 0.1 * k for k in range(50)], start=date(2020, 3, 11))
+    bars = bars + tail
+    vix = _vix_on(bars, 35.0)
+    res = Q.simulate("P1", bars, vix=vix)
+    t = res["trades"][0]
+    assert t["signal_date"] == bars[6][0] and t["entry_i"] == 7 and t["fills"][0][1] == bars[7][1]
+    assert t["exit_i"] == 7 + Q.P1_HOLD and t["exit_px"] == bars[47][1]
+    assert t["reason_out"] == "40일 보유 시가 청산"
+    assert t["ret"] == pytest.approx(bars[47][1] * 0.9995 / (bars[7][1] * 1.0005) - 1)
+    # 마지막 봉이 39일째면 다음 시가 청산 대기
+    cut = Q.simulate("P1", bars[:47], vix=vix)
+    assert cut["open"] is not None and cut["pending"][0][1] == "exit"
+
+
+def test_p1_simulate_take_profit():
+    closes = [100.0, 101.0, 100.0, 99.0, 98.0, 97.0, 96.0]
+    bars = _p1_bars(closes, gap_open=95.0) + make_bars([96.0, 97.5], start=date(2020, 3, 11))
+    res = Q.simulate("P1", bars, vix=_vix_on(bars, 35.0))
+    (t,) = res["trades"]
+    entry = bars[7][1]  # 96(make_bars 첫 시가 = 첫 종가)
+    assert t["exit_px"] == pytest.approx(entry * 1.02) and t["reason_out"] == "익절 2%"
 
 
 def test_q6_appending_future_bar_keeps_past_rebalances():
@@ -279,7 +396,8 @@ def test_build_paper_has_quant_accounts(tmp_path, monkeypatch):
     by = {a["key"]: a for a in paper["accounts"]}
     for sid in Q.STRATEGIES:
         a = by[sid]
-        assert a["group"] == "quant" and a["label"] == Q.LABEL and a["curve"][0][0] >= start
+        label = Q.STRATEGIES[sid].get("label", Q.LABEL)
+        assert a["group"] == "quant" and a["label"] == label and a["curve"][0][0] >= start
     q6 = by["Q6"]
     assert q6["open"] and all(p["entry_date"] > start for p in q6["open"])
 
@@ -296,3 +414,19 @@ def test_quant_backtest_rows_and_baselines():
     # 같은 씨앗이면 같은 결과
     again = gose.quant_backtest(series, years=2, runs=5)
     assert [r["random"] for r in again["rows"]] == [r["random"] for r in out["rows"]]
+
+
+def test_p1_same_day_take_profit_closes_in_account():
+    """진입 당일 장중 익절도 계좌가 닫는다(시가 진입 뒤 장중 청산 순서)."""
+    closes = [100.0, 101.0, 100.0, 99.0, 98.0, 97.0, 96.0]
+    bars = _p1_bars(closes, gap_open=95.0) + make_bars(
+        [99.0, 99.0], start=date(2020, 3, 11), spread=0.03
+    )
+    res = Q.simulate("P1", bars, vix=_vix_on(bars, 35.0))
+    (t,) = res["trades"]
+    assert t["entry_i"] == t["exit_i"] == 7 and t["intraday_exit"]
+    row = gose._trade_row("X", t, False)
+    assert row["stop_exit"]
+    cal = [b[0] for b in bars]
+    acct = gose.run_account([row], {"X": {b[0]: b[4] for b in bars}}, cal, keep=None)
+    assert acct["n_closed"] == 1 and not acct["open"] and acct["win_rate"] == 100.0

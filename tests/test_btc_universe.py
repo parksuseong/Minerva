@@ -335,3 +335,30 @@ def test_refresh_ranges_writes_file_and_skips_failures(tmp_path):
     assert saved == {"AAAUSDT": 3.0}
     assert bu.load_ranges(out, now + 49 * 3_600_000) is None  # 48시간 넘으면 안 씀
     assert bu.load_ranges(tmp_path / "none.json", now) is None
+
+
+def test_refresh_recent_writes_7day_winrate(tmp_path, monkeypatch):
+    now = 1_795_000_000_000
+    calls = []
+
+    def fake_fetch(sym, start, end, get):
+        calls.append((sym, start, end))
+        if sym == "BADUSDT":
+            raise OSError("down")
+        return [[0, 1, 1, 1, 1]] * (bu.WARMUP + 10)
+
+    monkeypatch.setattr(bu, "fetch_15m", fake_fetch)
+    res = {"trades": 4, "wins": 3, "winrate": 75.0, "ret": 9.9}
+    monkeypatch.setattr(bu, "backtest", lambda rows, params, frm: res)
+    out = tmp_path / "recent.json"
+    data = bu.refresh_recent(out, ["AAAUSDT", "BADUSDT"], {}, now)
+    assert data["stats"] == {"AAAUSDT": {"trades": 4, "wins": 3, "winrate": 75.0, "ret": 9.9}}
+    assert "BADUSDT" in data["errors"]
+    end = now - now % bu.BAR_MS
+    assert calls[0][2] == end and calls[0][1] == end - 7 * bu.DAY_MS - (bu.WARMUP + 50) * bu.BAR_MS
+    assert bu.load_recent(out, now + 3_600_000)["AAAUSDT"]["winrate"] == 75.0
+    assert bu.load_recent(out, now + 49 * 3_600_000) is None
+    assert bu.recent_ok({"trades": 3, "winrate": 60.0})
+    assert not bu.recent_ok({"trades": 2, "winrate": 100.0})
+    assert not bu.recent_ok({"trades": 9, "winrate": 59.9})
+    assert not bu.recent_ok(None)

@@ -336,6 +336,7 @@ def universe(now_ms: int | None = None) -> dict:
     syms = tuple(dict.fromkeys(data["symbols"]))
     stats = {s: data["stats"].get(s) or {} for s in syms}
     ranges = btc_universe.load_ranges(DIR / "ranges.json", now_ms)
+    recent = btc_universe.load_recent(DIR / "recent.json", now_ms)
     return {
         "source": "universe",
         "updated_at": data.get("updated_at"),
@@ -345,8 +346,14 @@ def universe(now_ms: int | None = None) -> dict:
         "stats": stats,
         # 변동폭 파일이 없거나 48시간 넘었으면 새 진입을 멈춘다(레드팀: 조건 없이 열면 사용자 규칙
         # "2프로 이상만"보다 느슨해진다). 보유분 관리·청산은 그대로
-        "tradable": tradable_set(syms, stats, ranges) if ranges is not None else frozenset(),
+        # 최근 7일 승률 파일도 같다(없거나 48시간 넘으면 새 진입 멈춤)
+        "tradable": (
+            tradable_set(syms, stats, ranges, recent)
+            if ranges is not None and recent is not None
+            else frozenset()
+        ),
         "ranges": ranges,
+        "recent": recent,
     }
 
 
@@ -356,19 +363,23 @@ def universe(now_ms: int | None = None) -> dict:
 NO_TRADE_SYMBOLS = frozenset({"BZUSDT"})
 
 
-def tradable_set(syms, stats: dict, ranges: dict | None = None) -> frozenset:
-    """새로 들어갈 수 있는 종목: 백테스트 수익 > 0(사용자 2026-11-13 "백테스트해서 수익률이 +인것만
-    매매하자"), 표본이 충분하고, 최근 7일 평균 하루 변동폭 ≥ MIN_DAY_RANGE_PCT(사용자 2026-11-16
-    "2프로 이상에 백테스트 수익 +만", 승률은 보지 않음). ranges가 None(ranges.json이 없거나
-    오래됨)이면 변동폭은 보지 않는다. 파일은 있는데 그 종목이 없으면 들어가지 않는다.
+def tradable_set(
+    syms, stats: dict, ranges: dict | None = None, recent: dict | None = None
+) -> frozenset:
+    """새로 들어갈 수 있는 종목: 최근 7일 엔진 신호 백테스트 승률 ≥ 60%·거래 3회 이상(사용자
+    2026-11-18 "승률 60프로이상인거로 해. Bz제외하고", `btc_universe.recent_ok`), 최근 7일 평균
+    하루 변동폭 ≥ MIN_DAY_RANGE_PCT(사용자 2026-11-16 "2프로 이상"), 매매 금지 종목 아님,
+    1년 자료 표본 충분(거래 20회·60일, 갓 상장 종목 제외).
+    1년 백테스트 수익 > 0 조건(11-13)은 11-18에 이것으로 바꿨다(1년 통계는 우선순위에만).
+    ranges·recent가 None(파일이 없거나 오래됨)이면 그 조건은 보지 않는다(엔진은 None이면
+    진입을 아예 멈춘다, `universe`). 파일은 있는데 그 종목이 없으면 들어가지 않는다.
     나머지는 신호·화면만."""
     ok = set()
     for s in syms:
-        st = stats.get(s) or {}
         if (
             s not in NO_TRADE_SYMBOLS
-            and float(st.get("ret") or 0) > 0
-            and not btc_universe.low_sample(st)
+            and not btc_universe.low_sample(stats.get(s) or {})
+            and (recent is None or btc_universe.recent_ok(recent.get(s)))
             and (ranges is None or float(ranges.get(s) or 0) >= btc_universe.MIN_DAY_RANGE_PCT)
         ):
             ok.add(s)
@@ -3999,12 +4010,16 @@ def prepare(ctx: Ctx, state: dict, sym: str, sig: dict, halts: list[str], t_star
     elif (
         not tradable(sym)
         and UNIVERSE.get("source") == "universe"
-        and UNIVERSE.get("ranges") is None
+        and (UNIVERSE.get("ranges") is None or UNIVERSE.get("recent") is None)
     ):
-        out["skip"] = "변동폭 파일(ranges.json)이 없거나 48시간 넘어 새 진입 멈춤(보유분 정리만)"
+        out["skip"] = (
+            "변동폭·7일 승률 파일(ranges.json·recent.json)이 없거나 48시간 넘어 새 진입 멈춤"
+            "(보유분 정리만)"
+        )
     elif not tradable(sym):
         out["skip"] = (
-            "7일 변동폭 2% 미만·백테스트 손실·표본 부족이라 새로 들어가지 않음(보유분 정리만)"
+            "7일 승률 60% 미만(거래 3회 미만)·7일 변동폭 2% 미만이라 새로 들어가지 않음"
+            "(보유분 정리만)"
         )
     elif _clock() - t_start > MAX_RUN_SECS:
         out["skip"] = f"이번 실행이 {MAX_RUN_SECS}초를 넘겨 새 진입은 건너뜀(통신 지연)"
@@ -4311,7 +4326,7 @@ def trade(ctx: Ctx, state: dict, sigs: dict[str, dict], halts: list[str], t_star
     for sym, g in others.items():
         rate = float(SYMBOL_WINRATE.get(sym) or 0)
         if not tradable(sym):
-            passed[sym] = "7일 변동폭 2% 미만·백테스트 손실·표본 부족(신호 표시만, 진입 안 함)"
+            passed[sym] = "7일 승률 60% 미만·7일 변동폭 2% 미만(신호 표시만, 진입 안 함)"
         elif pos and rate < a_rate + SWITCH_EDGE_PP:
             passed[sym] = (
                 f"승률 {rate:g}%가 보유 {_name(a_sym)} {a_rate:g}% + {SWITCH_EDGE_PP:g}%p보다 낮음"

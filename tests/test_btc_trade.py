@@ -2644,6 +2644,12 @@ def universe_file(rates: dict, at: datetime = NOW, extra: dict | None = None) ->
     # 7일 변동폭(2026-11-16): 모두 2% 넘게(변동폭 조건은 따로 시험)
     rng = {"updated_at": at.strftime("%Y-%m-%d %H:%M"), "ranges": dict.fromkeys(rates, 5.0)}
     (bt.DIR / "ranges.json").write_text(json.dumps(rng))
+    # 최근 7일 승률(2026-11-18): 모두 통과하게(승률 조건은 따로 시험)
+    rec = {
+        "updated_at": at.strftime("%Y-%m-%d %H:%M"),
+        "stats": {s: {"trades": 5, "wins": 4, "winrate": 80.0, "ret": 10.0} for s in rates},
+    }
+    (bt.DIR / "recent.json").write_text(json.dumps(rec))
 
 
 # 보유 BTC(40%)보다 SWITCH_EDGE_PP(1%p) 이상 높은 종목이 바꾸기 후보가 되는 승률
@@ -3354,23 +3360,44 @@ def test_prepare_attempts_are_capped(env, multi, monkeypatch):
     assert all(state()["last_bars"][s] == BAR for s in bt.SYMBOLS)
 
 
-def test_tradable_set_needs_profit_sample_and_day_range():
-    stats = {
-        "BNBUSDT": {"winrate": 56.9, "ret": 99.4, "trades": 123, "days": 365},
-        "XRPUSDT": {"winrate": 30.0, "ret": 82.4, "trades": 151, "days": 365},  # 승률은 안 본다
-        "XAUUSDT": {"winrate": 57.9, "ret": -21.0, "trades": 95, "days": 332},  # 손실
-        "NEWUSDT": {"winrate": 70.0, "ret": 50.0, "trades": 5, "days": 30},  # 표본 작음
-        "NVDAUSDT": {"winrate": 54.9, "ret": -27.7, "trades": 91, "days": 227},  # 손실
-        "QQQUSDT": {"winrate": 59.6, "ret": 3.3, "trades": 52, "days": 182},  # 변동폭 작음
-        "ETHUSDT": {"winrate": 43.3, "ret": 89.6, "trades": 104, "days": 365},  # 변동폭 파일에 없음
+def test_tradable_set_needs_recent_winrate_sample_and_day_range():
+    one_year = {"ret": -20.0, "trades": 100, "days": 365}  # 1년 손실이어도 7일 승률로 판단(11-18)
+    stats = {s: dict(one_year) for s in ("AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT", "EEEUSDT")}
+    stats["NEWUSDT"] = {"ret": 50.0, "trades": 5, "days": 30}  # 1년 표본 작음(갓 상장)
+    recent = {
+        "AAAUSDT": {"trades": 3, "wins": 2, "winrate": 66.7},
+        "BBBUSDT": {"trades": 5, "wins": 3, "winrate": 60.0},  # 경계 60.0은 넣는다
+        "CCCUSDT": {"trades": 6, "wins": 3, "winrate": 50.0},  # 60% 미만
+        "DDDUSDT": {"trades": 1, "wins": 1, "winrate": 100.0},  # 거래 3회 미만
+        "NEWUSDT": {"trades": 4, "wins": 4, "winrate": 100.0},
+        # EEE: 7일 파일에 없음
     }
-    # 변동폭 파일이 없으면(None) 수익 +·표본만
-    assert bt.tradable_set(list(stats), stats) == {"BNBUSDT", "XRPUSDT", "QQQUSDT", "ETHUSDT"}
-    ranges = {"BNBUSDT": 4.9, "XRPUSDT": 2.0, "QQQUSDT": 1.99, "NVDAUSDT": 8.7, "XAUUSDT": 2.6}
-    # 사용자 2026-11-16 "2프로 이상에 백테스트 수익 +만": 2.0은 넣고 1.99·파일에 없는 종목은 뺀다
-    assert bt.tradable_set(list(stats), stats, ranges) == {"BNBUSDT", "XRPUSDT"}
+    ranges = dict.fromkeys(stats, 5.0)
+    assert bt.tradable_set(list(stats), stats, ranges, recent) == {"AAAUSDT", "BBBUSDT"}
+    # 변동폭 2% 미만은 승률이 높아도 뺀다
+    ranges["AAAUSDT"] = 1.99
+    assert bt.tradable_set(list(stats), stats, ranges, recent) == {"BBBUSDT"}
     # universe.json이 없을 때(네 종목): 수익 +인 BTC·ETH
     assert bt._default_tradable() == {"BTCUSDT", "ETHUSDT"}
+
+
+def test_universe_stops_entries_without_recent_file(env):
+    now = int(datetime(2026, 11, 18, 12, 0, tzinfo=KST).timestamp() * 1000)
+    st = {"winrate": 30.0, "ret": 10.0, "trades": 50, "days": 182}
+    (bt.DIR / "universe.json").write_text(
+        json.dumps(
+            {"updated_at": "2026-11-18 06:05", "symbols": ["AAAUSDT"], "stats": {"AAAUSDT": st}}
+        )
+    )
+    rng = {"updated_at": "2026-11-18 09:10", "ranges": {"AAAUSDT": 3.1}}
+    (bt.DIR / "ranges.json").write_text(json.dumps(rng))
+    u = bt.universe(now)
+    assert u["recent"] is None and u["tradable"] == frozenset()
+    rec = {"updated_at": "2026-11-18 09:10", "stats": {"AAAUSDT": {"trades": 4, "winrate": 75.0}}}
+    (bt.DIR / "recent.json").write_text(json.dumps(rec))
+    assert bt.universe(now)["tradable"] == {"AAAUSDT"}
+    # 48시간 넘은 7일 승률 파일은 안 쓴다 → 새 진입 멈춤
+    assert bt.universe(now + 3 * 86_400_000)["tradable"] == frozenset()
 
 
 def test_universe_reads_fresh_ranges_only(env):
@@ -3387,6 +3414,9 @@ def test_universe_reads_fresh_ranges_only(env):
     )
     rng = {"updated_at": "2026-11-16 09:10", "ranges": {"AAAUSDT": 3.1, "BBBUSDT": 1.2}}
     (bt.DIR / "ranges.json").write_text(json.dumps(rng))
+    good = {"trades": 4, "wins": 3, "winrate": 75.0}
+    rec = {"updated_at": "2026-11-16 09:10", "stats": {"AAAUSDT": good, "BBBUSDT": good}}
+    (bt.DIR / "recent.json").write_text(json.dumps(rec))
     u = bt.universe(now)
     assert u["tradable"] == {"AAAUSDT"}
     assert u["ranges"] == {"AAAUSDT": 3.1, "BBBUSDT": 1.2}
@@ -3446,10 +3476,13 @@ def test_public_stops_after_rate_limit(monkeypatch):
         bt._RATE_HIT.clear()
 
 
-def test_flat_signal_loss_symbol_not_entered(env, multi, monkeypatch):
+def test_flat_signal_low_recent_winrate_symbol_not_entered(env, multi, monkeypatch):
     ex = MultiExchange()  # 드라이런
     rates = {"BTCUSDT": 54, "ETHUSDT": 44, "SOXLUSDT": 17, "NVDAUSDT": 49}
-    grow(monkeypatch, ex, rates, extra={"ETHUSDT": {"ret": -5.0}})  # ETH만 백테스트 손실
+    grow(monkeypatch, ex, rates)
+    rec = json.loads((bt.DIR / "recent.json").read_text())
+    rec["stats"]["ETHUSDT"] = {"trades": 4, "wins": 1, "winrate": 25.0}  # ETH만 7일 승률 낮음
+    (bt.DIR / "recent.json").write_text(json.dumps(rec))
     sig_all(monkeypatch, multi, {"ETHUSDT": "long"}, rates)
     asked = ai_answers(monkeypatch, "모르겠어요")
     mrun(env, ex, multi)
@@ -3463,8 +3496,11 @@ def test_held_symbol_not_tradable_closes_without_flip(env, multi, monkeypatch):
     live(env)
     ex = MultiExchange()
     held_btc_long(ex)
-    # 보유 BTC 백테스트 손실 → 진입 불가
-    universe_file(HELD_RATES, extra={"BTCUSDT": {"ret": -1.0}})
+    # 보유 BTC 최근 7일 승률 낮음 → 진입 불가
+    universe_file(HELD_RATES)
+    rec = json.loads((bt.DIR / "recent.json").read_text())
+    rec["stats"]["BTCUSDT"] = {"trades": 5, "wins": 1, "winrate": 20.0}
+    (bt.DIR / "recent.json").write_text(json.dumps(rec))
     sig_all(monkeypatch, multi, {"BTCUSDT": "short"}, bt.DEFAULT_SYMBOLS, bar=BAR + bt.BAR_MS)
     bt.run(now=NOW.replace(minute=45), client=ex, market_=multi, send=env["send"])
     assert ex.amts["BTCUSDT"] == 0 and state().get("position") is None
@@ -5270,6 +5306,7 @@ def test_flip_held_3x_position_sets_1x_only_after_close(env, monkeypatch):
 
 def test_tradable_set_skips_no_trade_symbols():
     stats = {s: {"ret": 50.0, "trades": 100, "days": 365.0} for s in ("BZUSDT", "BTCUSDT")}
-    ok = bt.tradable_set(["BZUSDT", "BTCUSDT"], stats, {"BZUSDT": 5.0, "BTCUSDT": 5.0})
+    rec = dict.fromkeys(stats, {"trades": 3, "wins": 2, "winrate": 66.7})
+    ok = bt.tradable_set(["BZUSDT", "BTCUSDT"], stats, {"BZUSDT": 5.0, "BTCUSDT": 5.0}, rec)
     assert "BZUSDT" not in ok
     assert "BTCUSDT" in ok

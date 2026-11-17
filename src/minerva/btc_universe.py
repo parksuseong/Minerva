@@ -240,6 +240,9 @@ def backtest(rows: list[list], params: dict, from_ms: int) -> dict:
         "mdd": round(res["mdd"], 1),
         "stops": res["stops"],
         "days": round(days, 1),
+        # 끝에 아직 열린 포지션(종가로 정리해 위 수에 들어감): 최근 7일 승률은 이걸 뺀다
+        "holding": bool(res["holding"]),
+        "end_win": bool(res["holding"] and res["exits"] and res["exits"][-1]["net"] > 0),
     }
 
 
@@ -484,13 +487,28 @@ def refresh_recent(
                 errors[sym] = "15분봉 부족"
                 continue
             r = backtest(rows, params, frm)
-            stats[sym] = {k: r[k] for k in ("trades", "wins", "winrate", "ret")}
+            # 끝난 거래만 센다(끝에 열린 포지션은 종가 정리라 승패가 아직 안 났다)
+            n = r["trades"] - (1 if r.get("holding") else 0)
+            w = r["wins"] - (1 if r.get("end_win") else 0)
+            stats[sym] = {
+                "trades": n,
+                "wins": w,
+                "winrate": round(w / n * 100, 1) if n else 0.0,
+                "ret": r["ret"],
+                "at": now_ms,
+            }
         except RateLimited:
             raise
-        except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+        except (OSError, ValueError, KeyError, IndexError, TypeError, ArithmeticError) as e:
             errors[sym] = f"{type(e).__name__}: {e}"[:200]
-            if sym in before:
-                stats[sym] = before[sym]
+            # 앞 값은 잰 때(at)부터 48시간 안일 때만 이어 쓴다(매일 실패해도 무한히 안 남게)
+            old = before.get(sym) or {}
+            try:
+                fresh = now_ms - int(old.get("at") or 0) <= RANGE_FRESH_HOURS * 3_600_000
+            except (TypeError, ValueError):
+                fresh = False
+            if old and fresh:
+                stats[sym] = old
     data = {
         "updated_at": datetime.fromtimestamp(now_ms / 1000, KST).strftime("%Y-%m-%d %H:%M"),
         "days": RECENT_DAYS,
@@ -586,9 +604,13 @@ def main(argv: list[str] | None = None) -> int:
         except RateLimited as e:
             log.error("바이낸스 요청 한도(%s): 최근 7일 승률 멈춤. 파일은 그대로", e)
             return 2
-        for sym, st in sorted(rec["stats"].items(), key=lambda kv: -kv[1]["winrate"]):
+        rows = sorted(rec["stats"].items(), key=lambda kv: -float(kv[1].get("winrate") or 0))
+        for sym, st in rows:
             mark = "" if recent_ok(st) else "  (진입 안 함)"
-            print(f"{sym:16s} 7일 {st['wins']}/{st['trades']} {st['winrate']:5.1f}%{mark}")
+            print(
+                f"{sym:16s} 7일 {st.get('wins', 0)}/{st.get('trades', 0)} "
+                f"{float(st.get('winrate') or 0):5.1f}%{mark}"
+            )
         for sym, r in sorted(data["ranges"].items(), key=lambda kv: -kv[1]):
             print(f"{sym:16s} {r:6.2f}%{'' if r >= MIN_DAY_RANGE_PCT else '  (2% 미만)'}")
         print(f"→ {out}, 실패 {len(data['errors'])}")

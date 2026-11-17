@@ -5212,15 +5212,15 @@ def test_trail_move_text_without_best():
 
 
 @pytest.mark.live_constants
-def test_live_leverage_1x_window_365():
-    # 사용자 2026-11-17 "가장 최선을 네가 알아서 선택해" → 시점 시뮬레이션 뒤 1배·365일
+def test_live_leverage_3x_window_365():
+    # 사용자 2026-11-17 위임 → 1배·365일, 2026-11-18 "왜 1배야? 3배로 해야지" → 3배
     from minerva import btc_universe
 
-    assert bt.LEVERAGE == 1 and bt.LEGACY_LEVERAGE == 3
+    assert bt.LEVERAGE == 3 and bt.LEGACY_LEVERAGE == 3
     # 종목 선정 백테스트는 365일 창을 고른 시점 시뮬레이션과 같은 3배
     assert btc_universe.LEVERAGE == 3 and btc_universe.WINDOW_DAYS == 365
     assert "선정 백테스트 3배" in btc_universe.RULE and "365일" in btc_universe.RULE
-    assert "엔진 실매매는 1배" in btc_universe.RULE and "182" not in btc_universe.RULE
+    assert "엔진 실매매는 3배" in btc_universe.RULE and "182" not in btc_universe.RULE
 
 
 def test_pos_leverage_legacy_and_new():
@@ -5243,42 +5243,45 @@ def test_legacy_position_close_text_uses_3x(env, monkeypatch):
 
 
 @pytest.mark.live_constants
-def test_new_dry_position_stores_leverage_1(env, monkeypatch):
+def test_new_dry_position_stores_leverage_3(env, monkeypatch):
     ex = FakeExchange()
     with_signal(monkeypatch, "long")
     run(env, ex)
     pos = state()["position"]
-    assert pos["side"] == "long" and pos["leverage"] == 1
-    assert any("1배" in m and "진입 예정" in m for m in env["sent"])
+    assert pos["side"] == "long" and pos["leverage"] == 3
+    assert any("3배" in m and "진입 예정" in m for m in env["sent"])
 
 
 @pytest.mark.live_constants
-def test_new_live_position_stores_leverage_1(env, monkeypatch):
+def test_new_live_position_stores_leverage_3(env, monkeypatch):
     live(env)
     ex = FakeExchange()
-    ex.leverage = 3
+    ex.leverage = 1
     with_signal(monkeypatch, "long")
     run(env, ex)
     pos = state()["position"]
-    assert pos["leverage"] == 1 and ex.leverage == 1
-    assert ("POST", "/fapi/v1/leverage", {"symbol": "BTCUSDT", "leverage": 1}) in ex.writes
+    assert pos["leverage"] == 3 and ex.leverage == 3
+    assert ("POST", "/fapi/v1/leverage", {"symbol": "BTCUSDT", "leverage": 3}) in ex.writes
 
 
 @pytest.mark.live_constants
-def test_size_qty_at_1x_uses_97pct_of_available():
-    assert bt.LEVERAGE == 1 and bt.FEE_BUFFER == pytest.approx(0.03)
+def test_size_qty_at_3x_uses_97pct_of_available():
+    assert bt.LEVERAGE == 3 and bt.FEE_BUFFER == pytest.approx(0.03)
     qty, why = bt.size_qty(1000.0, 100.0, 1.0, {**FLT, "step": "0.001", "min_notional": 5.0})
-    assert not why and float(qty) == pytest.approx(9.7, abs=0.001)  # 1000 × 0.97 × 1 / 100
+    assert not why and float(qty) == pytest.approx(29.1, abs=0.001)  # 1000 × 0.97 × 3 / 100
 
 
 @pytest.mark.live_constants
-def test_flip_held_3x_position_sets_1x_only_after_close(env, monkeypatch):
-    # 레드팀 2026-11-17: 들고 있는 3배 포지션의 반대 신호에 닫기 전에 1배로 바꾸면 거래소가
-    # 거부할 수 있다(그러면 갈아타기가 청산만으로 끝남). 닫은 뒤에만 1배로 바꾼다
+def test_flip_held_1x_position_sets_3x_only_after_close(env, monkeypatch):
+    # 레드팀 2026-11-17: 들고 있는 포지션의 반대 신호에 닫기 전에 배율을 바꾸면 거래소가
+    # 거부할 수 있다(그러면 갈아타기가 청산만으로 끝남). 닫은 뒤에만 엔진 배율로 바꾼다
     live(env)
     ex = FakeExchange()
-    ex.leverage = 3
+    ex.leverage = 1
     engine_long(ex)
+    st = state()
+    st["position"]["leverage"] = 1  # 1배 기간(11-17~18)에 연 포지션
+    bt._save(bt.DIR / "state.json", st)
     handle = ex._handle
 
     def strict(method, path, p):
@@ -5298,10 +5301,10 @@ def test_flip_held_3x_position_sets_1x_only_after_close(env, monkeypatch):
     ]
     assert lev_at and close_at and lev_at[0] > close_at[0]
     pos = state()["position"]
-    assert pos["side"] == "short" and pos["leverage"] == 1 and ex.leverage == 1
+    assert pos["side"] == "short" and pos["leverage"] == 3 and ex.leverage == 3
     last = jsonl("closed.jsonl")[-1]
-    assert last["side"] == "long" and last["leverage"] == 3
-    assert any("× 3배" in m for m in env["sent"])
+    assert last["side"] == "long" and last["leverage"] == 1
+    assert any("× 1배" in m for m in env["sent"])
 
 
 def test_tradable_set_skips_no_trade_symbols():

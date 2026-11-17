@@ -307,6 +307,7 @@
     return `<section class="card">
       <h2>${esc(a.key)} · ${esc(a.name)} <span class="mini">${esc(stop)} · ${esc((a.rule_ids || []).join(", "))}${a.side === "short" ? " · 숏(참고)" : ""}${v2}${a.group === "quant" ? ` · <b>${esc(a.label || "퀀트")}</b>` : ""}</span></h2>
       ${src}
+      ${a.caveat ? `<p class="mini">⚠️ ${esc(a.caveat)}</p>` : ""}
       <p><b>${pct(a.return_pct)}</b> 시작 뒤 · 평가 ${usd(a.equity)} / ${usd(cap)} · 최대 낙폭 ${pct(a.mdd_pct)}<br>
         닫힌 거래 ${a.n_closed}번 · 승률 ${a.win_rate == null ? "-" : `${num(a.win_rate, 1)}%`} ·
         보유 ${(a.open || []).length}/10 · 자리 없어 건너뜀 ${a.skipped}번</p>
@@ -326,7 +327,7 @@
     const spy = q.buy_hold_spy;
     const rows = (q.rows || []).map((r) => {
       const rd = r.random || {};
-      return `<tr><td><b>${esc(r.key)}</b><br><span class="mini">${esc(r.name)}</span></td>
+      return `<tr><td><b>${esc(r.key)}</b><br><span class="mini">${esc(r.name)}</span>${r.caveat ? `<br><span class="mini">⚠️ ${esc(r.caveat)}</span>` : ""}</td>
         <td>${pct(r.cagr, 1)}</td><td>${pct(r.mdd, 1)}</td><td>${num(r.trades, 0)}</td>
         <td>${r.win_rate == null ? "-" : `${num(r.win_rate, 1)}%`}</td><td>${r.avg_hold_days == null ? "-" : `${num(r.avg_hold_days, 0)}일`}</td>
         <td>${pct(rd.cagr_median, 1)}<br><span class="mini">${num(rd.cagr_p05, 1)} ~ ${num(rd.cagr_p95, 1)}</span></td>

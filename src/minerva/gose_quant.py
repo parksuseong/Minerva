@@ -16,6 +16,11 @@
 - Q6 횡단면 모멘텀(Jegadeesh·Titman 1993 "Returns to Buying Winners and Selling Losers"):
   월말마다 전 종목을 12-1개월 수익으로 줄 세워 상위 10개를 보유, 매달 바꾼다.
   종목 하나로 정할 수 없어 `momentum_portfolio`가 종목 전체를 한꺼번에 본다.
+- P1 공포장 반등(공개 기법이 아니라 파라미터 탐색으로 찾은 규칙,
+  학습 2010~19, 검증 2020~26·2000~09):
+  종가가 5일 연속 전날 종가보다 낮고, 그날 시가 < 전날 저가(갭 하락), ^VIX 종가(같은 날짜 또는
+  그 앞 가장 늦은 날짜, 미래 없음) > 30이면 진입. 익절 진입가×1.02(시가가 이미 넘으면 그 시가,
+  아니면 고가가 닿을 때 목표가), 못 닿으면 보유 40일 뒤 시가에 청산. 손절 없음. ^VIX는 신호원일 뿐.
 
 표준편차는 모집단 식(n으로 나눔), 볼린저의 원래 정의와 같다.
 """
@@ -59,10 +64,26 @@ STRATEGIES = {
         "name": "횡단면 모멘텀 (월말 12-1개월 수익 상위 10 보유)",
         "source": "Jegadeesh·Titman (1993) 모멘텀",
     },
+    "P1": {
+        "name": "공포장 반등 (5일 연속 하락 + 갭 하락 + VIX > 30 → 익절 2% 또는 40일)",
+        "source": "파라미터 탐색 규칙(학습 2010~19, 검증 2020~26·2000~09)",
+        "label": "퀀트(파라미터 탐색 규칙)",
+        "caveat": (
+            "승률 높음(2000~2026 거래 96%)·수익 작음(계좌 연 약 2.4%), 공포장(VIX>30)에서만 매매, "
+            "손절 없음 — 2008년 같은 폭락에서 거래당 최악 −55%. 파라미터 탐색으로 찾은 규칙"
+            "(학습 2010~19, 검증 2020~26·2000~09)."
+        ),
+    },
 }
 for _s in STRATEGIES.values():
     _s.update(side="long", timeframe="D", max_hold=None, rule_ids=[_s["source"]])
-PER_SYMBOL = ("Q1", "Q2", "Q3", "Q4", "Q5")
+STRATEGIES["P1"]["max_hold"] = 40
+PER_SYMBOL = ("Q1", "Q2", "Q3", "Q4", "Q5", "P1")
+
+P1_DOWN_DAYS = 5
+P1_VIX = 30.0
+P1_TP = 0.02
+P1_HOLD = 40
 
 
 # ---------------------------------------------------------------- 지표
@@ -125,8 +146,20 @@ def month_end(dates: list, i: int) -> bool:
     return i > 0 and dates[i - 1][:7] != dates[i][:7] and not _is_last_weekday(dates[i - 1])
 
 
-def prepare(bars: list) -> dict:
-    """Q1~Q5가 쓰는 지표를 한 번에 계산한다."""
+def align_vix(dates: list, vix: list | None) -> list:
+    """날짜마다 그 날짜 이하 가장 늦은 ^VIX 종가(없으면 None). 그 날짜 뒤 값은 보지 않는다."""
+    if not vix:
+        return [None] * len(dates)
+    vd = [b[0] for b in vix]
+    out: list = []
+    for d in dates:
+        j = bisect_right(vd, d) - 1
+        out.append(vix[j][4] if j >= 0 else None)
+    return out
+
+
+def prepare(bars: list, vix: list | None = None) -> dict:
+    """Q1~Q5·P1이 쓰는 지표를 한 번에 계산한다. vix: ^VIX 일봉(P1만 씀, 없으면 P1 신호 없음)."""
     dates = [b[0] for b in bars]
     highs = [b[2] for b in bars]
     lows = [b[3] for b in bars]
@@ -136,7 +169,10 @@ def prepare(bars: list) -> dict:
     return {
         "bars": bars,
         "dates": dates,
+        "open": [b[1] for b in bars],
+        "low": lows,
         "close": closes,
+        "vix": align_vix(dates, vix),
         "hh55": prior_max(highs, 55),
         "ll20": prior_min(lows, 20),
         "sma5": sma(closes, 5),
@@ -182,7 +218,41 @@ def entry(sid: str, ctx: dict, i: int) -> str | None:
             return None
         m = momentum(ctx["close"], i)
         return f"월말 12-1개월 {m * 100:+.1f}%" if m is not None and m > 0 else None
+    if sid == "P1":
+        return p1_signal(ctx, i)
     raise KeyError(sid)
+
+
+def p1_signal(ctx: dict, i: int) -> str | None:
+    """P1: i봉까지 5일 연속 종가 하락 + 시가 < 전날 저가 + VIX > 30."""
+    if i < P1_DOWN_DAYS:
+        return None
+    cl = ctx["close"]
+    if not all(cl[k] < cl[k - 1] for k in range(i - P1_DOWN_DAYS + 1, i + 1)):
+        return None
+    if not ctx["open"][i] < ctx["low"][i - 1]:
+        return None
+    v = ctx["vix"][i]
+    if v is None or not v > P1_VIX:
+        return None
+    return f"5일 연속 하락 · 갭 하락 · VIX {v:.1f}"
+
+
+def p1_exit(entry_px: float, held: int, bar: tuple) -> tuple | None:
+    """P1 보유 중 한 봉의 청산(가격, 사유) 또는 None. held = 진입 봉부터 센 보유 일수(진입일 0).
+
+    시가가 이미 익절가 이상이면 그 시가, 아니면 보유 40일이 되면 그 시가, 아니면 고가가
+    익절가에 닿으면 익절가. 진입 봉(held 0)은 시가가 곧 진입가라 고가만 본다.
+    """
+    target = entry_px * (1 + P1_TP)
+    o, h = bar[1], bar[2]
+    if held > 0 and o >= target:
+        return o, "익절 2%(시가)"
+    if held >= P1_HOLD:
+        return o, f"{P1_HOLD}일 보유 시가 청산"
+    if h >= target:
+        return target, "익절 2%"
+    return None
 
 
 def exit_(sid: str, ctx: dict, i: int) -> str | None:
@@ -212,6 +282,8 @@ def exit_(sid: str, ctx: dict, i: int) -> str | None:
             return None
         m = momentum(ctx["close"], i)
         return f"월말 12-1개월 {m * 100:+.1f}%" if m is not None and m <= 0 else None
+    if sid == "P1":
+        return None  # 종가 청산 신호 없음: 익절·시간 청산은 `simulate`가 봉 안에서 본다
     raise KeyError(sid)
 
 
@@ -219,15 +291,19 @@ def _ret(fill_px: float, exit_px: float, fee: float) -> float:
     return exit_px * (1 - fee) / (fill_px * (1 + fee)) - 1.0
 
 
-def simulate(sid: str, bars: list, fee: float = 0.0005, ctx: dict | None = None) -> dict:
-    """Q1~Q5를 한 종목 일봉 위에서 돌린다. 반환 형식은 `gose_rules.simulate`와 같다.
+def simulate(
+    sid: str, bars: list, fee: float = 0.0005, ctx: dict | None = None, vix: list | None = None
+) -> dict:
+    """Q1~Q5·P1을 한 종목 일봉 위에서 돌린다. 반환 형식은 `gose_rules.simulate`와 같다.
 
     {"trades": [...], "pending": [(신호일, 종류, 종가, 사유)], "open": 보유 중 거래 또는 None}
     거래: entry_i/exit_i, entry_date/exit_date, signal_date, side, fills[(날짜, 가격, 1.0, 사유)],
           exit_px, reason_in, reason_out, ret(수수료 뒤).
     """
     if ctx is None:
-        ctx = prepare(bars)
+        ctx = prepare(bars, vix)
+    if sid == "P1":
+        return _simulate_p1(bars, fee, ctx)
     n = len(bars)
     trades, pending = [], []
     pos = None
@@ -268,6 +344,53 @@ def simulate(sid: str, bars: list, fee: float = 0.0005, ctx: dict | None = None)
                 order = ("entry", r, bars[i][0])
         if order is not None and i == n - 1:
             pending.append((order[2], order[0], bars[i][4], order[1]))
+    return {"trades": trades, "pending": pending, "open": pos}
+
+
+def _simulate_p1(bars: list, fee: float, ctx: dict) -> dict:
+    """P1: 신호 다음 시가 진입, 봉마다 `p1_exit`. 보유 중 신호는 무시(한 종목 한 포지션)."""
+    n = len(bars)
+    trades, pending = [], []
+    pos = None
+    order = None  # (사유, 신호일)
+    for i in range(n):
+        if order is not None:
+            reason, sd = order
+            order = None
+            o = bars[i][1]
+            pos = {
+                "sid": "P1",
+                "side": "long",
+                "entry_i": i,
+                "entry_date": bars[i][0],
+                "signal_date": sd,
+                "fills": [(bars[i][0], o, 1.0, reason)],
+                "reason_in": reason,
+                "avg": o,
+            }
+        if pos is not None:
+            got = p1_exit(pos["avg"], i - pos["entry_i"], bars[i])
+            if got is not None:
+                px, why = got
+                pos.update(
+                    exit_i=i,
+                    exit_date=bars[i][0],
+                    exit_px=px,
+                    reason_out=why,
+                    ret=_ret(pos["avg"], px, fee),
+                    intraday_exit=why == "익절 2%",  # 장중 체결(시가 청산이 아님)
+                )
+                trades.append(pos)
+                pos = None  # 그날 장중·시가에 닫혔으면 그날 종가 신호는 다시 본다
+            else:
+                if i == n - 1 and i - pos["entry_i"] + 1 >= P1_HOLD:
+                    pending.append((bars[i][0], "exit", bars[i][4], f"{P1_HOLD}일 보유 시가 청산"))
+                continue
+        r = p1_signal(ctx, i)
+        if r is not None:
+            order = (r, bars[i][0])
+            if i == n - 1:
+                pending.append((bars[i][0], "entry", bars[i][4], r))
     return {"trades": trades, "pending": pending, "open": pos}
 
 

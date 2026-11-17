@@ -238,7 +238,9 @@ def _trade_row(sym: str, t: dict, stop: bool) -> dict:
         "exit_px": t.get("exit_px"),
         "reason_in": t["reason_in"],
         "reason_out": t.get("reason_out"),
-        "stop_exit": bool(stop and str(t.get("reason_out", "")).startswith("손절")),
+        # 장중 청산(손절, P1 장중 익절)은 계좌가 그날 시가 진입 뒤에 처리한다
+        "stop_exit": bool(t.get("intraday_exit"))
+        or bool(stop and str(t.get("reason_out", "")).startswith("손절")),
     }
 
 
@@ -613,9 +615,12 @@ def _fresh(last: str, today: str) -> bool:
     ).days <= SIGNAL_FRESH_DAYS
 
 
-def collect_quant(sym: str, tb: list, start: str, today: str) -> dict:
-    """한 종목에서 Q1~Q5 후보 거래(신호일 ≥ start)와 오늘 신호. 형식은 `collect`와 같다."""
-    ctx = Q.prepare(tb)
+def collect_quant(sym: str, tb: list, start: str, today: str, vix: list | None = None) -> dict:
+    """한 종목에서 Q1~Q5·P1 후보 거래(신호일 ≥ start)와 오늘 신호. 형식은 `collect`와 같다.
+
+    vix: ^VIX 일봉(P1 신호원, 매매하지 않음). 없으면 P1 신호 없음.
+    """
+    ctx = Q.prepare(tb, vix)
     fresh = _fresh(tb[-1][0], today)
     out = {}
     for sid in Q.PER_SYMBOL:
@@ -662,9 +667,10 @@ def quant_meta(sid: str) -> dict:
         "side": "long",
         "timeframe": "D",
         "stop_pct": None,
-        "max_hold": None,
+        "max_hold": spec["max_hold"],
         "group": "quant",
-        "label": Q.LABEL,
+        "label": spec.get("label", Q.LABEL),
+        "caveat": spec.get("caveat"),
     }
 
 
@@ -700,7 +706,7 @@ def build_paper(
         cal.update(recent)
         got = collect(sym, bars, vix, start, today, vol=vol, vol_hits=hits)
         tb = [tuple(b) for b in bars]
-        got.update(collect_quant(sym, tb, start, today))
+        got.update(collect_quant(sym, tb, start, today, vix))
         for key in per:
             if key in got:
                 per[key]["trades"].extend(got[key]["trades"])
@@ -952,11 +958,11 @@ def _pctile(xs: list, q: float) -> float | None:
     return round(xs[min(len(xs) - 1, int(q * (len(xs) - 1) + 0.5))], 2)
 
 
-def _quant_ledgers(series: dict, start: str) -> dict:
+def _quant_ledgers(series: dict, start: str, vix: list | None = None) -> dict:
     """전략마다 규칙 장부 거래 [(티커, 원래 거래)] (신호일 ≥ start, 보유 중 포함)."""
     out: dict = {sid: [] for sid in Q.STRATEGIES}
     for sym, tb in series.items():
-        ctx = Q.prepare(tb)
+        ctx = Q.prepare(tb, vix)
         for sid in Q.PER_SYMBOL:
             res = Q.simulate(sid, tb, fee=FEE, ctx=ctx)
             rows = res["trades"] + ([res["open"]] if res["open"] else [])
@@ -1051,8 +1057,9 @@ def quant_backtest(
     runs: int = QUANT_RUNS,
     seed: int = QUANT_SEED,
     end: str | None = None,
+    vix: list | None = None,
 ) -> dict:
-    """Q1~Q6 최근 `years`년 백테스트(공용 계좌 규칙) + 무작위 진입 기준 + 동일 비중 그냥 보유.
+    """Q1~Q6·P1 최근 `years`년 백테스트(공용 계좌 규칙) + 무작위 진입 기준 + 동일 비중 그냥 보유.
 
     series: {티커: 일봉 튜플}(전체 기록, 지표 워밍업용). 창 안 신호만 거래한다.
     무작위: 전략 장부 거래마다 같은 보유 봉 수로 아무 종목(창 안 자료가 있는)·아무 날에 진입,
@@ -1070,7 +1077,7 @@ def quant_backtest(
             first[s] = j
     closes = {s: {x[0]: x[4] for x in series[s][first[s] :] if x[0] <= end} for s in first}
     calendar = sorted({d for c in closes.values() for d in c})
-    ledgers = _quant_ledgers(series, start)
+    ledgers = _quant_ledgers(series, start, vix)
     bh = _buy_hold(series, sorted(first), calendar, start)
     spy = _buy_hold(series, ["SPY"], calendar, start) if "SPY" in series else None
     rows = []
@@ -1160,7 +1167,9 @@ def _quant_cli(a: argparse.Namespace) -> int:
     d = gose_dir()
     uni = read_json(d / "universe.json") or json.loads(UNIVERSE_SEED.read_text())
     syms = [x["ticker"] for x in uni["symbols"]]
-    out = quant_backtest(load_series(syms), years=a.years, runs=a.runs)
+    vix_raw = load_bars(uni.get("vix", "^VIX"))
+    vix = [tuple(b) for b in vix_raw] if vix_raw else None
+    out = quant_backtest(load_series(syms), years=a.years, runs=a.runs, vix=vix)
     path = Path(a.out) if a.out else d / "quant_backtest.json"
     _write(path, out)
     if a.merge:
@@ -1191,7 +1200,7 @@ def main(argv: list[str] | None = None) -> int:
     pb = sub.add_parser("backtest", help="results.json → backtest.json")
     pb.add_argument("results")
     pb.add_argument("--round2", help="2차(그림 판독 정의) results2.json")
-    pq = sub.add_parser("quant-backtest", help="퀀트 기법 Q1~Q6 최근 5년 백테스트(캐시 일봉만)")
+    pq = sub.add_parser("quant-backtest", help="퀀트 기법 Q1~Q6·P1 최근 5년 백테스트(캐시 일봉만)")
     pq.add_argument("--out", help="결과 JSON 경로(기본: 고서 폴더 quant_backtest.json)")
     pq.add_argument(
         "--merge", action="store_true", help="고서 폴더 backtest.json의 quant 칸에도 넣기"

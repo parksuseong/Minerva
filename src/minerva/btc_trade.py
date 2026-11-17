@@ -350,6 +350,12 @@ def universe(now_ms: int | None = None) -> dict:
     }
 
 
+# 사용자가 매매하지 말라고 한 종목(백테스트가 플러스여도 신규 진입 안 함).
+# 들고 있는 포지션은 평소대로 손절·청산.
+# BZUSDT: 사용자 2026-11-17 "이거 정리되면 bz는 매매하지마"
+NO_TRADE_SYMBOLS = frozenset({"BZUSDT"})
+
+
 def tradable_set(syms, stats: dict, ranges: dict | None = None) -> frozenset:
     """새로 들어갈 수 있는 종목: 백테스트 수익 > 0(사용자 2026-11-13 "백테스트해서 수익률이 +인것만
     매매하자"), 표본이 충분하고, 최근 7일 평균 하루 변동폭 ≥ MIN_DAY_RANGE_PCT(사용자 2026-11-16
@@ -360,7 +366,8 @@ def tradable_set(syms, stats: dict, ranges: dict | None = None) -> frozenset:
     for s in syms:
         st = stats.get(s) or {}
         if (
-            float(st.get("ret") or 0) > 0
+            s not in NO_TRADE_SYMBOLS
+            and float(st.get("ret") or 0) > 0
             and not btc_universe.low_sample(st)
             and (ranges is None or float(ranges.get(s) or 0) >= btc_universe.MIN_DAY_RANGE_PCT)
         ):
@@ -369,7 +376,7 @@ def tradable_set(syms, stats: dict, ranges: dict | None = None) -> frozenset:
 
 
 def _default_tradable() -> frozenset:
-    return frozenset(s for s in DEFAULT_SYMBOLS if DEFAULT_RET[s] > 0)
+    return frozenset(s for s in DEFAULT_SYMBOLS if DEFAULT_RET[s] > 0 and s not in NO_TRADE_SYMBOLS)
 
 
 def tradable(sym: str) -> bool:

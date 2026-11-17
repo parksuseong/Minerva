@@ -5266,3 +5266,10 @@ def test_flip_held_3x_position_sets_1x_only_after_close(env, monkeypatch):
     last = jsonl("closed.jsonl")[-1]
     assert last["side"] == "long" and last["leverage"] == 3
     assert any("× 3배" in m for m in env["sent"])
+
+
+def test_tradable_set_skips_no_trade_symbols():
+    stats = {s: {"ret": 50.0, "trades": 100, "days": 365.0} for s in ("BZUSDT", "BTCUSDT")}
+    ok = bt.tradable_set(["BZUSDT", "BTCUSDT"], stats, {"BZUSDT": 5.0, "BTCUSDT": 5.0})
+    assert "BZUSDT" not in ok
+    assert "BTCUSDT" in ok

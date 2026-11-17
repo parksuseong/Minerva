@@ -300,12 +300,12 @@
     const closed = (a.closed || []).slice(0, 20).map((c) => `<tr><td>${esc(c.sym)}</td>
       <td>${esc(c.entry_date)}<br>${esc(c.exit_date)}</td><td>${num(c.entry_px, 4)}<br>${num(c.exit_px, 4)}</td>
       <td>${pct(c.ret_pct)}</td><td class="mini">${esc(c.reason_out)}</td></tr>`).join("");
-    const stop = a.stop_pct ? `손절 ${num(a.stop_pct * 100, 0)}%` : "원문 청산(손절 없음)";
+    const stop = a.group === "quant" ? "기법 청산(손절 없음)" : a.stop_pct ? `손절 ${num(a.stop_pct * 100, 0)}%` : "원문 청산(손절 없음)";
     const v2 = a.round === 2 ? ` · <b>${esc(a.label || "2차")}</b>` : "";
     const src = a.signal_source ? `<p class="mini">신호: ${esc(a.signal_source)} 일봉(매매 안 함${a.signal_source_through ? `, ${esc(a.signal_source_through)}까지` : ", 자료 없음"}) →
       ${esc((a.symbols || []).join("·"))}만 매수</p>` : "";
     return `<section class="card">
-      <h2>${esc(a.key)} · ${esc(a.name)} <span class="mini">${esc(stop)} · ${esc((a.rule_ids || []).join(", "))}${a.side === "short" ? " · 숏(참고)" : ""}${v2}</span></h2>
+      <h2>${esc(a.key)} · ${esc(a.name)} <span class="mini">${esc(stop)} · ${esc((a.rule_ids || []).join(", "))}${a.side === "short" ? " · 숏(참고)" : ""}${v2}${a.group === "quant" ? ` · <b>${esc(a.label || "퀀트")}</b>` : ""}</span></h2>
       ${src}
       <p><b>${pct(a.return_pct)}</b> 시작 뒤 · 평가 ${usd(a.equity)} / ${usd(cap)} · 최대 낙폭 ${pct(a.mdd_pct)}<br>
         닫힌 거래 ${a.n_closed}번 · 승률 ${a.win_rate == null ? "-" : `${num(a.win_rate, 1)}%`} ·
@@ -319,14 +319,52 @@
     </section>`;
   }
 
+  // 퀀트 기법(비교용): 5년 백테스트 표(backtest.json의 quant) + 가상 계좌 요약
+  function quantBacktest(q) {
+    if (!q || q.status !== "ok") return "<p class=\"placeholder\">5년 백테스트가 아직 없어요</p>";
+    const bh = q.buy_hold || {};
+    const spy = q.buy_hold_spy;
+    const rows = (q.rows || []).map((r) => {
+      const rd = r.random || {};
+      return `<tr><td><b>${esc(r.key)}</b><br><span class="mini">${esc(r.name)}</span></td>
+        <td>${pct(r.cagr, 1)}</td><td>${pct(r.mdd, 1)}</td><td>${num(r.trades, 0)}</td>
+        <td>${r.win_rate == null ? "-" : `${num(r.win_rate, 1)}%`}</td><td>${r.avg_hold_days == null ? "-" : `${num(r.avg_hold_days, 0)}일`}</td>
+        <td>${pct(rd.cagr_median, 1)}<br><span class="mini">${num(rd.cagr_p05, 1)} ~ ${num(rd.cagr_p95, 1)}</span></td>
+        <td>${rd.pct == null ? "-" : num(rd.pct, 1)}${r.beats_random ? " <b class=\"up\">우위</b>" : ""}</td>
+        <td>${pct(r.vs_bh, 1)}</td></tr>`;
+    }).join("");
+    return `<p class="mini">최근 ${num(q.years, 0)}년(${esc((q.window || []).join(" ~ "))}) · 종목 ${num(q.symbols, 0)}개 · 수수료 편도 ${num((q.fee_per_side || 0) * 100, 2)}% ·
+        신호 다음 날 시가 · 1만 달러, 동시 10종목, 전날 평가액의 10% · 그날까지 마감된 봉만 씀</p>
+      <p>비교 기준: 동일 비중 그냥 보유(창 첫날 있던 ${num(bh.symbols, 0)}종목) 연 ${pct(bh.cagr, 1)} · 최대 낙폭 ${pct(bh.mdd, 1)}
+        ${spy ? ` · SPY 그냥 보유 연 ${pct(spy.cagr, 1)} · ${pct(spy.mdd, 1)}` : ""}</p>
+      <div class="scroll"><table class="acct"><thead><tr><th>기법</th><th>연수익</th><th>최대 낙폭</th><th>거래</th><th>승률</th><th>평균 보유</th>
+        <th>무작위 연수익(중간, 5~95%)</th><th>무작위 백분위</th><th>그냥 보유 대비</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="mini">무작위 = 같은 거래 수·같은 보유 봉 수로 아무 종목·아무 날에 들어간 계좌 ${num(((q.rows || [])[0] || {}).random?.runs, 0)}번. 백분위 95 넘으면 "우위".
+        과거 결과는 미래를 보장하지 않아요.</p>
+      ${(q.caveats || []).length ? `<details><summary>주의점</summary><ul>${q.caveats.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></details>` : ""}`;
+  }
+
+  function quantPaper(p, accts) {
+    if (!p || p.status === "pending" || !accts.length) return "<p class=\"mini\">가상 계좌는 다음 계산부터 보여요</p>";
+    const summary = accts.map((a) => `<tr><td><b>${esc(a.key)}</b> <span class="mini">${esc(a.source || "")}</span></td><td>${pct(a.return_pct)}</td>
+      <td>${a.win_rate == null ? "-" : `${num(a.win_rate, 1)}%`} <span class="mini">(${a.n_closed})</span></td>
+      <td>${(a.open || []).length}</td><td>${(a.signals || []).length}</td></tr>`).join("");
+    return `<h3>가상 계좌 <span class="mini">시작 ${esc(p.start)} 뒤 신호만 · 실제 주문 없음</span></h3>
+      <div class="scroll"><table class="acct"><thead><tr><th>계좌</th><th>시작 뒤</th><th>승률(닫힌 수)</th><th>보유</th><th>오늘 신호</th></tr></thead>
+      <tbody>${summary}</tbody></table></div>`;
+  }
+
   function paper(p) {
     if (!p || p.status === "pending") {
       $("gose-paper-status").textContent = "가상매매가 아직 시작되지 않았어요 (첫 실행 뒤에 보여요)";
       $("gose-paper").innerHTML = "";
+      $("gose-quant-paper").innerHTML = "";
       return;
     }
     const r = p.rules || {};
-    const accts = p.accounts || [];
+    const all = p.accounts || [];
+    const accts = all.filter((a) => a.group !== "quant");
+    const quant = all.filter((a) => a.group === "quant");
     const summary = accts.map((a) => `<tr><td>${esc(a.key)}${a.round === 2 ? ` <span class="mini">${esc(a.label || "2차")}</span>` : ""}</td><td>${pct(a.return_pct)}</td>
       <td>${a.win_rate == null ? "-" : `${num(a.win_rate, 1)}%`} <span class="mini">(${a.n_closed})</span></td>
       <td>${a.strategy === "avg" ? `${(a.open || []).length ? `추가 ${a.open[0].adds}/2` : 0}` : (a.open || []).length}</td><td>${(a.signals || []).length}</td></tr>`).join("");
@@ -337,6 +375,8 @@
       <div class="scroll"><table class="acct"><thead><tr><th>계좌</th><th>시작 뒤</th><th>승률(닫힌 수)</th><th>보유</th><th>오늘 신호</th></tr></thead>
       <tbody>${summary}</tbody></table></div>`;
     $("gose-paper").innerHTML = accts.map((a) => account(a, r.capital || 10000)).join("");
+    $("gose-quant-paper").innerHTML = quant.map((a) => account(a, r.capital || 10000)).join("");
+    return quant;
   }
 
   const SIDE = { long: "롱", short: "숏" };
@@ -368,7 +408,8 @@
         drawSpec();
         $("gose-rulebook").innerHTML = rulebook(d.rulebook);
         $("gose-backtest").innerHTML = backtest(d.backtest) + rounds(d.spec);
-        paper(d.paper);
+        const quant = paper(d.paper) || [];
+        $("gose-quant").innerHTML = quantBacktest((d.backtest || {}).quant) + quantPaper(d.paper, quant);
         $("gose-feed").innerHTML = feed(d.feed);
       })
       .catch(() => { $("gose-paper-status").textContent = "고서 자료를 불러오지 못했어요"; });

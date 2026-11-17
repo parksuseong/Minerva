@@ -37,6 +37,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from minerva import gose_quant as Q
 from minerva import gose_rules as R
 from minerva import gose_rules_avg as A
 from minerva import gose_rules_v2 as V
@@ -71,6 +72,8 @@ VOL_TICKER = "UVXY"  # 2차 변동성 신호원(UVIX 대리). 매매하지 않�
 AVG_ACCOUNTS = [("avg-SOXL", "SOXL"), ("avg-SOXX", "SOXX")]
 AVG_NAME = "SCR 3단 + 물타기 (익절 10%)"
 AVG_REF_START = "2019-01-01"  # 참고: 백테스트 시험 구간 시작부터 돌렸다면 지금 상태
+# 비교용 퀀트 기법(`gose_quant`, 공개된 고전 규칙). 같은 공용 계좌 규칙, 원전 계좌와 따로 묶는다
+QUANT_ACCOUNTS = list(Q.STRATEGIES)
 
 
 def _rules(sid: str):
@@ -294,12 +297,14 @@ def _mdd(curve: list) -> float:
     return mdd
 
 
-def run_account(trades: list[dict], closes: dict, calendar: list[str]) -> dict:
+def run_account(
+    trades: list[dict], closes: dict, calendar: list[str], keep: int | None = CLOSED_KEEP
+) -> dict:
     """후보 거래를 하나의 가상 계좌로 날짜순 처리한다.
 
     closes: {종목: {날짜: 종가}}. calendar: START 이후 거래일(모든 종목 날짜 합집합).
     하루 순서: 시가 청산 → 시가 진입(신호일·종목 순, 자리 10개, 전날 평가액의 10%) →
-    시가 추가 매수 → 장중 손절 → 종가 평가.
+    시가 추가 매수 → 장중 손절 → 종가 평가. keep: 닫힌 거래를 최근 몇 개만 남길지(None이면 전부).
     """
     by_entry: dict[str, list] = {}
     by_add: dict[str, list] = {}
@@ -435,7 +440,7 @@ def run_account(trades: list[dict], closes: dict, calendar: list[str]) -> dict:
         "skipped": skipped,
         "curve": curve,
         "open": open_rows,
-        "closed": closed[-CLOSED_KEEP:][::-1],
+        "closed": (closed if keep is None else closed[-keep:])[::-1],
     }
 
 
@@ -599,6 +604,70 @@ def account_signals(pending: list[dict], acct: dict, side: str) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------- 퀀트 기법(비교용)
+
+
+def _fresh(last: str, today: str) -> bool:
+    return (
+        datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(last, "%Y-%m-%d")
+    ).days <= SIGNAL_FRESH_DAYS
+
+
+def collect_quant(sym: str, tb: list, start: str, today: str) -> dict:
+    """한 종목에서 Q1~Q5 후보 거래(신호일 ≥ start)와 오늘 신호. 형식은 `collect`와 같다."""
+    ctx = Q.prepare(tb)
+    fresh = _fresh(tb[-1][0], today)
+    out = {}
+    for sid in Q.PER_SYMBOL:
+        res = Q.simulate(sid, tb, fee=FEE, ctx=ctx)
+        rows = [_trade_row(sym, t, False) for t in res["trades"] if t["signal_date"] >= start]
+        if res["open"] is not None and res["open"]["signal_date"] >= start:
+            rows.append(_trade_row(sym, res["open"], False))
+        pend = [
+            {"sym": sym, "date": sd, "kind": kind, "close": c, "reason": reason}
+            for sd, kind, c, reason in res["pending"]
+            if fresh and sd >= start
+        ]
+        out[sid] = {"trades": rows, "pending": pend}
+    return out
+
+
+def collect_q6(series: dict, start: str, today: str) -> dict:
+    """Q6(횡단면 모멘텀) 후보 거래와 오늘 신호. series: {티커: 일봉 튜플}."""
+    if not series:
+        return {"trades": [], "pending": []}
+    res = Q.momentum_portfolio(series, fee=FEE)
+    rows = [
+        _trade_row(t["sym"], t, False)
+        for t in res["trades"] + res["open"]
+        if t["signal_date"] >= start
+    ]
+    last = max(b[-1][0] for b in series.values())
+    pend = [
+        {"sym": sym, "date": sd, "kind": kind, "close": c, "reason": reason}
+        for sym, sd, kind, c, reason in res["pending"]
+        if _fresh(last, today) and sd >= start
+    ]
+    return {"trades": rows, "pending": pend}
+
+
+def quant_meta(sid: str) -> dict:
+    spec = Q.STRATEGIES[sid]
+    return {
+        "key": sid,
+        "sid": sid,
+        "name": spec["name"],
+        "source": spec["source"],
+        "rule_ids": spec["rule_ids"],
+        "side": "long",
+        "timeframe": "D",
+        "stop_pct": None,
+        "max_hold": None,
+        "group": "quant",
+        "label": Q.LABEL,
+    }
+
+
 def build_paper(
     syms: list[str],
     vix_ticker: str,
@@ -614,6 +683,8 @@ def build_paper(
     vol = [tuple(b) for b in vol_raw] if vol_raw else None
     hits = V.compute_vol_hits(vol, ("11v2a",)) if vol else None
     per = {key: {"trades": [], "pending": []} for key, _, _ in ACCOUNTS}
+    per.update({sid: {"trades": [], "pending": []} for sid in QUANT_ACCOUNTS})
+    series: dict[str, list] = {}
     closes: dict[str, dict] = {}
     cal: set[str] = set()
     used, short, latest = 0, [], ""
@@ -628,9 +699,15 @@ def build_paper(
         closes[sym] = recent
         cal.update(recent)
         got = collect(sym, bars, vix, start, today, vol=vol, vol_hits=hits)
+        tb = [tuple(b) for b in bars]
+        got.update(collect_quant(sym, tb, start, today))
         for key in per:
-            per[key]["trades"].extend(got[key]["trades"])
-            per[key]["pending"].extend(got[key]["pending"])
+            if key in got:
+                per[key]["trades"].extend(got[key]["trades"])
+                per[key]["pending"].extend(got[key]["pending"])
+        series[sym] = tb
+    per["Q6"] = collect_q6(series, start, today)
+    del series
     calendar = sorted(cal)
     accounts = []
     for key, sid, stop in ACCOUNTS:
@@ -655,6 +732,11 @@ def build_paper(
                     signal_source=vol_ticker,
                     signal_source_through=vol[-1][0] if vol else None,
                 )
+        accounts.append(acct)
+    for sid in QUANT_ACCOUNTS:
+        acct = run_account(per[sid]["trades"], closes, calendar)
+        acct["signals"] = account_signals(per[sid]["pending"], acct, "long")
+        acct.update(quant_meta(sid))
         accounts.append(acct)
     for key, sym in AVG_ACCOUNTS:
         bars = load_bars(sym)
@@ -838,6 +920,269 @@ def build_backtest(results: dict, results2: dict | None = None) -> dict:
     }
 
 
+# ---------------------------------------------------------------- 퀀트 기법 백테스트
+
+QUANT_YEARS = 5
+QUANT_RUNS = 200
+QUANT_SEED = 20261117
+
+
+def _years_before(d: str, years: int) -> str:
+    y, m, dd = (int(x) for x in d.split("-"))
+    if m == 2 and dd == 29:
+        dd = 28
+    return f"{y - years:04d}-{m:02d}-{dd:02d}"
+
+
+def _days(a: str, b: str) -> int:
+    return (datetime.strptime(b, "%Y-%m-%d") - datetime.strptime(a, "%Y-%m-%d")).days
+
+
+def _cagr(curve: list) -> float | None:
+    if len(curve) < 2 or curve[-1][1] <= 0:
+        return None
+    days = _days(curve[0][0], curve[-1][0])
+    return round(((curve[-1][1] / CAPITAL) ** (365.25 / days) - 1) * 100, 2) if days > 0 else None
+
+
+def _pctile(xs: list, q: float) -> float | None:
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return None
+    return round(xs[min(len(xs) - 1, int(q * (len(xs) - 1) + 0.5))], 2)
+
+
+def _quant_ledgers(series: dict, start: str) -> dict:
+    """전략마다 규칙 장부 거래 [(티커, 원래 거래)] (신호일 ≥ start, 보유 중 포함)."""
+    out: dict = {sid: [] for sid in Q.STRATEGIES}
+    for sym, tb in series.items():
+        ctx = Q.prepare(tb)
+        for sid in Q.PER_SYMBOL:
+            res = Q.simulate(sid, tb, fee=FEE, ctx=ctx)
+            rows = res["trades"] + ([res["open"]] if res["open"] else [])
+            out[sid].extend((sym, t) for t in rows if t["signal_date"] >= start)
+    res = Q.momentum_portfolio(series, fee=FEE)
+    out["Q6"] = [(t["sym"], t) for t in res["trades"] + res["open"] if t["signal_date"] >= start]
+    return out
+
+
+def _acct_stats(acct: dict) -> dict:
+    closed = acct["closed"]
+    holds = [_days(c["entry_date"], c["exit_date"]) for c in closed]
+    return {
+        "cagr": _cagr(acct["curve"]),
+        "mdd": acct["mdd_pct"],
+        "return_pct": acct["return_pct"],
+        "trades": acct["n_closed"],
+        "open": len(acct["open"]),
+        "skipped": acct["skipped"],
+        "win_rate": acct["win_rate"],
+        "mean_ret": round(sum(c["ret_pct"] for c in closed) / len(closed), 2) if closed else None,
+        "avg_hold_days": round(sum(holds) / len(holds), 1) if holds else None,
+    }
+
+
+def _random_trades(ledger: list, series: dict, first: dict, rng) -> list:
+    """같은 개수·같은 보유 봉 수로 아무 종목·아무 날에 들어간 거래(다음 시가 진입·시가 청산)."""
+    syms = sorted(first)
+    out = []
+    for sym0, t in ledger:
+        bars0 = series[sym0]
+        h = max(
+            1, (t.get("exit_i") if t.get("exit_i") is not None else len(bars0) - 1) - t["entry_i"]
+        )
+        for _ in range(50):
+            s = syms[rng.randrange(len(syms))]
+            lo, hi = first[s] + 1, len(series[s]) - 1 - h
+            if hi >= lo:
+                break
+        else:
+            continue
+        b = series[s]
+        i = rng.randint(lo, hi)
+        out.append(
+            {
+                "sym": s,
+                "side": "long",
+                "signal_date": b[i - 1][0],
+                "fills": [[b[i][0], b[i][1], 1.0, "무작위"]],
+                "exit_date": b[i + h][0],
+                "exit_px": b[i + h][1],
+                "reason_in": "무작위",
+                "reason_out": f"{h}봉 보유",
+                "stop_exit": False,
+            }
+        )
+    return out
+
+
+def _buy_hold(series: dict, syms: list, calendar: list, start: str) -> dict:
+    """syms를 창 첫날 시가에 같은 금액씩 사서 끝까지 보유(수수료 편도, 재조정 없음)."""
+    hold = {}
+    for s in syms:
+        b = series[s]
+        j = next((k for k, x in enumerate(b) if x[0] >= start), None)
+        if j is not None and _days(start, b[j][0]) <= 7:
+            hold[s] = j
+    if not hold:
+        return {"symbols": 0, "cagr": None, "mdd": None}
+    each = CAPITAL / len(hold)
+    shares = {s: each / (series[s][j][1] * (1 + FEE)) for s, j in hold.items()}
+    last = {s: series[s][j][1] for s, j in hold.items()}
+    closes = {s: {x[0]: x[4] for x in series[s][j:]} for s, j in hold.items()}
+    curve = []
+    for d in calendar:
+        for s in hold:
+            c = closes[s].get(d)
+            if c is not None:
+                last[s] = c
+        curve.append([d, sum(shares[s] * last[s] * (1 - FEE) for s in hold)])
+    return {
+        "symbols": len(hold),
+        "cagr": _cagr(curve),
+        "mdd": round(_mdd(curve) * 100, 2),
+        "return_pct": round((curve[-1][1] / CAPITAL - 1) * 100, 2),
+    }
+
+
+def quant_backtest(
+    series: dict,
+    years: int = QUANT_YEARS,
+    runs: int = QUANT_RUNS,
+    seed: int = QUANT_SEED,
+    end: str | None = None,
+) -> dict:
+    """Q1~Q6 최근 `years`년 백테스트(공용 계좌 규칙) + 무작위 진입 기준 + 동일 비중 그냥 보유.
+
+    series: {티커: 일봉 튜플}(전체 기록, 지표 워밍업용). 창 안 신호만 거래한다.
+    무작위: 전략 장부 거래마다 같은 보유 봉 수로 아무 종목(창 안 자료가 있는)·아무 날에 진입,
+    같은 계좌 규칙으로 `runs`번. pct = 전략 연수익이 무작위 몇 %보다 높았나.
+    """
+    import random
+
+    series = {s: b for s, b in series.items() if len(b) >= MIN_BARS}
+    end = end or max(b[-1][0] for b in series.values())
+    start = _years_before(end, years)
+    first = {}
+    for s, b in series.items():
+        j = next((k for k, x in enumerate(b) if x[0] >= start), None)
+        if j is not None:
+            first[s] = j
+    closes = {s: {x[0]: x[4] for x in series[s][first[s] :] if x[0] <= end} for s in first}
+    calendar = sorted({d for c in closes.values() for d in c})
+    ledgers = _quant_ledgers(series, start)
+    bh = _buy_hold(series, sorted(first), calendar, start)
+    spy = _buy_hold(series, ["SPY"], calendar, start) if "SPY" in series else None
+    rows = []
+    for sid in Q.STRATEGIES:
+        led = ledgers[sid]
+        trades = [
+            _trade_row(sym, t, False) for sym, t in sorted(led, key=lambda x: x[1]["signal_date"])
+        ]
+        acct = run_account(trades, closes, calendar, keep=None)
+        st = _acct_stats(acct)
+        rng = random.Random(f"{seed}-{sid}")
+        rnd = [
+            _acct_stats(
+                run_account(_random_trades(led, series, first, rng), closes, calendar, None)
+            )
+            for _ in range(runs)
+        ]
+        rc = [r["cagr"] for r in rnd if r["cagr"] is not None]
+        pct = (
+            round(
+                sum(1 for x in rc if st["cagr"] is not None and x < st["cagr"]) / len(rc) * 100, 1
+            )
+            if rc
+            else None
+        )
+        rows.append(
+            dict(
+                quant_meta(sid),
+                **st,
+                candidates=len(led),
+                random={
+                    "runs": runs,
+                    "cagr_median": _pctile(rc, 0.5),
+                    "cagr_p05": _pctile(rc, 0.05),
+                    "cagr_p95": _pctile(rc, 0.95),
+                    "mdd_median": _pctile([r["mdd"] for r in rnd], 0.5),
+                    "win_median": _pctile([r["win_rate"] for r in rnd], 0.5),
+                    "trades_median": _pctile([r["trades"] for r in rnd], 0.5),
+                    "pct": pct,
+                },
+                beats_random=bool(pct is not None and pct > 95),
+                vs_bh=None
+                if st["cagr"] is None or bh["cagr"] is None
+                else round(st["cagr"] - bh["cagr"], 2),
+            )
+        )
+    return {
+        "status": "ok",
+        "made_at": datetime.now(KST).isoformat(timespec="seconds"),
+        "label": Q.LABEL,
+        "window": [start, end],
+        "years": years,
+        "symbols": len(first),
+        "fee_per_side": FEE,
+        "seed": seed,
+        "rules": {
+            "capital": CAPITAL,
+            "max_positions": MAX_POS,
+            "size_frac": SIZE_FRAC,
+            "fill": "신호 다음 날 시가",
+        },
+        "buy_hold": bh,
+        "buy_hold_spy": spy,
+        "rows": rows,
+        "caveats": [
+            "종목은 지금 고른 목록(바이낸스 TradFi 기초자산 + 12종목)이라 생존 편향이 있어요: "
+            "5년 사이 사라지거나 밀려난 종목은 빠졌어요",
+            "창 시작 뒤 상장한 종목은 그냥 보유 기준에서 빠지고, 전략·무작위는 상장 뒤부터 씁니다",
+            "한국·홍콩·미국 종목이 섞여 있고 통화 환산 없이 각자 수익률로 셉니다",
+            "레버리지 ETF(SOXL·TQQQ 등)도 1종목으로 들어가 있어요",
+            "무작위 기준도 같은 계좌 규칙(10자리·10%)이라 건너뛴 수가 전략과 다를 수 있어요",
+        ],
+    }
+
+
+def load_series(syms: list[str]) -> dict:
+    """캐시된 일봉(읽기만)을 {티커: 튜플 목록}으로."""
+    out = {}
+    for s in syms:
+        b = load_bars(s)
+        if b and len(b) >= MIN_BARS:
+            out[s] = [tuple(x) for x in b]
+    return out
+
+
+def _quant_cli(a: argparse.Namespace) -> int:
+    d = gose_dir()
+    uni = read_json(d / "universe.json") or json.loads(UNIVERSE_SEED.read_text())
+    syms = [x["ticker"] for x in uni["symbols"]]
+    out = quant_backtest(load_series(syms), years=a.years, runs=a.runs)
+    path = Path(a.out) if a.out else d / "quant_backtest.json"
+    _write(path, out)
+    if a.merge:
+        bt = read_json(d / "backtest.json")
+        if bt is None:
+            raise SystemExit("backtest.json이 없어요. 먼저 backtest를 만드세요.")
+        bt["quant"] = out
+        _write(d / "backtest.json", bt)
+    bh = out["buy_hold"]
+    print(
+        f"{out['window'][0]}~{out['window'][1]} · 종목 {out['symbols']} · "
+        f"그냥 보유 연 {bh['cagr']}%"
+    )
+    for r in out["rows"]:
+        rnd = r["random"]
+        print(
+            f"{r['key']} 연 {r['cagr']}% 낙폭 {r['mdd']}% 거래 {r['trades']} 승률 {r['win_rate']}% "
+            f"보유 {r['avg_hold_days']}일 · 무작위 중간 {rnd['cagr_median']}% ({rnd['pct']}백분위)"
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m minerva.gose", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -846,7 +1191,16 @@ def main(argv: list[str] | None = None) -> int:
     pb = sub.add_parser("backtest", help="results.json → backtest.json")
     pb.add_argument("results")
     pb.add_argument("--round2", help="2차(그림 판독 정의) results2.json")
+    pq = sub.add_parser("quant-backtest", help="퀀트 기법 Q1~Q6 최근 5년 백테스트(캐시 일봉만)")
+    pq.add_argument("--out", help="결과 JSON 경로(기본: 고서 폴더 quant_backtest.json)")
+    pq.add_argument(
+        "--merge", action="store_true", help="고서 폴더 backtest.json의 quant 칸에도 넣기"
+    )
+    pq.add_argument("--years", type=int, default=QUANT_YEARS)
+    pq.add_argument("--runs", type=int, default=QUANT_RUNS, help="무작위 진입 반복 수")
     a = ap.parse_args(argv)
+    if a.cmd == "quant-backtest":
+        return _quant_cli(a)
     if a.cmd == "run":
         p = run(fetch=not a.no_fetch)
         best = max(p["accounts"], key=lambda x: x["return_pct"])
@@ -865,6 +1219,9 @@ def main(argv: list[str] | None = None) -> int:
     for f, name in ((src, "results.json"), (src2, "results2.json")):
         if f is not None and f.resolve() != (d / name).resolve():
             shutil.copyfile(f, d / name)
+    old = read_json(d / "backtest.json")
+    if old and old.get("quant"):
+        out["quant"] = old["quant"]  # 퀀트 기법 줄은 따로 만든다(quant-backtest)
     _write(d / "backtest.json", out)
     print(f"변형 {out['variants']} · 기본 통과 {out['basic_pass']} · 검증 통과 {out['verified']}")
     return 0

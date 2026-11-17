@@ -169,7 +169,9 @@ def test_build_paper_and_run_without_fetch(gdir):
     paper = gose.build_paper(["W", "SHORT", "NONE"], "^VIX", bars[250][0], bars[-1][0])
     assert paper["virtual"] and paper["symbols_used"] == 1
     assert paper["symbols_short"] == ["SHORT", "NONE"]
-    assert len(paper["accounts"]) == len(gose.ACCOUNTS) + len(gose.AVG_ACCOUNTS)
+    assert len(paper["accounts"]) == len(gose.ACCOUNTS) + len(gose.AVG_ACCOUNTS) + len(
+        gose.QUANT_ACCOUNTS
+    )
     a = next(x for x in paper["accounts"] if x["key"] == "1A")
     assert a["curve"][0][0] == bars[250][0] and a["n_closed"] > 0
 

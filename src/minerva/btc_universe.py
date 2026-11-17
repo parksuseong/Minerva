@@ -72,6 +72,12 @@ DIR = Path(os.environ.get("MINERVA_BTC_TRADE_DIR", "~/.minerva/btc_trade")).expa
 RANGE_DAYS = 7
 MIN_DAY_RANGE_PCT = 2.0
 RANGE_FRESH_HOURS = 48
+# 사용자 2026-11-18 "승률 60프로이상인거로 해. Bz제외하고": 최근 7일 엔진 신호 백테스트(선정과 같은
+# switch_sim) 승률 ≥ 60%인 종목만 새로 들어간다(1년 수익 + 조건 대신). 거래 3회 미만은 승률이
+# 우연(1/1 = 100%)이라 뺀다. 매일 09:10 `ranges`가 변동폭과 함께 recent.json을 쓴다.
+RECENT_DAYS = 7
+MIN_RECENT_WINRATE = 60.0
+MIN_RECENT_TRADES = 3
 DAY_MS = 86_400_000
 
 _sleep = time.sleep
@@ -234,6 +240,9 @@ def backtest(rows: list[list], params: dict, from_ms: int) -> dict:
         "mdd": round(res["mdd"], 1),
         "stops": res["stops"],
         "days": round(days, 1),
+        # 끝에 아직 열린 포지션(종가로 정리해 위 수에 들어감): 최근 7일 승률은 이걸 뺀다
+        "holding": bool(res["holding"]),
+        "end_win": bool(res["holding"] and res["exits"] and res["exits"][-1]["net"] > 0),
     }
 
 
@@ -455,6 +464,93 @@ def load_ranges(path: Path, now_ms: int, fresh_hours: float = RANGE_FRESH_HOURS)
     return out
 
 
+def refresh_recent(
+    out: Path,
+    symbols: list[str],
+    params: dict,
+    now_ms: int | None = None,
+    get: Callable = get_json,
+) -> dict:
+    """종목마다 최근 RECENT_DAYS일 15분봉(지표 자리 잡을 앞 봉 포함)으로 엔진 신호를 백테스트해
+    {종목: {trades, wins, winrate, ret}}을 out에 쓴다. 마감 봉만 쓴다. 한 종목 실패는 48시간 안의
+    앞 값을 이어 쓰고, 없으면 빠진다(빠진 종목은 엔진이 새로 들어가지 않는다). 429·418은 멈춘다."""
+    now_ms = now_ms or int(time.time() * 1000)
+    end = now_ms - now_ms % BAR_MS
+    frm = end - RECENT_DAYS * DAY_MS
+    stats: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+    before = load_recent(out, now_ms) or {}
+    for sym in symbols:
+        try:
+            rows = fetch_15m(sym, frm - (WARMUP + 50) * BAR_MS, end, get)
+            if len(rows) <= WARMUP + 2:
+                errors[sym] = "15분봉 부족"
+                continue
+            r = backtest(rows, params, frm)
+            # 끝난 거래만 센다(끝에 열린 포지션은 종가 정리라 승패가 아직 안 났다)
+            n = r["trades"] - (1 if r.get("holding") else 0)
+            w = r["wins"] - (1 if r.get("end_win") else 0)
+            stats[sym] = {
+                "trades": n,
+                "wins": w,
+                "winrate": round(w / n * 100, 1) if n else 0.0,
+                "ret": r["ret"],
+                "at": now_ms,
+            }
+        except RateLimited:
+            raise
+        except (OSError, ValueError, KeyError, IndexError, TypeError, ArithmeticError) as e:
+            errors[sym] = f"{type(e).__name__}: {e}"[:200]
+            # 앞 값은 잰 때(at)부터 48시간 안일 때만 이어 쓴다(매일 실패해도 무한히 안 남게)
+            old = before.get(sym) or {}
+            try:
+                fresh = now_ms - int(old.get("at") or 0) <= RANGE_FRESH_HOURS * 3_600_000
+            except (TypeError, ValueError):
+                fresh = False
+            if old and fresh:
+                stats[sym] = old
+    data = {
+        "updated_at": datetime.fromtimestamp(now_ms / 1000, KST).strftime("%Y-%m-%d %H:%M"),
+        "days": RECENT_DAYS,
+        "min_winrate": MIN_RECENT_WINRATE,
+        "min_trades": MIN_RECENT_TRADES,
+        "stats": stats,
+        "errors": errors,
+    }
+    _write_private(out, json.dumps(data, ensure_ascii=False, indent=1))
+    return data
+
+
+def load_recent(path: Path, now_ms: int, fresh_hours: float = RANGE_FRESH_HOURS) -> dict | None:
+    """쓸 수 있는 recent.json의 {종목: {trades, wins, winrate, ret}}. 없거나·깨졌거나·오래됐으면
+    None(엔진은 새 진입을 멈춘다)."""
+    try:
+        data = json.loads(path.read_text())
+        at = datetime.strptime(str(data["updated_at"]), "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+        stats = data["stats"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(stats, dict):
+        return None
+    age_ms = now_ms - at.timestamp() * 1000
+    if age_ms > fresh_hours * 3_600_000 or age_ms < -DAY_MS:
+        return None
+    return {k: v for k, v in stats.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def recent_ok(st: dict | None) -> bool:
+    """최근 7일 승률 조건: 거래 MIN_RECENT_TRADES회 이상이고 승률 ≥ MIN_RECENT_WINRATE."""
+    if not st:
+        return False
+    try:
+        return (
+            int(st.get("trades") or 0) >= MIN_RECENT_TRADES
+            and float(st.get("winrate") or 0) >= MIN_RECENT_WINRATE
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _empty() -> dict:
     return {"trades": 0, "wins": 0, "winrate": 0.0, "ret": 0.0, "mdd": 0.0, "stops": 0, "days": 0.0}
 
@@ -496,11 +592,25 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry
             else DIR / "ranges.json"
         )
+        syms = list(dict.fromkeys(uni["symbols"]))
         try:
-            data = refresh_ranges(out, list(dict.fromkeys(uni["symbols"])))
+            data = refresh_ranges(out, syms)
         except RateLimited as e:
             log.error("바이낸스 요청 한도(%s): 멈춤. 파일은 그대로", e)
             return 2
+        rec_out = out.with_name("recent.json") if args.out or args.dry else DIR / "recent.json"
+        try:
+            rec = refresh_recent(rec_out, syms, SCR_PARAMS)
+        except RateLimited as e:
+            log.error("바이낸스 요청 한도(%s): 최근 7일 승률 멈춤. 파일은 그대로", e)
+            return 2
+        rows = sorted(rec["stats"].items(), key=lambda kv: -float(kv[1].get("winrate") or 0))
+        for sym, st in rows:
+            mark = "" if recent_ok(st) else "  (진입 안 함)"
+            print(
+                f"{sym:16s} 7일 {st.get('wins', 0)}/{st.get('trades', 0)} "
+                f"{float(st.get('winrate') or 0):5.1f}%{mark}"
+            )
         for sym, r in sorted(data["ranges"].items(), key=lambda kv: -kv[1]):
             print(f"{sym:16s} {r:6.2f}%{'' if r >= MIN_DAY_RANGE_PCT else '  (2% 미만)'}")
         print(f"→ {out}, 실패 {len(data['errors'])}")

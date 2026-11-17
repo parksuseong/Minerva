@@ -155,8 +155,8 @@ def test_engine_view_counts_draws(files):
 
 
 def _universe(d, now: datetime | None = None):
-    """BNB·BTC는 들어갈 수 있고, DOGE는 7일 변동폭 2% 미만, NVDA는 수익 마이너스
-    (범위엔 있지만 매매 안 함). 승률은 2026-11-16부터 안 본다(DOGE 30%여도 변동폭만 되면 들어감)."""
+    """BNB·BTC는 들어갈 수 있고, DOGE는 7일 변동폭 2% 미만, NVDA는 최근 7일 승률 60% 미만
+    (범위엔 있지만 매매 안 함). 2026-11-18부터 1년 수익 대신 7일 승률로 고른다."""
     now = now or datetime.now(KST)
 
     def st(wr, ret, rank, kind="COIN"):
@@ -176,6 +176,12 @@ def _universe(d, now: datetime | None = None):
     ranges = {"BTCUSDT": 4.6, "DOGEUSDT": 1.5, "NVDAUSDT": 8.7, "BNBUSDT": 4.9}
     (d / "ranges.json").write_text(
         json.dumps({"updated_at": now.strftime("%Y-%m-%d %H:%M"), "ranges": ranges})
+    )
+    good = {"trades": 4, "wins": 3, "winrate": 75.0, "ret": 10.0}
+    recent = dict.fromkeys(stats, good)
+    recent["NVDAUSDT"] = {"trades": 4, "wins": 2, "winrate": 50.0, "ret": -3.0}
+    (d / "recent.json").write_text(
+        json.dumps({"updated_at": now.strftime("%Y-%m-%d %H:%M"), "stats": recent})
     )
 
 

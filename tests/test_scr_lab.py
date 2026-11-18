@@ -336,12 +336,31 @@ def test_klines_one_year_of_15m_bars(fake_binance):
 
 def test_klines_caps_days_and_rejects_other_intervals(fake_binance):
     client = TestClient(app)
-    d = client.get("/api/btc/klines?interval=1d&days=999").json()
+    d = client.get("/api/btc/klines?interval=4h&days=999").json()
     assert d["days"] == routes.LAB_MAX_DAYS == 365 and d["capped"] is True
     d = client.get("/api/btc/klines?interval=5m&days=365").json()
     assert d["days"] == 90 and d["capped"] is True
-    assert client.get("/api/btc/klines?interval=1w").status_code == 400
     assert client.get("/api/btc/klines?interval=1M").status_code == 400
+
+
+def test_klines_btc_daily_weekly_ten_years(fake_binance):
+    client = TestClient(app)
+    d = client.get("/api/btc/klines?interval=1d&days=3650").json()
+    assert d["days"] == 3650 and d["capped"] is False
+    assert len(d["bars"]) == 3650 + routes.LAB_WARMUP - 1
+    d = client.get("/api/btc/klines?interval=1w&days=9999").json()
+    assert d["days"] == routes.LAB_LONG_DAYS and d["capped"] is True
+    step = 7 * 86_400_000
+    times = [b[0] for b in d["bars"]]
+    assert times and all(b - a == step for a, b in zip(times, times[1:]))
+    assert all(t + step <= fake_binance.fake.now for t in times)
+
+
+def test_klines_long_range_and_weekly_are_btc_only(fake_binance):
+    client = TestClient(app)
+    d = client.get("/api/btc/klines?symbol=ETHUSDT&interval=1d&days=3650").json()
+    assert d["days"] == 365 and d["capped"] is True
+    assert client.get("/api/btc/klines?symbol=ETHUSDT&interval=1w").status_code == 400
 
 
 def test_klines_gzip_when_asked(fake_binance):

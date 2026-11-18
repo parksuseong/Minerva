@@ -10,10 +10,14 @@
   const { esc, css, pad, kst } = U;
   // 기본값이 바뀌면 판을 올린다. 옛 판에 저장된 값은 읽지 않아 새 기본값이 한 번 보인다.
   const KEY = "minerva-scrlab-v2";
-  const DAYS = [3, 7, 14, 30, 90, 180, 365];
+  const DAYS = [3, 7, 14, 30, 90, 180, 365, 730, 1825, 3650];
   const MAX_ROWS = 300;
   const GREEN = "#26a69a", RED = "#ef5350";
-  const MIN = { "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440 };
+  const MIN = { "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440, "1w": 10080 };
+  // 비트코인만 일봉·주봉 10년, 주봉은 비트코인만(서버 LAB_LONG·LAB_INTERVAL_ONLY와 맞춘다)
+  const LONG = { BTCUSDT: ["1d", "1w"] };
+  const LONG_DAYS = 3650;
+  const ONLY = { "1w": ["BTCUSDT"] };
   const FIELDS = [
     // [키, 이름, 최소, 최대, 정수]
     ["stoch_n", "Stoch 길이", 2, 100, true], ["stoch_lo", "Stoch 아래선", 0, 100, false],
@@ -136,9 +140,13 @@
 
   // 고정 네 종목 밖(매매 종목)은 서버가 14일까지만 준다(사용자 2026-11-14 "14일치로")
   const TRADED_DAYS = 14;
-  const maxDays = () => (SYMS[cfg.symbol] ? 365 : TRADED_DAYS);
+  const tfOk = (tf) => !ONLY[tf] || ONLY[tf].includes(cfg.symbol);
+  const maxDays = () => (!SYMS[cfg.symbol] ? TRADED_DAYS
+    : (LONG[cfg.symbol] || []).includes(cfg.interval) ? LONG_DAYS : 365);
   const syncControls = () => {
-    if (Number(cfg.days) > maxDays()) cfg.days = maxDays();
+    if (!tfOk(cfg.interval)) cfg.interval = "1d";
+    if (Number(cfg.days) > maxDays()) cfg.days = DAYS.filter((d) => d <= maxDays()).pop();
+    document.querySelectorAll("#lab-tf button").forEach((b) => { b.disabled = !tfOk(b.dataset.tf); });
     document.querySelectorAll("#lab-days button").forEach((b) => { b.disabled = Number(b.dataset.days) > maxDays(); });
     document.querySelectorAll("#lab-sym button").forEach((b) => b.classList.toggle("on", b.dataset.sym === cfg.symbol));
     if ($("lab-sym-name")) $("lab-sym-name").textContent = cfg.symbol;
@@ -320,7 +328,8 @@
       const last = bars[bars.length - 1];
       $("lab-status").innerHTML = `마지막 마감 봉 ${fmt(kst(last[0] + (MIN[data.interval] || 15) * 60000), true)} KST · `
         + `봉 ${num(bars.length - from, 0)}개 (앞쪽 여유 ${num(from, 0)}개는 지표 계산에만 씀)`
-        + (data.capped ? `<br><span class="up">⚠️ 5분봉은 ${num(data.days, 0)}일까지만 볼 수 있어요 (봉이 너무 많아 화면이 느려져요)</span>` : "")
+        + (data.capped ? `<br><span class="up">⚠️ 이 종목·봉은 ${num(data.days, 0)}일까지만 볼 수 있어요 (봉이 너무 많으면 화면이 느려져요)</span>` : "")
+        + (bars[0][0] > data.show_from ? `<br><span class="mini">바이낸스 선물 자료는 ${fmt(kst(bars[0][0]), true)}부터라 그 앞은 없어요 (앞쪽 지표는 자리 잡는 중)</span>` : "")
         + (bad.length ? `<br><span class="up">⚠️ ${esc(bad.join(", "))} 값이 범위를 벗어나 기본값으로 계산했어요</span>` : "");
     } catch (e) {
       $("lab-status").textContent = "계산 중 문제가 생겼어요. 기본값으로 버튼을 눌러 보세요.";

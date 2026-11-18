@@ -23,20 +23,26 @@ th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white
 th{color:var(--muted);font-weight:600}
 ul{margin:0;padding-left:1.2em}li{margin:2px 0}.mono{font-family:var(--mono)}
 .note{font-size:.85rem;color:var(--muted)}
+.legend button,#segs tr.row{cursor:pointer}
+.legend button{font:inherit;color:inherit;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 10px}
+.legend button.on,#segs tr.on td{background:color-mix(in srgb,var(--fg) 10%,transparent);font-weight:700}
+.legend button:focus-visible,#segs tr.row:focus-visible{outline:2px solid var(--fg)}
+#segbox{max-height:420px;overflow:auto}
+#reset{font:inherit;margin-left:8px}
 </style>
 </head><body>
 <div class="wrap">
 <header><h1>비트코인 주봉 장세 지도</h1><p class="sub">바이낸스 BTCUSDT 선물 주봉, 2019-09 ~ 지난주 마감. 매주 그 주까지의 값만으로 다섯 장세 중 하나로 칠했습니다.</p></header>
 <section class="card now" id="now"></section>
 <section class="card"><div id="chart" role="img" aria-label="비트코인 주봉 캔들, 배경색이 장세"></div>
-<div class="legend" id="legend"></div><p class="note">세로 눈금은 로그. 선: 20주선(파랑 계열 실선), 50주선(점선). 배경 띠 색이 그 주 장세입니다.</p></section>
+<div class="legend" id="legend"></div><p class="note"><b>장세 이름이나 아래 구간 표의 줄을 누르면 그 부분만 진하게 보여요. 다시 누르면 전체.</b> <button type="button" id="reset" hidden>전체 보기</button><br>세로 눈금은 로그. 선: 20주선(파랑 계열 실선), 50주선(점선). 배경 띠 색이 그 주 장세입니다.</p></section>
 <section class="card"><h2>나누는 규칙</h2><ul>
 <li><b>횡보</b>: 주봉 ADX(14)가 20 미만 → 방향 힘이 약함 (다른 규칙보다 먼저)</li>
 <li>큰 흐름 위: 20주선이 50주선 위 → 종가가 10주선 이상이면 <b>상승</b>, 아래면 <b>조정</b></li>
 <li>큰 흐름 아래: 20주선이 50주선 아래 → 종가가 10주선 이하면 <b>하락</b>, 위면 <b>반등</b></li>
 <li>마감한 주만 씁니다. 미래 값은 안 씁니다. 대신 이평선이라 전환을 몇 주 늦게 잡습니다.</li></ul></section>
 <section class="card"><h2>장세별 다음 주 움직임 <span class="note">(참고, 검증된 매매 규칙 아님)</span></h2><div class="tbl"><table id="stats"></table></div></section>
-<section class="card"><h2>최근 구간</h2><div class="tbl"><table id="segs"></table></div></section>
+<section class="card"><h2>구간 전체 <span class="note">(최근이 위, 누르면 차트에서 그 구간 확대·강조)</span></h2><div class="tbl" id="segbox"><table id="segs"></table></div></section>
 </div>
 <script src="/static/vendor/lightweight-charts-5.2.1.js"></script>
 <script>
@@ -51,26 +57,42 @@ const last=D.bars[D.bars.length-1];
 document.getElementById("now").innerHTML=`<span>지난주(${fmt(last.t)} 주) 장세</span>
 <span class="pill" style="color:${col(last.r)}">${NAME[last.r]}</span>
 <span class="mono">종가 ${n0(last.c)} · 10주선 ${n0(last.s10)} · 20주선 ${n0(last.s20)} · 50주선 ${n0(last.s50)} · ADX ${last.adx.toFixed(1)}</span>`;
-document.getElementById("legend").innerHTML=ORDER.map(r=>`<span><span class="sw" style="background:${col(r)}"></span>${NAME[r]}</span>`).join("");
+document.getElementById("legend").innerHTML=ORDER.map(r=>`<button type="button" data-r="${r}" aria-pressed="false"><span class="sw" style="background:${col(r)}"></span>${NAME[r]}</button>`).join("");
 const st=D.stats;
 document.getElementById("stats").innerHTML="<tr><th>장세</th><th>주 수</th><th>다음 주 평균</th><th>다음 주 오른 비율</th></tr>"+ORDER.map(r=>{const s=st[r];return `<tr><td><span class="sw" style="background:${col(r)}"></span>${NAME[r]}</td><td>${s.n}</td><td>${s.avg>0?"+":""}${s.avg}%</td><td>${s.posr}%</td></tr>`}).join("");
-const segs=D.segments.slice(-15).reverse();
-document.getElementById("segs").innerHTML="<tr><th>장세</th><th>시작 주</th><th>마지막 주</th><th>주 수</th><th>구간 등락</th></tr>"+segs.map(s=>{const p=(s.c1/s.c0-1)*100;return `<tr><td><span class="sw" style="background:${col(s.r)}"></span>${NAME[s.r]}</td><td>${fmt(s.from)}</td><td>${fmt(s.to)}</td><td>${s.n}</td><td>${p>0?"+":""}${p.toFixed(1)}%</td></tr>`}).join("");
-let chart;
+const segs=D.segments.map((s,i)=>({...s,i})).reverse();
+document.getElementById("segs").innerHTML="<tr><th>장세</th><th>시작 주</th><th>마지막 주</th><th>주 수</th><th>구간 등락</th></tr>"+segs.map(s=>{const p=(s.c1/s.c0-1)*100;return `<tr class="row" tabindex="0" data-i="${s.i}"><td><span class="sw" style="background:${col(s.r)}"></span>${NAME[s.r]}</td><td>${fmt(s.from)}</td><td>${fmt(s.to)}</td><td>${s.n}</td><td>${p>0?"+":""}${p.toFixed(1)}%</td></tr>`}).join("");
+let chart,bg,hl=null;
+const lit=b=>!hl||(hl.r?b.r===hl.r:b.t>=hl.from&&b.t<=hl.to);
+const paint=()=>{if(!bg)return;bg.setData(D.bars.filter(b=>b.r).map(b=>({time:b.t,value:1,color:col(b.r)+(lit(b)?(hl?"88":"40"):"0c")})));};
+function setHl(x){
+ hl=x;paint();
+ document.querySelectorAll(".legend button").forEach(b=>{const on=!!(hl&&hl.r===b.dataset.r);b.classList.toggle("on",on);b.setAttribute("aria-pressed",String(on));});
+ document.querySelectorAll("#segs tr.row").forEach(t=>t.classList.toggle("on",!!(hl&&hl.i===+t.dataset.i)));
+ document.getElementById("reset").hidden=!hl;
+ if(!chart)return;const ts=chart.timeScale();
+ if(hl&&hl.i!=null){const pad=8*7*86400;ts.setVisibleRange({from:hl.from-pad,to:hl.to+pad});document.getElementById("chart").scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"});}
+ else ts.fitContent();
+}
+document.getElementById("legend").addEventListener("click",e=>{const b=e.target.closest("button");if(!b)return;setHl(hl&&hl.r===b.dataset.r?null:{r:b.dataset.r});});
+const pickSeg=t=>{const i=+t.dataset.i;if(hl&&hl.i===i)return setHl(null);const s=D.segments[i];setHl({i,from:s.from,to:s.to});};
+document.getElementById("segs").addEventListener("click",e=>{const t=e.target.closest("tr.row");if(t)pickSeg(t);});
+document.getElementById("segs").addEventListener("keydown",e=>{const t=e.target.closest("tr.row");if(t&&(e.key==="Enter"||e.key===" ")){e.preventDefault();pickSeg(t);}});
+document.getElementById("reset").addEventListener("click",()=>setHl(null));
 function draw(){
  const el=document.getElementById("chart");el.innerHTML="";
  const LC=window.LightweightCharts;if(!LC){el.textContent="차트 라이브러리를 불러오지 못했어요. 아래 표는 그대로 볼 수 있어요.";return;}
  chart=LC.createChart(el,{autoSize:true,layout:{background:{type:"solid",color:tok("--card")},textColor:tok("--muted"),fontFamily:"IBM Plex Sans KR, system-ui"},
   grid:{vertLines:{visible:false},horzLines:{color:tok("--line")}},rightPriceScale:{mode:1,borderColor:tok("--line")},timeScale:{borderColor:tok("--line")},
   localization:{locale:"ko-KR",priceFormatter:v=>n0(v)}});
- const bg=chart.addSeries(LC.HistogramSeries,{priceScaleId:"bg",priceLineVisible:false,lastValueVisible:false});
+ bg=chart.addSeries(LC.HistogramSeries,{priceScaleId:"bg",priceLineVisible:false,lastValueVisible:false});
  chart.priceScale("bg").applyOptions({scaleMargins:{top:0,bottom:0},visible:false});
- bg.setData(D.bars.filter(b=>b.r).map(b=>({time:b.t,value:1,color:col(b.r)+"40"})));
+ paint();
  const c=chart.addSeries(LC.CandlestickSeries,{upColor:tok("--fg"),downColor:"transparent",borderUpColor:tok("--fg"),borderDownColor:tok("--fg"),wickUpColor:tok("--fg"),wickDownColor:tok("--fg")});
  c.setData(D.bars.map(b=>({time:b.t,open:b.o,high:b.h,low:b.l,close:b.c})));
  const ln=(k,style)=>{const s=chart.addSeries(LC.LineSeries,{color:"#2563eb",lineWidth:2,lineStyle:style,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});s.setData(D.bars.filter(b=>b[k]!=null).map(b=>({time:b.t,value:b[k]})));};
  ln("s20",0);ln("s50",2);
- chart.timeScale().fitContent();
+ if(hl)setHl(hl);else chart.timeScale().fitContent();
 }
 draw();
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{chart&&chart.remove();draw();});

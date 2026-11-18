@@ -159,6 +159,9 @@
       ["leverage", "레버리지", (v, x) => `${v}배 ${esc(x.margin_type)}`],
       ["pnl", "미실현손익", (v, x) => signed(v, `${num(v)} (${x.pnl_pct == null ? "-" : num(x.pnl_pct)}%)`)]],
     d.positions);
+    if (window.HoldChart) {
+      try { window.HoldChart.update(d.positions); } catch (err) { console.error(err); }
+    }
     // 일별(확정 손익 기준, 2026-11-17): 그날 체결된 실현손익 − 수수료 + 펀딩 ÷ 그날 시작 확정 평가액.
     // 들고 있는 포지션의 평가손익은 넣지 않는다(자정에 바뀌지 않게). 오늘 줄에만 따로 보인다
     const pctTxt = (v) => v == null ? "-" : `${v > 0 ? "+" : ""}${num(v)}%`;
@@ -300,7 +303,7 @@
     });
     try { localStorage.setItem(PICK, which); } catch (e) { /* 저장이 막혀도 전환은 된다 */ }
     // 숨겨진 채로 그린 차트는 폭이 0이라 보일 때 다시 그린다
-    if (which === "bn") loadSeries();
+    if (which === "bn") { loadSeries(); if (window.HoldChart) window.HoldChart.redraw(); }
   }
   document.querySelectorAll("#acct-pick button").forEach((b) => {
     b.onclick = () => pick(b.dataset.acct);
@@ -310,7 +313,7 @@
   pick(saved);
 
   const tabBtn = document.querySelector('[data-tab="account"]');
-  if (tabBtn) tabBtn.addEventListener("click", () => setTimeout(loadSeries, 0));
+  if (tabBtn) tabBtn.addEventListener("click", () => setTimeout(() => { loadSeries(); if (window.HoldChart) window.HoldChart.redraw(); }, 0));
 
   // 계좌 탭이 보일 때만 30초마다 다시 불러온다(서버는 1분마다 갱신).
   setInterval(() => {

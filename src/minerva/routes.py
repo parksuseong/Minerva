@@ -171,8 +171,15 @@ def kline_symbols() -> set[str]:
     return set(KLINE_SYMBOLS) | set(traded[:KLINE_TRADED_MAX]) | watch
 
 
-LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+LAB_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440, "1w": 10080}
 LAB_MAX_DAYS = 365
+# 비트코인만 일봉·주봉으로 10년까지 (사용자 2026-11-19 "비트코인만 기간은 10년, 봉은 주봉까지").
+# 바이낸스 선물 BTCUSDT는 2019-09부터라 실제로는 그 뒤만 온다. 봉 수가 적어(10년 일봉 약 3,650개)
+# 덩어리 3개면 된다.
+LAB_LONG_DAYS = 3650
+LAB_LONG = {"BTCUSDT": ("1d", "1w")}
+# 주봉은 비트코인만
+LAB_INTERVAL_ONLY = {"1w": ("BTCUSDT",)}
 # 5분봉 1년은 10만 봉이 넘어 휴대폰 화면이 버거워 90일까지만 (사용자 요청 2026-11-08 1년 보기)
 LAB_DAY_CAP = {"5m": 90}
 # 지표가 자리 잡도록 보여줄 기간 앞에 더 받는 봉 수
@@ -280,9 +287,12 @@ def btc_klines(
     if symbol not in kline_symbols():
         raise HTTPException(status_code=400, detail="이 종목 봉은 내줄 수 없어요")
     if interval not in LAB_INTERVALS:
-        raise HTTPException(status_code=400, detail="봉은 5m·15m·30m·1h·4h·1d 중 하나예요")
+        raise HTTPException(status_code=400, detail="봉은 5m·15m·30m·1h·4h·1d·1w 중 하나예요")
+    if symbol not in LAB_INTERVAL_ONLY.get(interval, (symbol,)):
+        raise HTTPException(status_code=400, detail="주봉은 비트코인만 볼 수 있어요")
     want = max(1, int(days))
-    days = min(want, LAB_MAX_DAYS, LAB_DAY_CAP.get(interval, LAB_MAX_DAYS))
+    top = LAB_LONG_DAYS if interval in LAB_LONG.get(symbol, ()) else LAB_MAX_DAYS
+    days = min(want, top, LAB_DAY_CAP.get(interval, top))
     if symbol not in KLINE_SYMBOLS:
         days = min(days, KLINE_TRADED_DAYS)
     try:

@@ -5313,3 +5313,13 @@ def test_tradable_set_skips_no_trade_symbols():
     ok = bt.tradable_set(["BZUSDT", "BTCUSDT"], stats, {"BZUSDT": 5.0, "BTCUSDT": 5.0}, rec)
     assert "BZUSDT" not in ok
     assert "BTCUSDT" in ok
+
+
+def test_no_stop_file_lists_symbols(tmp_path, monkeypatch):
+    monkeypatch.setattr(bt, "DIR", tmp_path)
+    assert not bt.no_stop("ANTUSDT")
+    (tmp_path / bt.NO_STOP_FILE).write_text("antusdt\n")
+    assert bt.no_stop("ANTUSDT") and not bt.no_stop("BTCUSDT") and not bt.no_stop(None)
+    state = {"position": {"symbol": "ANTUSDT", "side": "long", "qty": 1, "entry": 100, "stop": 97,
+                          "stop_id": "x", "mode": "live", "bar": 0}}
+    assert bt.guard_skip(state) == "no_stop"

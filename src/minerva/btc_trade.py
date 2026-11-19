@@ -1658,6 +1658,8 @@ def ensure_stop(ctx: Ctx, state: dict, with_tp: bool = True, qty: float | None =
     익절은 못 걸어도 손절이 지키므로 알리고 익절 없이 간다. 보호되면 True.
     qty는 지정가 손절·익절 수량(없으면 엔진 기록 수량, 거래소 수량이 다를 때 넘긴다)."""
     pos = state["position"]
+    if no_stop(ctx.symbol):
+        return True  # 사용자가 손절을 뺐다(NO_STOP): 다시 걸지 않는다
     qty = qty or pos["qty"]
     algos = open_algos(ctx.client)
     open_ids = open_algo_ids(algos)
@@ -2368,7 +2370,7 @@ def _migrate_exits(ctx: Ctx, state: dict) -> None:
     수량 손절과 같이 걸린다). 옛 익절은 취소하고 tp_id를 비워 ensure_stop이 새로 건다.
     새 손절이 안 걸리면 옛 손절을 두고 다음 실행에서 다시 한다."""
     pos = state["position"]
-    if pos.get("order_style") == order_style():
+    if pos.get("order_style") == order_style() or no_stop(pos_symbol(pos)):
         return
     c = ctx.client
     old_stop, old_tp = pos.get("stop_id"), pos.get("tp_id")
@@ -2568,7 +2570,7 @@ def trail_live(ctx: Ctx, state: dict) -> None:
     손절이 본다(체결되면 대사가 trail로 적는다). 봉은 체결가 기준, 손절 발동은 마크 가격
     기준이다."""
     pos = state.get("position")
-    if not trails(pos) or state.get("closing"):
+    if not trails(pos) or state.get("closing") or no_stop(pos_symbol(pos)):
         return
     tick = _tick_or_none(ctx)
     if tick is None:
@@ -2603,6 +2605,22 @@ GUARD_LOCK_S = 5  # 엔진이 잠금을 들고 있으면 이번 분은 건너뜀
 GUARD_DEADLINE_S = 75  # 지정가 추격 청산이 생겨도 이 안에(CLOSE_MARGIN_S 전) 돌아온다
 GUARD_MIN_STEP_PCT = 0.3  # 켜진 뒤에는 손절이 가격의 0.3% 넘게 좋아질 때만 옮긴다(주문 남발 방지)
 GUARD_OFF_FILE = "TRAIL_GUARD_OFF"  # 이 파일이 있으면 지킴이만 쉰다(엔진의 15분 따라가기는 그대로)
+# 한 줄에 종목 하나: 사용자가 손절을 뺀 종목(엔진이 손절을 다시 걸거나 옮기지 않음)
+NO_STOP_FILE = "NO_STOP"
+
+
+def no_stop(symbol: str | None) -> bool:
+    """사용자가 손절 없이 들기로 한 종목인가(사용자 2026-11-19 "엔트로픽 손절 없앴다 수동으로").
+    `~/.minerva/btc_trade/NO_STOP`에 종목 이름(예 ANTUSDT)을 한 줄씩. 그 종목은 손절을
+    다시 걸지 않고 따라가는 손절(15분·1분)도 옮기지 않는다. 반대 신호 청산·익절은 그대로.
+    지우면 다음 실행부터 다시 건다."""
+    if not symbol:
+        return False
+    try:
+        names = (DIR / NO_STOP_FILE).read_text().split()
+    except OSError:
+        return False
+    return symbol.upper() in {n.strip().upper() for n in names}
 GUARD_ERR_FILE = "trail_guard_error"  # 오류 알림을 한 시간에 한 번만
 GUARD_ERR_GAP_MS = 3_600_000
 GUARD_SKIP_FILE = "trail_guard_skip"  # 마지막 건너뜀 이유: 바뀔 때만 events.jsonl에 적는다
@@ -2627,6 +2645,8 @@ def guard_skip(state: dict) -> str | None:
     if (DIR / GUARD_OFF_FILE).exists():
         return "off"
     pos = state.get("position")
+    if pos and no_stop(pos_symbol(pos)):
+        return "no_stop"
     if not pos:
         return "flat"
     if pos.get("mode") != "live":

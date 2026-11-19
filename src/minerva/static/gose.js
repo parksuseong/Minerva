@@ -181,9 +181,16 @@
     const conflicts = (r.conflicts || []).map((c) => `<li><b>${esc(c.id)}</b> ${esc(c.text)}</li>`).join("");
     const cands = (r.candidates || []).map((c) => `<tr><td>${esc(c.key)}</td><td>${esc(c.name)}</td>
       <td>${esc(c.text)}</td><td class="mini">${esc(c.rules)}</td><td>${esc(c.tested)}</td></tr>`).join("");
-    const u = r.update;
-    const upd = u && Array.isArray(u.rules) ? `<details><summary>새 장 반영 ${esc(u.made || "")}: 규칙 ${u.rules.length}개 추가
-        (${esc(u.range || "")}, 새 글 ${num(u.posts, 0)}개)</summary><p class="mini">${esc(u.note || "")}</p>
+    const u = r.latest;
+    const sup = u && Array.isArray(u.superseded) ? u.superseded.map((x) => `<tr><td>${esc(x.old)}</td>
+      <td>${esc(x.old_text)}</td><td>→ ${esc(x.new)}</td></tr>`).join("") : "";
+    const upd = u && Array.isArray(u.rules) ? `<details><summary>최신 글 반영 ${esc(u.made || "")}: 새 규칙 ${u.rules.length}개 ·
+        바뀐 예전 규칙 ${(u.superseded || []).length}개</summary><p class="mini">${esc(u.note || "")}
+        (${esc(u.range || "")}, 새 글 ${num(u.posts, 0)}개)</p>
+        <h4>최신 글로 바뀐 규칙</h4>
+        <div class="scroll"><table class="acct"><thead><tr><th>예전</th><th>예전 내용</th><th>지금 기준</th></tr></thead>
+          <tbody>${sup}</tbody></table></div>
+        <h4>새 규칙</h4>
         <div class="scroll"><table class="acct"><thead><tr><th>ID</th><th>기계화</th><th>내용(우리 말)</th><th>관련</th></tr></thead><tbody>${
           u.rules.map((x) => `<tr><td>${esc(x.id)}</td><td>${esc(x.mech)}</td><td>${esc(x.text)}${
             x.conflict ? `<div class="mini">⚠ ${esc(x.conflict)}</div>` : ""}</td><td class="mini">${esc(x.relates)}</td></tr>`).join("")

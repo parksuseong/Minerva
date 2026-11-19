@@ -399,7 +399,8 @@ def test_route_returns_spec_markdown(gdir):
 def test_rulebook_update_section_counts_match():
     import json as _json
     d = _json.loads(gose.RULEBOOK.read_text())
-    u = d["update"]
+    u = d["latest"]
+    assert u["superseded"] and all(s["new"] for s in u["superseded"])
     assert u["rules"] and all(r["mech"] in ("가능", "애매", "불가") for r in u["rules"])
     ids = [r["id"] for r in u["rules"]]
     assert len(ids) == len(set(ids))

@@ -2605,13 +2605,15 @@ GUARD_LOCK_S = 5  # 엔진이 잠금을 들고 있으면 이번 분은 건너뜀
 GUARD_DEADLINE_S = 75  # 지정가 추격 청산이 생겨도 이 안에(CLOSE_MARGIN_S 전) 돌아온다
 GUARD_MIN_STEP_PCT = 0.3  # 켜진 뒤에는 손절이 가격의 0.3% 넘게 좋아질 때만 옮긴다(주문 남발 방지)
 GUARD_OFF_FILE = "TRAIL_GUARD_OFF"  # 이 파일이 있으면 지킴이만 쉰다(엔진의 15분 따라가기는 그대로)
-NO_STOP_FILE = "NO_STOP"  # 한 줄에 종목 하나: 사용자가 손절을 뺀 종목(엔진이 손절을 다시 걸거나 옮기지 않음)
+# 한 줄에 종목 하나: 사용자가 손절을 뺀 종목(엔진이 손절을 다시 걸거나 옮기지 않음)
+NO_STOP_FILE = "NO_STOP"
 
 
 def no_stop(symbol: str | None) -> bool:
     """사용자가 손절 없이 들기로 한 종목인가(사용자 2026-11-19 "엔트로픽 손절 없앴다 수동으로").
-    `~/.minerva/btc_trade/NO_STOP`에 종목 이름(예 ANTUSDT)을 한 줄씩. 그 종목은 손절을 다시 걸지 않고
-    따라가는 손절(15분·1분)도 옮기지 않는다. 반대 신호 청산·익절은 그대로. 지우면 다음 실행부터 다시 건다."""
+    `~/.minerva/btc_trade/NO_STOP`에 종목 이름(예 ANTUSDT)을 한 줄씩. 그 종목은 손절을
+    다시 걸지 않고 따라가는 손절(15분·1분)도 옮기지 않는다. 반대 신호 청산·익절은 그대로.
+    지우면 다음 실행부터 다시 건다."""
     if not symbol:
         return False
     try:

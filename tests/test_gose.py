@@ -394,3 +394,14 @@ def test_route_returns_spec_markdown(gdir):
     assert s["status"] == "ok" and s["accounts"] == ["avg-SOXL", "avg-SOXX"]
     assert "SIG_t" in s["markdown"] and "평단 × 1.10" in s["markdown"]
     assert s["params"]["max_adds"] == 2 and s["params"]["stop"] is None
+
+
+def test_rulebook_update_section_counts_match():
+    import json as _json
+    d = _json.loads(gose.RULEBOOK.read_text())
+    u = d["update"]
+    assert u["rules"] and all(r["mech"] in ("가능", "애매", "불가") for r in u["rules"])
+    ids = [r["id"] for r in u["rules"]]
+    assert len(ids) == len(set(ids))
+    total = sum(t["auto"] + t["vague"] + t["manual"] for t in d["topics"])
+    assert total == d["totals"]["rules"]

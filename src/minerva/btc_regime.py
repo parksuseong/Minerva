@@ -173,6 +173,11 @@ def labels(
             r = "bounce" if up else "down"
         for i in range(a + 1, b + 1):
             reg[i] = r
+    # 마지막 극점 뒤 봉(극점에서 조금 되돌렸지만 아직 전환 비율은 안 넘음)은 진행 중 파동에 붙인다
+    if len(minor) >= 2:
+        end = minor[-1][0]
+        for i in range(end + 1, n):
+            reg[i] = reg[end]
     if n > 1:
         reg[0] = reg[1]
     return reg, major

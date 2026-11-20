@@ -36,7 +36,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException, Response
 
-from minerva import btc_review, btc_trade_review, btc_view, gose, perf
+from minerva import btc_regime, btc_review, btc_trade_review, btc_view, gose, perf
 from minerva.strategy import soxl
 
 router = APIRouter()
@@ -492,6 +492,17 @@ def trade_status() -> dict:
         "positions": _read(d / "positions.json") or {},
         "orders": list(reversed(orders)),
     }
+
+
+@router.get("/api/btc/regime")
+def btc_regime_view() -> dict:
+    """🧭 장세 탭: 비트코인 주봉 장세 지도.
+
+    `minerva-btc-regime.timer`가 매일 자정 만든 파일만 읽는다."""
+    data = _read(btc_regime.out_path())
+    if not data or not data.get("bars"):
+        return {"status": "pending"}
+    return {"status": "ok", **data}
 
 
 @router.get("/api/gose")

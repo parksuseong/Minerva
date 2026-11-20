@@ -102,3 +102,12 @@ def test_bars_after_last_extreme_keep_current_wave():
     # 300에서 270까지 내림(작은 파동 15% 안 넘음) → 아직 상승 파동
     reg, _ = m.labels([100, 200, 300, 280, 270])
     assert reg[3] == reg[4] == reg[2] == "up"
+
+
+def test_build_has_short_mas_and_stoch_d():
+    closes = [100 + i for i in range(12)]
+    b = m.build(_kl(closes), now_ms=10**13)["bars"]
+    assert b[3]["s5"] is None and b[4]["s5"] == 102.0
+    assert b[9]["s10"] == 104.5
+    assert b[5]["sd"] is None and b[6]["sd"] is not None  # %K 첫 값 4번 → %D 6번부터
+    assert abs(b[8]["sd"] - (b[6]["st"] + b[7]["st"] + b[8]["st"]) / 3) < 0.11

@@ -39,7 +39,7 @@ ul{margin:0;padding-left:1.2em}li{margin:2px 0}.mono{font-family:var(--mono)}
 <header><h1>비트코인 <span class="tfn">주봉</span> 장세 지도</h1><nav class="tfbar" aria-label="봉 고르기"><a href="?tf=1M" data-tf="1M">월봉</a><a href="?tf=1w" data-tf="1w">주봉</a><a href="?tf=1d" data-tf="1d">일봉</a><a href="?tf=4h" data-tf="4h">4시간봉</a></nav><p class="sub">바이낸스 BTCUSDT 선물 <span class="tfn">주봉</span>, <span id="span">2019-09</span> ~ 지금(진행 중인 마지막 <span class="u">주</span>는 바뀔 수 있음). 큰 파동(<span class="pmaj">50%</span>)과 작은 파동(<span class="pmin">15%</span>)의 고점·저점 구조로 다섯 장세를 칠했습니다. 지난 차트를 설명하는 그림이라 고점·저점이 확정된 뒤에야 알 수 있는 값을 씁니다. <span id="upd"></span></p></header>
 <section class="card now" id="now"></section>
 <section class="card"><div id="chart" role="img" aria-label="비트코인 캔들, 배경색이 장세"></div>
-<div class="legend" id="legend"></div><p class="note"><b>장세 이름이나 아래 구간 표의 줄을 누르면 그 부분만 진하게 보여요. 다시 누르면 전체.</b> <button type="button" id="reset" hidden>전체 보기</button><br>세로 눈금은 로그. 선: 20<span class="u">주</span>선(파랑 실선), 50<span class="u">주</span>선(파랑 점선). 배경 띠 색이 그 <span class="u">주</span> 장세입니다(사후 이름표).<br><b>주황 계단선 = 그 <span class="u">주</span> 마감 때 실제로 알 수 있던 작은 파동 전환 가격</b>(<span class="pmin">15%</span>), 회색 계단선 = 큰 흐름 전환 가격(<span class="pmaj">50%</span>). 종가가 계단선을 넘은 주에 ▲저점 확정 / ▼고점 확정 표시가 붙습니다. 이 선과 표시는 그 <span class="u">주</span>까지의 종가만 써서 사후 값이 아닙니다.<br>아래 세 칸: <span class="tfn">주봉</span> SCR(원문 설정 Stoch Fast 5 · CCI 20 · RSI 14). 점선은 과매도(초록)·과매수(빨강) 선. 진행 중인 마지막 봉 값은 봉 마감까지 바뀝니다.</p></section>
+<div class="legend" id="legend"></div><p class="note"><b>장세 이름이나 아래 구간 표의 줄을 누르면 그 부분만 진하게 보여요. 다시 누르면 전체.</b> <button type="button" id="reset" hidden>전체 보기</button><br>세로 눈금은 로그. 이평선: 5<span class="u">주</span>선(검정 가는 선), 10<span class="u">주</span>선(파랑), 20<span class="u">주</span>선(보라), 50<span class="u">주</span>선(빨강 점선). 배경 띠 색이 그 <span class="u">주</span> 장세입니다(사후 이름표).<br><b>주황 계단선 = 그 <span class="u">주</span> 마감 때 실제로 알 수 있던 작은 파동 전환 가격</b>(<span class="pmin">15%</span>), 회색 계단선 = 큰 흐름 전환 가격(<span class="pmaj">50%</span>). 종가가 계단선을 넘은 주에 ▲저점 확정 / ▼고점 확정 표시가 붙습니다. 이 선과 표시는 그 <span class="u">주</span>까지의 종가만 써서 사후 값이 아닙니다.<br>아래 세 칸: <span class="tfn">주봉</span> SCR(원문 설정 Stoch Fast 5 · CCI 20 · RSI 14). 점선은 과매도(초록)·과매수(빨강) 선. 진행 중인 마지막 봉 값은 봉 마감까지 바뀝니다.</p></section>
 <section class="card"><h2>나누는 규칙</h2><ul>
 <li><b>큰 흐름</b>: <span class="tfn">주봉</span> 종가가 고점에서 <span class="pmaj">50%</span> 넘게 빠지면 하락장, 저점에서 <span class="pmaj">50%</span> 넘게 오르면 상승장으로 바뀝니다. <span id="major"></span></li>
 <li><b>작은 파동</b>: 종가가 <span class="pmin">15%</span> 넘게 되돌리면 한 파동이 끝난 것으로 봅니다.</li>
@@ -75,7 +75,7 @@ const fmt=t=>TF==="4h"?new Date((t+32400)*1000).toISOString().slice(0,13).replac
 document.getElementById("span").textContent=fmt(D.bars[0].t);
 if(D.major){const mf=fmt(D.major.from);document.getElementById("major").textContent=`지금 큰 흐름은 ${mf}${TF==="4h"?"":" "+U} ${D.major.dir==="down"?"고점":"저점"}(${Math.round(D.major.price).toLocaleString("ko-KR")})부터 ${D.major.dir==="down"?"하락장":"상승장"}입니다.`;}
 const scrNow=()=>{const b=D.bars[D.bars.length-1];if(b.st==null)return "";const f=v=>v==null?"-":v.toFixed(1);
- return `<span class="mono" style="flex-basis:100%">${TN} SCR(원문 설정): Stoch ${f(b.st)} · CCI ${f(b.cci)} · RSI ${f(b.rsi)}${b.open?` (진행 중 ${U})`:""}</span>`;};
+ return `<span class="mono" style="flex-basis:100%">${TN} SCR(원문 설정): Stoch %K ${f(b.st)} / %D ${f(b.sd)} · CCI ${f(b.cci)} · RSI ${f(b.rsi)}${b.open?` (진행 중 ${U})`:""}</span>`;};
 const swNow=()=>{const N=D.now||{};const out=[];const mi=N.minor,mj=N.major;
  const bull=mj&&mj.dir==="up";
  if(mi){const nxt=mi.dir==="down"?(bull?"상승":"반등"):(bull?"조정":"하락");
@@ -124,8 +124,8 @@ function draw(){
  paint();
  const c=chart.addSeries(LC.CandlestickSeries,{upColor:tok("--fg"),downColor:"transparent",borderUpColor:tok("--fg"),borderDownColor:tok("--fg"),wickUpColor:tok("--fg"),wickDownColor:tok("--fg")});
  c.setData(D.bars.map(b=>({time:T(b.t),open:b.o,high:b.h,low:b.l,close:b.c})));
- const ln=(k,style)=>{const s=chart.addSeries(LC.LineSeries,{color:"#2563eb",lineWidth:2,lineStyle:style,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});s.setData(D.bars.filter(b=>b[k]!=null).map(b=>({time:T(b.t),value:b[k]})));};
- ln("s20",0);ln("s50",2);
+ const ln=(k,style,colr,w)=>{const s=chart.addSeries(LC.LineSeries,{color:colr,lineWidth:w||2,lineWidth:2,lineStyle:style,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});s.setData(D.bars.filter(b=>b[k]!=null).map(b=>({time:T(b.t),value:b[k]})));};
+ ln("s5",0,tok("--fg"),1);ln("s10",0,"#2563eb",2);ln("s20",0,"#9333ea",2);ln("s50",2,"#dc2626",2);
  const step=(k,colr,style)=>{const s=chart.addSeries(LC.LineSeries,{color:colr,lineWidth:2,lineType:1,lineStyle:style,priceLineVisible:false,lastValueVisible:true,crosshairMarkerVisible:false});s.setData(D.bars.filter(b=>b[k]!=null).map(b=>({time:T(b.t),value:b[k]})));return s;};
  step("sw",tok("--corr"),0);step("mj",tok("--side"),2);
  if(D.scr&&D.bars.some(b=>b.st!=null)){
@@ -135,9 +135,10 @@ function draw(){
    s.setData(D.bars.filter(b=>b[k]!=null).map(b=>({time:T(b.t),value:b[k]})));
    s.createPriceLine({price:lo,color:tok("--up"),lineWidth:1,lineStyle:2,axisLabelVisible:true,title:""});
    s.createPriceLine({price:hi,color:tok("--down"),lineWidth:1,lineStyle:2,axisLabelVisible:true,title:""});
+   if(k==="st"){const d=chart.addSeries(LC.LineSeries,{color:tok("--muted"),lineWidth:1,lineStyle:0,priceLineVisible:false,lastValueVisible:true,crosshairMarkerVisible:false},idx);d.setData(D.bars.filter(b=>b.sd!=null).map(b=>({time:T(b.t),value:b.sd})));}
    if(LC.createTextWatermark){const pn=chart.panes()[idx];pn&&LC.createTextWatermark(pn,{horzAlign:"left",vertAlign:"top",lines:[{text:title,color:colr,fontSize:12,fontStyle:"bold"}]});}
    return s;};
-  osc("st","#f7a21b",P.stoch_lo,P.stoch_hi,1,`Stoch Fast %K(${P.stoch}) · ${P.stoch_lo}/${P.stoch_hi}`);
+  osc("st","#f7a21b",P.stoch_lo,P.stoch_hi,1,`Stoch Fast %K(${P.stoch},3) · 주황 %K · 회색 %D · ${P.stoch_lo}/${P.stoch_hi}`);
   osc("cci","#ab47bc",P.cci_lo,P.cci_hi,2,`CCI(${P.cci}) · ±${P.cci_hi}`);
   osc("rsi","#2962ff",P.rsi_lo,P.rsi_hi,3,`RSI(${P.rsi}) · ${P.rsi_lo}/${P.rsi_hi}`);
   const ps=chart.panes();[0.55,0.15,0.15,0.15].forEach((f,i)=>ps[i]&&ps[i].setStretchFactor(f));

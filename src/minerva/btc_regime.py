@@ -194,11 +194,12 @@ def build(
     c = [float(b[4]) for b in klines]
     cfg = TF[tf]
     reg, major = labels(c, cfg["major"], cfg["minor"])
-    s20, s50 = _sma(c, 20), _sma(c, 50)
+    s5, s10, s20, s50 = _sma(c, 5), _sma(c, 10), _sma(c, 20), _sma(c, 50)
     r1 = lambda v: None if v is None else round(v, 1)  # noqa: E731
     bars = [
         {"t": t[i], "o": o[i], "h": h[i], "l": lo[i], "c": c[i],
-         "s20": r1(s20[i]), "s50": r1(s50[i]), "r": reg[i]}
+         "s5": r1(s5[i]), "s10": r1(s10[i]), "s20": r1(s20[i]), "s50": r1(s50[i]),
+         "r": reg[i]}
         for i in range(len(c))
     ]
     if klines and int(klines[-1][6]) >= now_ms:
@@ -207,6 +208,9 @@ def build(
     st, cc, rs = ind.stoch_fast_k(ib, SCR["stoch"]), ind.cci(ib, SCR["cci"]), ind.rsi(c, SCR["rsi"])
     for i, b in enumerate(bars):
         b["st"], b["cci"], b["rsi"] = r1(st[i]), r1(cc[i]), r1(rs[i])
+        # 스토캐스틱 %D: %K 3개 평균(원문 Sto Fast %K(5,3)의 3)
+        k3 = st[max(0, i - 2) : i + 1]
+        b["sd"] = r1(sum(k3) / 3) if i >= 2 and None not in k3 else None
     # 그때그때 알 수 있던 전환 가격(사후 아님): 그 주 마감까지의 종가만 쓴다
     mi, mj = scan(c, cfg["minor"]), scan(c, cfg["major"])
     for i, b in enumerate(bars):

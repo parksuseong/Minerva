@@ -677,6 +677,7 @@ def test_main_saves_analysis_even_if_summary_fails(tmp_path, monkeypatch):
 def _head_data(regime="R2", fear="없음", **block):
     d = _memo_data(regime, **block)
     d["fear"] = {"state": fear}
+    d["assets"], d["products"] = [], []
     return d
 
 
@@ -692,7 +693,8 @@ def test_buy_headline_touched_now_gives_date_and_reasons():
     h = daily.buy_headline(
         _head_data("R3", "신호 발생 (내일부터 지수 ETF 3분할 매수)", **block), date(2026, 11, 21)
     )
-    assert h.startswith("🟢 곧 매수 가능: 12월 1일(화)부터")
+    assert h.startswith("🟡 시장 관문 12월 1일(화)부터 열릴 수 있어요")
+    assert "추세 조건을 갖춘 종목: 없음" in h
     assert "11월 저가(4,943)가 20개월선(5,081)에 닿아" in h
     assert "11월 27일(금) VIX 주봉" in h
     assert "KODEX 200만 3분할" in h
@@ -708,12 +710,12 @@ def test_buy_headline_waits_when_not_touched():
         touched_now=False,
     )
     h = daily.buy_headline(_head_data("R0", **block), date(2026, 11, 10))
-    assert h.startswith("⏳ 매수 대기") and "20개월선 5,081에 닿아야" in h
+    assert h.startswith("⏳ 시장 관문 닫힘") and "20개월선 5,081에 닿아야" in h
 
 
 def test_buy_headline_open_now():
     h = daily.buy_headline(_head_data("R0", blocked=False, since=None), date(2026, 11, 10))
-    assert h.startswith("🟢 지금 매수 가능")
+    assert h.startswith("🟢 시장 관문 열림")
 
 
 def test_buy_headline_data_failure():

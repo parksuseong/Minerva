@@ -888,6 +888,7 @@ def trade_memo(data: dict, today: date) -> list[str]:
 
 
 WEEKDAY = "월화수목금토일"
+TREND_KEYS = ("50일선 위", "주봉 20주선 위", "월봉 10개월선 위")
 
 
 def _next_business_day(d: date) -> date:
@@ -927,15 +928,37 @@ def buy_headline(data: dict, today: date) -> str:
         (data.get("fear") or {}).get("state", "")
     )
     tail = " 지금은 공포 초입 신호로 KODEX 200만 3분할 매수할 수 있어요." if fear else ""
+    names = set(buy_candidates(data))
+    trend = [
+        a["name"]
+        for a in data.get("assets", [])
+        if a.get("name") in names
+        and all(((a.get("tm") or {}).get("conditions") or {}).get(k) for k in TREND_KEYS)
+    ]
+    stock = (
+        f" 실제 매수는 종목마다 TM 조건(50일선·20주선·10개월선 위 + 스토캐 20 재돌파)이 "
+        f"맞아야 해요. 검증된 후보 {len(names)}종목 중 지금 추세 조건을 갖춘 종목: "
+        + (", ".join(trend) if trend else "없음")
+        + "."
+    )
     if wait:
-        return "⏳ 매수 대기: " + ", ".join(wait) + " 풀려요. " + " · ".join(why) + "." + tail
+        return (
+            "⏳ 시장 관문 닫힘: "
+            + ", ".join(wait)
+            + " 풀려요. "
+            + " · ".join(why)
+            + "."
+            + stock
+            + tail
+        )
     if not when:
-        return "🟢 지금 매수 가능: 월봉 제한·VIX 관문 모두 열림. 종목별 신호가 나는 날 사요." + tail
+        return "🟢 시장 관문 열림: 월봉 제한·VIX 관문 모두 열림." + stock + tail
     d = max(when)
     return (
-        f"🟢 곧 매수 가능: {d.month}월 {d.day}일({WEEKDAY[d.weekday()]})부터 — "
+        f"🟡 시장 관문 {d.month}월 {d.day}일({WEEKDAY[d.weekday()]})부터 열릴 수 있어요 — "
         + ", ".join(why)
         + "."
+        + stock
         + tail
     )
 

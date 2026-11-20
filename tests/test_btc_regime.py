@@ -96,3 +96,9 @@ def test_timeframes_use_own_thresholds_and_files(tmp_path, monkeypatch):
     m.write(d4, m.out_path("4h"))
     assert client.get("/api/btc/regime?tf=4h").json()["tf"] == "4h"
     assert client.get("/api/btc/regime?tf=5m").status_code == 400
+
+
+def test_bars_after_last_extreme_keep_current_wave():
+    # 300에서 270까지 내림(작은 파동 15% 안 넘음) → 아직 상승 파동
+    reg, _ = m.labels([100, 200, 300, 280, 270])
+    assert reg[3] == reg[4] == reg[2] == "up"

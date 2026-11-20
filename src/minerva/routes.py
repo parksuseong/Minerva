@@ -495,11 +495,13 @@ def trade_status() -> dict:
 
 
 @router.get("/api/btc/regime")
-def btc_regime_view() -> dict:
+def btc_regime_view(tf: str = "1w") -> dict:
     """🧭 장세 탭: 비트코인 주봉 장세 지도.
 
     `minerva-btc-regime.timer`가 매일 자정 만든 파일만 읽는다."""
-    data = _read(btc_regime.out_path())
+    if tf not in btc_regime.TF:
+        raise HTTPException(400, "tf must be one of " + ",".join(btc_regime.TF))
+    data = _read(btc_regime.out_path(tf))
     if not data or not data.get("bars"):
         return {"status": "pending"}
     return {"status": "ok", **data}

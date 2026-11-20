@@ -55,8 +55,8 @@ def directions(now: datetime) -> dict:
 
 def brief_text(v: dict, now: datetime, price: float | None, ways: dict, since: str) -> str:
     if v.get("status") != "ok":
-        return f"☀️ BTC 자동매매 아침 브리핑\n엔진 상태를 읽지 못했어요: {v.get('message', '')}"
-    lines = [f"☀️ BTC 자동매매 아침 브리핑 ({now.strftime('%m-%d %H:%M')} KST)"]
+        return f"☀️ 바이낸스 자동매매 아침 브리핑\n엔진 상태를 읽지 못했어요: {v.get('message', '')}"
+    lines = [f"☀️ 바이낸스 자동매매 아침 브리핑 ({now.strftime('%m-%d %H:%M')} KST)"]
     mode = "🔴 실전" if v["mode"] == "live" else "🧪 드라이런(주문 없음)"
     stops = []
     if v.get("halt"):

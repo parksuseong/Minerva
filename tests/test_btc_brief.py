@@ -96,7 +96,7 @@ def test_brief_text(files):
     ways = {"1h": "상방", "4h": "하방", "1d": "하방"}
     text = btc_brief.brief_text(v, NOW, 75_500.0, ways, "2026-11-08 23:00:00")
     lines = text.splitlines()
-    assert lines[0] == "☀️ BTC 자동매매 아침 브리핑 (11-09 08:30 KST)"
+    assert lines[0] == "☀️ 바이낸스 자동매매 아침 브리핑 (11-09 08:30 KST)"
     assert "🔴 실전 · 정지 없음" in text
     assert "숏 0.031 BTC @ 76,000.0 · 지금 75,500.0 (+0.66%, 3배 +1.97%)" in text
     assert "손절 78,280.0 (−3%) · 익절 72,200.0 (+5%)" in text

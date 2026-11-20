@@ -1344,7 +1344,7 @@ def set_no_entry(reason: str, send: Callable[[str], Any]) -> None:
     _write_private(DIR / "NO_ENTRY", f"{_now_iso(datetime.now(KST))} {reason}\n")
     _append("events.jsonl", {"at": _now_iso(datetime.now(KST)), "event": "no_entry", "why": reason})
     send(
-        f"🚨 BTC 자동매매 신규 진입 정지: {reason}\n"
+        f"🚨 바이낸스 자동매매 신규 진입 정지: {reason}\n"
         "보유 포지션·손절·반대 신호 청산은 계속해요.\n"
         "다시 열려면 rm ~/.minerva/btc_trade/NO_ENTRY"
     )
@@ -1356,7 +1356,7 @@ def check_halts(mode_: str, state: dict, equity: float | None, now: datetime, se
     if halted():
         why.append("HALT 파일")
         if not state.get("halt_seen"):
-            send("⏸ BTC 자동매매: HALT 파일이 있어 신규 진입을 멈춰요 (보유·손절은 관리)")
+            send("⏸ 바이낸스 자동매매: HALT 파일이 있어 신규 진입을 멈춰요 (보유·손절은 관리)")
         state["halt_seen"] = True
     else:
         state.pop("halt_seen", None)

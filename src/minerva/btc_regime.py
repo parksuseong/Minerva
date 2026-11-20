@@ -22,12 +22,18 @@ import os
 import sys
 import time
 import urllib.request
+from datetime import date
 from pathlib import Path
+
+from minerva.strategy import indicators as ind
 
 KLINE_URL = "https://fapi.binance.com/fapi/v1/klines"
 START_MS = 1567382400000  # 2019-09-02 주(바이낸스 BTCUSDT 선물 첫 주)
 MAJOR = 0.50
 MINOR = 0.15
+# 아래 SCR 칸: 원문 설정(Sto Fast %K 5, CCI 20, RSI 14)과 과열·침체 선
+SCR = {"stoch": 5, "cci": 20, "rsi": 14, "stoch_lo": 20, "stoch_hi": 80,
+       "cci_lo": -100, "cci_hi": 100, "rsi_lo": 30, "rsi_hi": 70}
 
 
 def out_path() -> Path:
@@ -163,6 +169,10 @@ def build(klines: list[list], now_ms: int) -> dict:
     ]
     if klines and int(klines[-1][6]) >= now_ms:
         bars[-1]["open"] = True
+    ib = [ind.Bar(date(2000, 1, 1), o[i], h[i], lo[i], c[i]) for i in range(len(c))]
+    st, cc, rs = ind.stoch_fast_k(ib, SCR["stoch"]), ind.cci(ib, SCR["cci"]), ind.rsi(c, SCR["rsi"])
+    for i, b in enumerate(bars):
+        b["st"], b["cci"], b["rsi"] = r1(st[i]), r1(cc[i]), r1(rs[i])
     # 그때그때 알 수 있던 전환 가격(사후 아님): 그 주 마감까지의 종가만 쓴다
     mi, mj = scan(c, MINOR), scan(c, MAJOR)
     for i, b in enumerate(bars):
@@ -191,7 +201,7 @@ def build(klines: list[list], now_ms: int) -> dict:
     return {
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now_ms / 1000)),
         "symbol": "BTCUSDT",
-        "major_pct": MAJOR, "minor_pct": MINOR,
+        "major_pct": MAJOR, "minor_pct": MINOR, "scr": SCR,
         "major": big,
         "bars": bars,
         "segments": segs,

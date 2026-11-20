@@ -81,3 +81,18 @@ def test_build_has_weekly_scr_values():
     assert b[13]["rsi"] is None and b[14]["rsi"] is not None  # RSI 14주
     assert 0 <= b[-1]["st"] <= 100 and 0 <= b[-1]["rsi"] <= 100
     assert d["scr"]["stoch"] == 5 and d["scr"]["cci_hi"] == 100
+
+
+def test_timeframes_use_own_thresholds_and_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BTC_REGIME_OUT", str(tmp_path / "regime.json"))
+    assert m.out_path("1w").name == "regime.json"
+    assert m.out_path("4h").name == "regime_4h.json"
+    closes = [100, 108, 112, 100, 97, 103]  # 4h 작은 파동 5%면 전환이 생기고 주봉 15%면 없음
+    d4 = m.build(_kl(closes), now_ms=10**13, tf="4h")
+    assert d4["minor_pct"] == 0.05 and d4["unit"] == "봉" and len(d4["turns"]) >= 2
+    assert len(m.scan(closes, m.TF["1w"]["minor"])["piv"]) == 0
+    client = TestClient(app)
+    assert client.get("/api/btc/regime?tf=4h").json() == {"status": "pending"}
+    m.write(d4, m.out_path("4h"))
+    assert client.get("/api/btc/regime?tf=4h").json()["tf"] == "4h"
+    assert client.get("/api/btc/regime?tf=5m").status_code == 400

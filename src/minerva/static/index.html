@@ -139,6 +139,7 @@
     <button role="tab" data-tab="office" aria-selected="false">🏢 오피스</button>
     <button role="tab" data-tab="scrlab" aria-selected="false">🧪 SCR 실험실</button>
     <button role="tab" data-tab="gose" aria-selected="false">📜 고서</button>
+    <button role="tab" data-tab="regime" aria-selected="false">🧭 장세</button>
   </nav>
 
   <div class="panel" id="tab-today">
@@ -392,6 +393,10 @@
     </section>
   </div>
 
+  <div class="panel" id="tab-regime" hidden>
+    <iframe id="regime-frame" title="비트코인 주봉 장세 지도" style="width:100%;border:0;min-height:900px;display:block"></iframe>
+  </div>
+
   <div class="panel" id="tab-gose" hidden>
     <section class="card">
       <h2>📘 매매 규칙서 <span class="mini">전략마다 이 글만 보고 그대로 매매할 수 있게 · 미검증, 가상 계좌만</span></h2>
@@ -497,6 +502,18 @@
         if (!document.getElementById(`tab-${name}`)) name = "today";
         tabs.forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === name)));
         document.querySelectorAll(".panel").forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
+        if (name === "regime") {
+          // 처음 열 때만 불러온다. 같은 출처라 페이지 높이에 맞춰 iframe을 늘린다
+          const f = document.getElementById("regime-frame");
+          if (!f.src) {
+            f.addEventListener("load", () => {
+              const fit = () => { try { f.style.height = f.contentDocument.documentElement.scrollHeight + "px"; } catch (e) {} };
+              fit(); setTimeout(fit, 800);
+              try { new ResizeObserver(fit).observe(f.contentDocument.body); } catch (e) {}
+            });
+            f.src = "/static/btc_regime.html";
+          }
+        }
       };
       tabs.forEach((b) => b.addEventListener("click", () => { location.hash = b.dataset.tab; }));
       window.addEventListener("hashchange", () => show(location.hash.slice(1)));

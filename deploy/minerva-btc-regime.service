@@ -1,0 +1,17 @@
+# 비트코인 주봉 장세 지도 자료(공개 시세 GET 한 번, 주문 없음). minerva-btc-regime.timer가 실행한다.
+# 결과: ~/.minerva/btc_regime/regime.json → /api/btc/regime → 🧭 장세 탭
+# 설치: sudo cp deploy/minerva-btc-regime.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-btc-regime.timer
+[Unit]
+Description=Minerva BTC weekly regime map
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.btc_regime
+Nice=10
+MemoryMax=300M
+TimeoutStartSec=300

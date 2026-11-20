@@ -1,0 +1,10 @@
+# 매일 00:00 KST 비트코인 주봉 장세 지도(🧭 장세 탭) 자료를 다시 만든다.
+[Unit]
+Description=Rebuild Minerva BTC weekly regime map daily 00:00 KST
+
+[Timer]
+OnCalendar=*-*-* 00:00:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

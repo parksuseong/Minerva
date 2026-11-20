@@ -29,13 +29,15 @@ ul{margin:0;padding-left:1.2em}li{margin:2px 0}.mono{font-family:var(--mono)}
 .legend button:focus-visible,#segs tr.row:focus-visible{outline:2px solid var(--fg)}
 #segbox{max-height:420px;overflow:auto}
 #reset{font:inherit;margin-left:8px}
+.swbox{flex-basis:100%;font-size:.9rem;border-left:3px solid var(--corr);padding-left:8px}
+#turnbox{max-height:420px;overflow:auto}
 </style>
 </head><body>
 <div class="wrap">
 <header><h1>비트코인 주봉 장세 지도</h1><p class="sub">바이낸스 BTCUSDT 선물 주봉, 2019-09 ~ 이번 주(진행 중 주는 바뀔 수 있음). 큰 파동(50%)과 작은 파동(15%)의 고점·저점 구조로 다섯 장세를 칠했습니다. 지난 차트를 설명하는 그림이라 고점·저점이 확정된 뒤에야 알 수 있는 값을 씁니다. <span id="upd"></span></p></header>
 <section class="card now" id="now"></section>
 <section class="card"><div id="chart" role="img" aria-label="비트코인 주봉 캔들, 배경색이 장세"></div>
-<div class="legend" id="legend"></div><p class="note"><b>장세 이름이나 아래 구간 표의 줄을 누르면 그 부분만 진하게 보여요. 다시 누르면 전체.</b> <button type="button" id="reset" hidden>전체 보기</button><br>세로 눈금은 로그. 선: 20주선(파랑 계열 실선), 50주선(점선). 배경 띠 색이 그 주 장세입니다.</p></section>
+<div class="legend" id="legend"></div><p class="note"><b>장세 이름이나 아래 구간 표의 줄을 누르면 그 부분만 진하게 보여요. 다시 누르면 전체.</b> <button type="button" id="reset" hidden>전체 보기</button><br>세로 눈금은 로그. 선: 20주선(파랑 실선), 50주선(파랑 점선). 배경 띠 색이 그 주 장세입니다(사후 이름표).<br><b>주황 계단선 = 그 주 마감 때 실제로 알 수 있던 작은 파동 전환 가격</b>(15%), 회색 계단선 = 큰 흐름 전환 가격(50%). 종가가 계단선을 넘은 주에 ▲저점 확정 / ▼고점 확정 표시가 붙습니다. 이 선과 표시는 그 주까지의 종가만 써서 사후 값이 아닙니다.</p></section>
 <section class="card"><h2>나누는 규칙</h2><ul>
 <li><b>큰 흐름</b>: 주봉 종가가 고점에서 50% 넘게 빠지면 하락장, 저점에서 50% 넘게 오르면 상승장으로 바뀝니다. <span id="major"></span></li>
 <li><b>작은 파동</b>: 종가가 15% 넘게 되돌리면 한 파동이 끝난 것으로 봅니다.</li>
@@ -43,6 +45,8 @@ ul{margin:0;padding-left:1.2em}li{margin:2px 0}.mono{font-family:var(--mono)}
 <li>하락장 안에서 내리는 파동은 <b>하락</b>, 오르는 파동은 <b>반등</b>입니다.</li>
 <li><b>횡보</b>: 파동이 직전 고점도 저점도 넘지 못하고 안쪽에서 끝나면(폭이 줄어드는 박스) 횡보로 칠합니다.</li>
 <li>마지막 구간은 아직 끝나지 않아 다음 15% 되돌림이 나오면 이름이 바뀔 수 있습니다. 매매 신호가 아니라 지난 흐름을 나눠 보는 그림입니다.</li></ul></section>
+
+<section class="card"><h2>전환이 확정된 때 <span class="note">(최근이 위, 고점·저점은 몇 주 뒤에야 확정)</span></h2><p class="note" id="turnsum"></p><div class="tbl" id="turnbox"><table id="turns"></table></div></section>
 
 <section class="card"><h2>구간 전체 <span class="note">(최근이 위, 누르면 차트에서 그 구간 확대·강조)</span></h2><div class="tbl" id="segbox"><table id="segs"></table></div></section>
 </div>
@@ -60,14 +64,26 @@ const ORDER=["up","corr","side","bounce","down"];
 const tok=k=>getComputedStyle(document.documentElement).getPropertyValue(k).trim();
 const col=r=>tok("--"+r);
 const fmt=t=>new Date(t*1000).toISOString().slice(0,10);
+const swNow=()=>{const N=D.now||{};const out=[];const mi=N.minor,mj=N.major;
+ const bull=mj&&mj.dir==="up";
+ if(mi){const nxt=mi.dir==="down"?(bull?"상승":"반등"):(bull?"조정":"하락");
+  out.push(`<div class="swbox"><b>작은 파동 전환 가격 ${n0(mi.level)}</b> · 지금 ${mi.dir==="down"?"내림":"오름"} 파동, 최${mi.dir==="down"?"저":"고"} 종가 ${n0(mi.ext_c)}(${fmt(mi.ext_t)} 주)의 ${mi.dir==="down"?"+":"−"}15%. 주봉 종가가 이 값${mi.dir==="down"?" 위":" 아래"}로 마감하면 '${nxt}' 파동 시작이 확정됩니다(직전 고점·저점 안쪽에서 끝나면 횡보).</div>`);}
+ if(mj){out.push(`<div class="swbox"><b>큰 흐름 전환 가격 ${n0(mj.level)}</b> · 지금 ${mj.dir==="down"?"하락장":"상승장"}, 최${mj.dir==="down"?"저":"고"} 종가 ${n0(mj.ext_c)}(${fmt(mj.ext_t)} 주)의 ${mj.dir==="down"?"+":"−"}50%. 넘으면 ${mj.dir==="down"?"상승장":"하락장"}으로 바뀝니다.</div>`);}
+ return out.join("");};
 const n0=v=>Math.round(v).toLocaleString("ko-KR");
 const last=D.bars[D.bars.length-1];
 document.getElementById("now").innerHTML=`<span>${last.open?"이번 주":"지난주"}(${fmt(last.t)} 주${last.open?", 진행 중":""}) 장세</span>
 <span class="pill" style="color:${col(last.r)}">${NAME[last.r]}</span>
-<span class="mono">종가 ${n0(last.c)} · 이 구간 ${fmt(D.segments[D.segments.length-1].from)} 주부터 ${D.segments[D.segments.length-1].n}주째 (아직 진행 중)</span>`;
+<span class="mono">종가 ${n0(last.c)} · 이 구간 ${fmt(D.segments[D.segments.length-1].from)} 주부터 ${D.segments[D.segments.length-1].n}주째 (아직 진행 중)</span>`+swNow();
 document.getElementById("legend").innerHTML=ORDER.map(r=>`<button type="button" data-r="${r}" aria-pressed="false"><span class="sw" style="background:${col(r)}"></span>${NAME[r]}</button>`).join("");
 const segs=D.segments.map((s,i)=>({...s,i})).reverse();
 document.getElementById("segs").innerHTML="<tr><th>장세</th><th>시작 주</th><th>마지막 주</th><th>주 수</th><th>구간 등락</th></tr>"+segs.map(s=>{const p=(s.c1/s.c0-1)*100;return `<tr class="row" tabindex="0" data-i="${s.i}"><td><span class="sw" style="background:${col(s.r)}"></span>${NAME[s.r]}</td><td>${fmt(s.from)}</td><td>${fmt(s.to)}</td><td>${s.n}</td><td>${p>0?"+":""}${p.toFixed(1)}%</td></tr>`}).join("");
+if(D.turns&&D.turns.length){
+ const L=D.turns.map(x=>x.lag),G=D.turns.map(x=>Math.abs(x.known_c/x.c-1)*100);
+ const avg=a=>a.reduce((s,v)=>s+v,0)/a.length;
+ document.getElementById("turnsum").textContent=`작은 파동 고점·저점 ${D.turns.length}번: 확정까지 평균 ${avg(L).toFixed(1)}주(최대 ${Math.max(...L)}주), 확정될 때 이미 극점에서 평균 ${avg(G).toFixed(0)}% 움직인 뒤입니다.`;
+ document.getElementById("turns").innerHTML="<tr><th>전환</th><th>실제 극점 주</th><th>극점 종가</th><th>확정된 주</th><th>늦음</th><th>확정 때 종가</th><th>극점 대비</th></tr>"+D.turns.slice().reverse().map(x=>`<tr><td>${x.kind==="L"?"▲ 저점":"▼ 고점"}</td><td>${fmt(x.t)}</td><td>${n0(x.c)}</td><td>${fmt(x.known_t)}</td><td>${x.lag}주</td><td>${n0(x.known_c)}</td><td>${((x.known_c/x.c-1)*100).toFixed(1)}%</td></tr>`).join("");
+}
 let chart,bg,hl=null;
 const lit=b=>!hl||(hl.r?b.r===hl.r:b.t>=hl.from&&b.t<=hl.to);
 const paint=()=>{if(!bg)return;bg.setData(D.bars.filter(b=>b.r).map(b=>({time:b.t,value:1,color:col(b.r)+(lit(b)?(hl?"88":"40"):"0c")})));};
@@ -98,6 +114,9 @@ function draw(){
  c.setData(D.bars.map(b=>({time:b.t,open:b.o,high:b.h,low:b.l,close:b.c})));
  const ln=(k,style)=>{const s=chart.addSeries(LC.LineSeries,{color:"#2563eb",lineWidth:2,lineStyle:style,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});s.setData(D.bars.filter(b=>b[k]!=null).map(b=>({time:b.t,value:b[k]})));};
  ln("s20",0);ln("s50",2);
+ const step=(k,colr,style)=>{const s=chart.addSeries(LC.LineSeries,{color:colr,lineWidth:2,lineType:1,lineStyle:style,priceLineVisible:false,lastValueVisible:true,crosshairMarkerVisible:false});s.setData(D.bars.filter(b=>b[k]!=null).map(b=>({time:b.t,value:b[k]})));return s;};
+ step("sw",tok("--corr"),0);step("mj",tok("--side"),2);
+ if(LC.createSeriesMarkers&&D.turns){LC.createSeriesMarkers(c,D.turns.map(x=>x.kind==="L"?{time:x.known_t,position:"belowBar",color:tok("--up"),shape:"arrowUp",text:"저점 확정"}:{time:x.known_t,position:"aboveBar",color:tok("--down"),shape:"arrowDown",text:"고점 확정"}));}
  if(hl)setHl(hl);else chart.timeScale().fitContent();
 }
 draw();

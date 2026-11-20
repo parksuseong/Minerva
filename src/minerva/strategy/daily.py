@@ -622,11 +622,17 @@ def monthly_block(bars: list[Bar], today: date) -> dict:
     since = spans[-1][0] if spans and spans[-1][1] is None else None
     if since is None:
         return {"blocked": False, "since": None}
+    now = [b for b in bars if (b.day.year, b.day.month) == (today.year, today.month)]
     return {
         "blocked": True,
         "since": since.isoformat(),
         "dipped": any((s.cci or 0) < 0 or (s.rsi or 100) < 50 for s in months if s.day > since),
         "ma20": _r(sma([b.close for b in resample(bars, "M")], 20)[-1]),
+        # 이번 달 저가가 이미 20개월선에 닿았으면 이번 달 마감 뒤 풀린다 (화면 맨 윗줄용)
+        "month_low": _r(min(b.low for b in now)) if now else None,
+        "touched_now": any(
+            (t.year, t.month) == (today.year, today.month) for t in monthly_touches(bars)
+        ),
     }
 
 
@@ -881,6 +887,59 @@ def trade_memo(data: dict, today: date) -> list[str]:
     return out
 
 
+WEEKDAY = "월화수목금토일"
+
+
+def _next_business_day(d: date) -> date:
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
+
+
+def buy_headline(data: dict, today: date) -> str:
+    """언제 왜 매수할 수 있는지 한 줄 (사용자 요청 2026-11-21, 화면 맨 윗줄)."""
+    block = data.get("market_block") or {}
+    v = data["vix"]
+    gate_open = v["regime"] in ("R0", "R1")
+    if block.get("blocked") and not block.get("since"):
+        return f"⛔ 매수 보류: 코스피 자료 문제({block.get('error')})로 신규 매수를 막았어요."
+    when, why, wait = [], [], []
+    if block.get("blocked"):
+        cur = today + timedelta(days=7 - today.weekday() if today.weekday() >= 5 else 0)
+        nxt = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+        if block.get("touched_now"):
+            when.append(_next_business_day(nxt))
+            why.append(
+                f"코스피 {cur.month}월 저가({block['month_low']:,.0f})가 20개월선("
+                f"{block['ma20']:,.0f})에 닿아 {cur.month}월 마감 뒤 월봉 제한이 풀려요"
+            )
+        else:
+            wait.append(f"코스피 {cur.month}월 저가가 20개월선 {block['ma20']:,.0f}에 닿아야")
+    if not gate_open:
+        g = v.get("gate") or {}
+        friday = today + timedelta(days=(4 - today.weekday()) % 7)
+        when.append(friday + timedelta(days=3))
+        why.append(
+            f"{friday.month}월 {friday.day}일(금) VIX 주봉 5주선({g.get('w5')})이 "
+            f"10주선({g.get('w10')}) 아래로 마감하면 관문이 열려요"
+        )
+    fear = "신호" in str((data.get("fear") or {}).get("state", "")) and "발생" in str(
+        (data.get("fear") or {}).get("state", "")
+    )
+    tail = " 지금은 공포 초입 신호로 KODEX 200만 3분할 매수할 수 있어요." if fear else ""
+    if wait:
+        return "⏳ 매수 대기: " + ", ".join(wait) + " 풀려요. " + " · ".join(why) + "." + tail
+    if not when:
+        return "🟢 지금 매수 가능: 월봉 제한·VIX 관문 모두 열림. 종목별 신호가 나는 날 사요." + tail
+    d = max(when)
+    return (
+        f"🟢 곧 매수 가능: {d.month}월 {d.day}일({WEEKDAY[d.weekday()]})부터 — "
+        + ", ".join(why)
+        + "."
+        + tail
+    )
+
+
 def buy_candidates(data: dict) -> list[str]:
     """지금 검증을 통과해 신호가 나면 살 수 있는 종목. KODEX 200이 맨 앞이다."""
     ok = lambda x: (x.get("verify", {}).get("long") or {}).get("label") == "검증됨"  # noqa: E731
@@ -929,6 +988,10 @@ def add_memo(data: dict, today: date) -> None:
     except Exception as exc:  # noqa: BLE001
         data["memo"] = [f"요약을 만들지 못했어요 ({type(exc).__name__})."]
         data["plan"] = []
+    try:
+        data["headline"] = buy_headline(data, today)
+    except Exception as exc:  # noqa: BLE001
+        data["headline"] = f"매수 시점 요약을 만들지 못했어요 ({type(exc).__name__})."
 
 
 def telegram_summary(data: dict) -> str:
@@ -943,6 +1006,8 @@ def telegram_summary(data: dict) -> str:
         else "😨 공포 초입: 데이터 없음",
         "",
     ]
+    if data.get("headline"):
+        lines[1:1] = [data["headline"]]
     acts = data.get("actions", [])
     if acts:
         lines.append(f"🎯 오늘 할 일 {len(acts)}건")

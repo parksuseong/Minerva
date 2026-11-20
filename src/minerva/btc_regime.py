@@ -43,12 +43,20 @@ def fetch_weekly(symbol: str = "BTCUSDT") -> list[list]:
         return json.load(r)
 
 
-def zigzag(c: list[float], th: float) -> list[tuple[int, str]]:
-    """종가 지그재그: th 비율 되돌림마다 고점(H)·저점(L) 확정. 마지막 극점도 넣는다."""
+def scan(c: list[float], th: float) -> dict:
+    """종가 지그재그를 한 주씩 앞으로만 훑는다(그 주까지의 종가만 씀).
+
+    - `piv`: 확정된 고점(H)·저점(L) (막대 번호, 종류, 확정된 주 번호)
+    - `level[i]`: i주 마감 때 알 수 있는 전환 가격. 다음 종가가 이 값을 넘으면 파동이 바뀐다
+      (오름 파동이면 지금까지 최고 종가 × (1−th) 아래, 내림 파동이면 최저 종가 × (1+th) 위)
+    - `dir[i]`: i주 마감 때 진행 중인 파동 방향(1 오름, −1 내림, 0 아직 모름)
+    """
     n = len(c)
     lo = hi = 0
     d = 0
-    piv: list[tuple[int, str]] = []
+    piv: list[tuple[int, str, int]] = []
+    level: list[float | None] = [None] * n
+    dirs: list[int] = [0] * n
     for i in range(1, n):
         if d == 0:
             if c[i] > c[hi]:
@@ -56,31 +64,43 @@ def zigzag(c: list[float], th: float) -> list[tuple[int, str]]:
             if c[i] < c[lo]:
                 lo = i
             if c[i] >= c[lo] * (1 + th):
-                piv = [(lo, "L")]
+                piv = [(lo, "L", i)]
                 d = 1
                 hi = i
             elif c[i] <= c[hi] * (1 - th):
-                piv = [(hi, "H")]
+                piv = [(hi, "H", i)]
                 d = -1
                 lo = i
         elif d == 1:
             if c[i] > c[hi]:
                 hi = i
             elif c[i] <= c[hi] * (1 - th):
-                piv.append((hi, "H"))
+                piv.append((hi, "H", i))
                 d = -1
                 lo = i
         else:
             if c[i] < c[lo]:
                 lo = i
             elif c[i] >= c[lo] * (1 + th):
-                piv.append((lo, "L"))
+                piv.append((lo, "L", i))
                 d = 1
                 hi = i
-    if d == 1:
-        piv.append((hi, "H"))
-    elif d == -1:
-        piv.append((lo, "L"))
+        dirs[i] = d
+        if d == 1:
+            level[i] = c[hi] * (1 - th)
+        elif d == -1:
+            level[i] = c[lo] * (1 + th)
+    return {"piv": piv, "level": level, "dir": dirs, "hi": hi, "lo": lo, "d": d}
+
+
+def zigzag(c: list[float], th: float) -> list[tuple[int, str]]:
+    """종가 지그재그: th 비율 되돌림마다 고점(H)·저점(L) 확정. 마지막 극점도 넣는다."""
+    s = scan(c, th)
+    piv = [(i, k) for i, k, _ in s["piv"]]
+    if s["d"] == 1:
+        piv.append((s["hi"], "H"))
+    elif s["d"] == -1:
+        piv.append((s["lo"], "L"))
     if piv and piv[0][0] > 0:
         piv.insert(0, (0, "H" if piv[0][1] == "L" else "L"))
     return piv
@@ -143,6 +163,15 @@ def build(klines: list[list], now_ms: int) -> dict:
     ]
     if klines and int(klines[-1][6]) >= now_ms:
         bars[-1]["open"] = True
+    # 그때그때 알 수 있던 전환 가격(사후 아님): 그 주 마감까지의 종가만 쓴다
+    mi, mj = scan(c, MINOR), scan(c, MAJOR)
+    for i, b in enumerate(bars):
+        b["sw"], b["swd"] = r1(mi["level"][i]), mi["dir"][i]
+        b["mj"], b["mjd"] = r1(mj["level"][i]), mj["dir"][i]
+    turns = [
+        {"kind": k, "t": t[p], "c": c[p], "known_t": t[q], "known_c": c[q], "lag": q - p}
+        for p, k, q in mi["piv"]
+    ]
     segs: list[dict] = []
     for b in bars:
         if not b["r"]:
@@ -166,6 +195,24 @@ def build(klines: list[list], now_ms: int) -> dict:
         "major": big,
         "bars": bars,
         "segments": segs,
+        "turns": turns,
+        "now": {
+            "minor": _now(mi, c, t, MINOR),
+            "major": _now(mj, c, t, MAJOR),
+        },
+    }
+
+
+def _now(s: dict, c: list[float], t: list[int], th: float) -> dict | None:
+    """마지막 주 마감 기준: 진행 중인 파동, 그 극값, 바뀌는 종가."""
+    if s["d"] == 0:
+        return None
+    i = s["hi"] if s["d"] == 1 else s["lo"]
+    return {
+        "dir": "up" if s["d"] == 1 else "down",
+        "ext_t": t[i], "ext_c": c[i],
+        "level": round(s["level"][-1], 1),
+        "pct": th,
     }
 
 

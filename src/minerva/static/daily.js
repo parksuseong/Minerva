@@ -131,6 +131,8 @@
       </div><div class="detail">분석 ${esc(String(d.generated_at || "-").replace("T", " "))} KST · 매일 09:10·16:30 갱신</div>` +
       (d.summary?.length ? `<ul style="margin:8px 0 0 16px;padding:0">${
         d.summary.map((s) => `<li class="detail" style="color:inherit">${esc(s)}</li>`).join("")}</ul>` : "");
+    $("buy-headline").hidden = !d.headline;
+    $("buy-headline").textContent = d.headline || "";
     $("trade-memo").hidden = !d.memo?.length && !d.plan?.length;
     $("trade-memo-list").innerHTML = (d.memo || []).map((s) => `<li>${esc(s)}</li>`).join("");
     $("trade-plan-box").hidden = !d.plan?.length;

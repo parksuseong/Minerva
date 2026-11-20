@@ -15,7 +15,8 @@ h1{font-size:1.45rem;margin:0;text-wrap:balance}h2{font-size:1.05rem;margin:0 0 
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
 .now{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:baseline}
 .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-weight:700;border:2px solid currentColor}
-#chart{height:520px;width:100%}
+#chart{height:860px;width:100%}
+@media (max-width:600px){#chart{height:680px}}
 .legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:.9rem}
 .sw{display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:-2px;margin-right:5px;opacity:.85}
 .tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.88rem;font-variant-numeric:tabular-nums}
@@ -37,7 +38,7 @@ ul{margin:0;padding-left:1.2em}li{margin:2px 0}.mono{font-family:var(--mono)}
 <header><h1>비트코인 주봉 장세 지도</h1><p class="sub">바이낸스 BTCUSDT 선물 주봉, 2019-09 ~ 이번 주(진행 중 주는 바뀔 수 있음). 큰 파동(50%)과 작은 파동(15%)의 고점·저점 구조로 다섯 장세를 칠했습니다. 지난 차트를 설명하는 그림이라 고점·저점이 확정된 뒤에야 알 수 있는 값을 씁니다. <span id="upd"></span></p></header>
 <section class="card now" id="now"></section>
 <section class="card"><div id="chart" role="img" aria-label="비트코인 주봉 캔들, 배경색이 장세"></div>
-<div class="legend" id="legend"></div><p class="note"><b>장세 이름이나 아래 구간 표의 줄을 누르면 그 부분만 진하게 보여요. 다시 누르면 전체.</b> <button type="button" id="reset" hidden>전체 보기</button><br>세로 눈금은 로그. 선: 20주선(파랑 실선), 50주선(파랑 점선). 배경 띠 색이 그 주 장세입니다(사후 이름표).<br><b>주황 계단선 = 그 주 마감 때 실제로 알 수 있던 작은 파동 전환 가격</b>(15%), 회색 계단선 = 큰 흐름 전환 가격(50%). 종가가 계단선을 넘은 주에 ▲저점 확정 / ▼고점 확정 표시가 붙습니다. 이 선과 표시는 그 주까지의 종가만 써서 사후 값이 아닙니다.</p></section>
+<div class="legend" id="legend"></div><p class="note"><b>장세 이름이나 아래 구간 표의 줄을 누르면 그 부분만 진하게 보여요. 다시 누르면 전체.</b> <button type="button" id="reset" hidden>전체 보기</button><br>세로 눈금은 로그. 선: 20주선(파랑 실선), 50주선(파랑 점선). 배경 띠 색이 그 주 장세입니다(사후 이름표).<br><b>주황 계단선 = 그 주 마감 때 실제로 알 수 있던 작은 파동 전환 가격</b>(15%), 회색 계단선 = 큰 흐름 전환 가격(50%). 종가가 계단선을 넘은 주에 ▲저점 확정 / ▼고점 확정 표시가 붙습니다. 이 선과 표시는 그 주까지의 종가만 써서 사후 값이 아닙니다.<br>아래 세 칸: 주봉 SCR(원문 설정 Stoch Fast 5 · CCI 20 · RSI 14). 점선은 과매도(초록)·과매수(빨강) 선. 진행 중인 주 값은 주말 마감까지 바뀝니다.</p></section>
 <section class="card"><h2>나누는 규칙</h2><ul>
 <li><b>큰 흐름</b>: 주봉 종가가 고점에서 50% 넘게 빠지면 하락장, 저점에서 50% 넘게 오르면 상승장으로 바뀝니다. <span id="major"></span></li>
 <li><b>작은 파동</b>: 종가가 15% 넘게 되돌리면 한 파동이 끝난 것으로 봅니다.</li>
@@ -64,6 +65,8 @@ const ORDER=["up","corr","side","bounce","down"];
 const tok=k=>getComputedStyle(document.documentElement).getPropertyValue(k).trim();
 const col=r=>tok("--"+r);
 const fmt=t=>new Date(t*1000).toISOString().slice(0,10);
+const scrNow=()=>{const b=D.bars[D.bars.length-1];if(b.st==null)return "";const f=v=>v==null?"-":v.toFixed(1);
+ return `<span class="mono" style="flex-basis:100%">주봉 SCR(원문 설정): Stoch ${f(b.st)} · CCI ${f(b.cci)} · RSI ${f(b.rsi)}${b.open?" (진행 중 주)":""}</span>`;};
 const swNow=()=>{const N=D.now||{};const out=[];const mi=N.minor,mj=N.major;
  const bull=mj&&mj.dir==="up";
  if(mi){const nxt=mi.dir==="down"?(bull?"상승":"반등"):(bull?"조정":"하락");
@@ -74,7 +77,7 @@ const n0=v=>Math.round(v).toLocaleString("ko-KR");
 const last=D.bars[D.bars.length-1];
 document.getElementById("now").innerHTML=`<span>${last.open?"이번 주":"지난주"}(${fmt(last.t)} 주${last.open?", 진행 중":""}) 장세</span>
 <span class="pill" style="color:${col(last.r)}">${NAME[last.r]}</span>
-<span class="mono">종가 ${n0(last.c)} · 이 구간 ${fmt(D.segments[D.segments.length-1].from)} 주부터 ${D.segments[D.segments.length-1].n}주째 (아직 진행 중)</span>`+swNow();
+<span class="mono">종가 ${n0(last.c)} · 이 구간 ${fmt(D.segments[D.segments.length-1].from)} 주부터 ${D.segments[D.segments.length-1].n}주째 (아직 진행 중)</span>`+scrNow()+swNow();
 document.getElementById("legend").innerHTML=ORDER.map(r=>`<button type="button" data-r="${r}" aria-pressed="false"><span class="sw" style="background:${col(r)}"></span>${NAME[r]}</button>`).join("");
 const segs=D.segments.map((s,i)=>({...s,i})).reverse();
 document.getElementById("segs").innerHTML="<tr><th>장세</th><th>시작 주</th><th>마지막 주</th><th>주 수</th><th>구간 등락</th></tr>"+segs.map(s=>{const p=(s.c1/s.c0-1)*100;return `<tr class="row" tabindex="0" data-i="${s.i}"><td><span class="sw" style="background:${col(s.r)}"></span>${NAME[s.r]}</td><td>${fmt(s.from)}</td><td>${fmt(s.to)}</td><td>${s.n}</td><td>${p>0?"+":""}${p.toFixed(1)}%</td></tr>`}).join("");
@@ -116,6 +119,20 @@ function draw(){
  ln("s20",0);ln("s50",2);
  const step=(k,colr,style)=>{const s=chart.addSeries(LC.LineSeries,{color:colr,lineWidth:2,lineType:1,lineStyle:style,priceLineVisible:false,lastValueVisible:true,crosshairMarkerVisible:false});s.setData(D.bars.filter(b=>b[k]!=null).map(b=>({time:b.t,value:b[k]})));return s;};
  step("sw",tok("--corr"),0);step("mj",tok("--side"),2);
+ if(D.scr&&D.bars.some(b=>b.st!=null)){
+  const P=D.scr;
+  const osc=(k,colr,lo,hi,idx,title)=>{const s=chart.addSeries(LC.LineSeries,{color:colr,lineWidth:2,priceLineVisible:false,lastValueVisible:true,crosshairMarkerVisible:false},idx);
+   s.priceScale().applyOptions({mode:0,borderColor:tok("--line")});
+   s.setData(D.bars.filter(b=>b[k]!=null).map(b=>({time:b.t,value:b[k]})));
+   s.createPriceLine({price:lo,color:tok("--up"),lineWidth:1,lineStyle:2,axisLabelVisible:true,title:""});
+   s.createPriceLine({price:hi,color:tok("--down"),lineWidth:1,lineStyle:2,axisLabelVisible:true,title:""});
+   if(LC.createTextWatermark){const pn=chart.panes()[idx];pn&&LC.createTextWatermark(pn,{horzAlign:"left",vertAlign:"top",lines:[{text:title,color:colr,fontSize:12,fontStyle:"bold"}]});}
+   return s;};
+  osc("st","#f7a21b",P.stoch_lo,P.stoch_hi,1,`Stoch Fast %K(${P.stoch}) · ${P.stoch_lo}/${P.stoch_hi}`);
+  osc("cci","#ab47bc",P.cci_lo,P.cci_hi,2,`CCI(${P.cci}) · ±${P.cci_hi}`);
+  osc("rsi","#2962ff",P.rsi_lo,P.rsi_hi,3,`RSI(${P.rsi}) · ${P.rsi_lo}/${P.rsi_hi}`);
+  const ps=chart.panes();[0.55,0.15,0.15,0.15].forEach((f,i)=>ps[i]&&ps[i].setStretchFactor(f));
+ }
  if(LC.createSeriesMarkers&&D.turns){LC.createSeriesMarkers(c,D.turns.map(x=>x.kind==="L"?{time:x.known_t,position:"belowBar",color:tok("--up"),shape:"arrowUp",text:"저점 확정"}:{time:x.known_t,position:"aboveBar",color:tok("--down"),shape:"arrowDown",text:"고점 확정"}));}
  if(hl)setHl(hl);else chart.timeScale().fitContent();
 }

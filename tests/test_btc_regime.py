@@ -70,3 +70,14 @@ def test_build_turns_and_now():
     assert all(x["lag"] >= 1 for x in t) and t[1]["kind"] == "H"
     assert d["now"]["minor"]["dir"] == "up" and d["now"]["minor"]["level"] == 127.5
     assert d["bars"][-1]["sw"] == 127.5 and d["bars"][-1]["swd"] == 1
+
+
+def test_build_has_weekly_scr_values():
+    closes = [100 + (i % 7) * 5 + i for i in range(40)]
+    d = m.build(_kl(closes), now_ms=10**13)
+    b = d["bars"]
+    assert b[3]["st"] is None and b[4]["st"] is not None  # Stoch 5주
+    assert b[18]["cci"] is None and b[19]["cci"] is not None  # CCI 20주
+    assert b[13]["rsi"] is None and b[14]["rsi"] is not None  # RSI 14주
+    assert 0 <= b[-1]["st"] <= 100 and 0 <= b[-1]["rsi"] <= 100
+    assert d["scr"]["stoch"] == 5 and d["scr"]["cci_hi"] == 100

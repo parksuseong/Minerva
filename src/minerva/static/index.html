@@ -108,10 +108,6 @@
     .checklist li { padding: 4px 0; }
     table.acct { width: 100%; border-collapse: collapse; font-size: 13px; }
     .scroll { overflow-x: auto; }
-    #tab-review h3 { font-size: 14px; margin: 12px 0 4px; }
-    #tab-review ul { margin: 0; padding-left: 20px; }
-    #tab-review li { margin: 2px 0; }
-    #tab-review details > summary { cursor: pointer; }
     #tab-gose h3 { font-size: 14px; margin: 12px 0 4px; }
     #tab-gose ul, #tab-gose ol { margin: 4px 0; padding-left: 20px; }
     #tab-gose details > summary { cursor: pointer; margin: 6px 0; }
@@ -135,7 +131,6 @@
     <button role="tab" data-tab="today" aria-selected="true">🎯 오늘 할 일</button>
     <button role="tab" data-tab="analysis" aria-selected="false">📈 종목 분석</button>
     <button role="tab" data-tab="account" aria-selected="false">💼 계좌</button>
-    <button role="tab" data-tab="review" aria-selected="false">📝 복기</button>
     <button role="tab" data-tab="office" aria-selected="false">🏢 오피스</button>
     <button role="tab" data-tab="scrlab" aria-selected="false">🧪 SCR 실험실</button>
     <button role="tab" data-tab="gose" aria-selected="false">📜 고서</button>
@@ -284,19 +279,6 @@
     </section>
     <section class="card"><h2>선물 미체결 주문</h2><div id="bn-orders" class="placeholder">-</div></section>
     </div>
-  </div>
-
-  <div class="panel" id="tab-review" hidden>
-    <section class="card">
-      <h2>🔎 거래별 복기 <span class="mini">다음 날 09:20 · 청산 뒤 24시간 움직임까지 · 손으로 한 진입·청산도 · AI가 씀 · 규칙은 바꾸지 않음</span></h2>
-      <div id="rv-trades-status" class="placeholder">불러오는 중…</div>
-    </section>
-    <div id="rv-trades"></div>
-    <section class="card">
-      <h2>📝 자동매매 일일 복기 <span class="mini">매일 04:05 전날 것 · AI가 씀 · 규칙은 바꾸지 않음</span></h2>
-      <div id="rv-status" class="placeholder">불러오는 중…</div>
-    </section>
-    <div id="rv-list"></div>
   </div>
 
   <div class="panel" id="tab-office" hidden>
@@ -532,7 +514,6 @@
   <script src="/static/scrnear.js?v=20261117a"></script>
   <script src="/static/holdchart.js?v=20261118a"></script>
   <script src="/static/account.js?v=20261118a"></script>
-  <script src="/static/review.js?v=20261117e"></script>
   <script src="/static/trade.js?v=20261111a"></script>
   <script src="/static/office.js?v=20261111a"></script>
   <script src="/static/gose.js?v=20261119b"></script>

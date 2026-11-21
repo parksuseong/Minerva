@@ -513,7 +513,7 @@ def test_latest_signal_uses_closed_bars_and_engine_params(monkeypatch):
     r = rows(300, 100.0)
     r.append([BAR + bt.BAR_MS, 1, 1, 1, 1, 1, BAR + 2 * bt.BAR_MS - 1])  # 진행 중 봉
     sig = bt.latest_signal(r, NOW_MS, None)
-    assert seen["n"] == 300 and seen["p"]["stoch_n"] == 9 and seen["p"]["rsi_n"] == 21
+    assert seen["n"] == 300 and seen["p"]["stoch_n"] == 5 and seen["p"]["rsi_n"] == 14
     assert seen["p"]["mode"] == "cross" and seen["p"]["need"] == 3 and seen["p"]["w"] == 3
     assert sig["dir"] == "long" and sig["bar"] == BAR
 

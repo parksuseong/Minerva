@@ -1,6 +1,6 @@
 // 종목 분석 > 🟡 바이낸스: 엔진이 지금 매매하는 종목 버튼 줄(/api/btc/traded, 새로 들어갈 수 있는 종목 + 든 종목,
 // 사용자 2026-11-13 "바이낸스에는 현재거래하는것만"). BTC를 고르면 btcengine.js가 그리는 BTC 칸을 보이고,
-// 다른 종목은 여기서 같은 틀(SCR ① 15분, Stoch 9·CCI 20·RSI 21, W3, 3개 중 3개, 넘어옴)로 차트·지금 지표를 그린다.
+// 다른 종목은 여기서 같은 틀(SCR ① 15분, Stoch 5·CCI 20·RSI 14, W3, 3개 중 3개, 넘어옴)로 차트·지금 지표를 그린다.
 // 큰 그림·일봉 지표 분석은 /api/soxl이 아는 종목(SOXL·NVDA·ETH)만. 봉 /api/btc/klines?symbol=.
 // 종목 상자는 처음 고를 때 만들고 그때부터 불러온다(안 보는 종목은 바이낸스를 부르지 않게). 보기만, 주문 없음.
 (() => {
@@ -56,7 +56,7 @@
     </section>` : ""}
     <section class="card">
       <h2>차트 <span class="mini">${U.esc(t.symbol)} 선물 15분봉 7일 · SCR ① (엔진과 같은 조건)${t.held ? " · 엔진이 지금 들고 있어요" : ""}</span></h2>
-      <div class="mini">● 초록 = 롱 신호, ▼ 빨강 = 숏 신호. 아래: Stoch 9 · CCI 20 · RSI 21.${t.equity ? " 미국 장이 닫힌 밤·주말엔 선물 거래가 얇아요." : ""}</div>
+      <div class="mini">● 초록 = 롱 신호, ▼ 빨강 = 숏 신호. 아래: Stoch 5 · CCI 20 · RSI 14.${t.equity ? " 미국 장이 닫힌 밤·주말엔 선물 거래가 얇아요." : ""}</div>
       <div id="${t.id}-chart" style="height:640px;margin-top:6px"></div>
     </section>
     <section class="card">
@@ -92,14 +92,15 @@
       const c = el("chart");
       if (!LC || !c || !c.clientWidth) return false;
       ({ chart, series } = U.scrChart(c, { timeFormatter: (x) => V.fmt(x),
-        titles: ["Stoch 9 (20/80)", "CCI 20 (±100)", "RSI 21 (30/70)"], up: GREEN, down: RED }));
+        titles: ["Stoch 5 (20/80)", "CCI 20 (±100)", "RSI 14 (30/70)"], up: GREEN, down: RED }));
       series.marks = LC.createSeriesMarkers(series.candle, []);
       return true;
     };
 
     const recompute = () => {
       if (!bars || !core) return;
-      const p = core.DEFAULTS;
+      // 엔진과 같은 값(btcengine.js가 엔진 응답에서 채움, 아직이면 같은 고정값)
+      const p = window.MinervaEngineScr || Object.assign({}, core.DEFAULTS, { stoch_n: 5, rsi_n: 14 });
       const res = core.signals(bars.map((b) => b[2]), bars.map((b) => b[3]), bars.map((b) => b[4]), p);
       let from = bars.findIndex((b) => b[0] >= (bars.showFrom || 0));
       if (from < 0) from = 0;

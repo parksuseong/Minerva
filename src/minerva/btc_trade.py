@@ -12,7 +12,7 @@ TradFi 무기한(주식·ETF·원자재 등)은 약관에 동의하지 않은 �
 TradFi 전체를 쉰다. 그 시장이 쉬는 시간(`tradingSchedule` NO_TRADING)에는 새로 들어가지 않는다.
 
 신호: SCR 실험실(`strategy/scr_lab.py`)과 같은 계산, 15분봉, 마감된 봉만.
-Stoch 9(20/80)·CCI 20(±100)·RSI 21(30/70), W=3, 3개 중 3개, 넘어옴(cross) 모드.
+Stoch 5(20/80)·CCI 20(±100)·RSI 14(30/70), W=3, 3개 중 3개, 넘어옴(cross) 모드.
 매매: 롱↔숏 갈아타기. 반대 신호면 닫고 반대로 연다. 같은 방향 신호면 그대로 둔다.
 같은 봉에 롱·숏 신호가 둘 다 나오면 아무것도 하지 않는다(화면 `switchSim`과 같음).
 손절: 진입 체결가에서 3% 떨어진 거래소 조건부 지정가 STOP(수량·reduceOnly, 마크 가격 기준).
@@ -207,16 +207,16 @@ CLOSE_MAX_ROUNDS = 80  # 한 실행에서 청산 추격 회차 상한(요청 한
 REDUCE_REJECT = -2022  # "ReduceOnly Order is rejected": 줄일 포지션이 없다
 # 시험에서 Claude 호출을 바꿔 끼우는 자리. None이면 실제 `claude -p`
 AI_CALLER: Callable[[str], str] | None = None
-# 사용자 지정 2026-11-08. 실험실 기본값과 같지만, 실험실 기본값이 바뀌어도
-# 엔진은 바뀌지 않게 따로 고정한다
+# 2026-11-21 사용자 "비트코인 자동매매도 저렇게바꿔줘": 분석과 같은 원문 설정 Stoch Fast K 5·
+# CCI 20·RSI 14로(그 전 2026-11-08 지정 9·20·21). 실험실 기본값과 따로 고정한다
 SCR_PARAMS: dict = {
-    "stoch_n": 9,
+    "stoch_n": 5,
     "stoch_lo": 20.0,
     "stoch_hi": 80.0,
     "cci_n": 20,
     "cci_lo": -100.0,
     "cci_hi": 100.0,
-    "rsi_n": 21,
+    "rsi_n": 14,
     "rsi_lo": 30.0,
     "rsi_hi": 70.0,
     "w": 3,
@@ -1155,7 +1155,7 @@ class Market:
 
     def klines(self, interval: str) -> list[list]:
         if interval not in self._cache:
-            # 신호용 15분봉은 499개(무게 2): 50종목을 매번 받는다. RSI 21 와일더 평균은 400봉이면
+            # 신호용 15분봉은 499개(무게 2): 50종목을 매번 받는다. RSI 와일더 평균은 400봉이면
             # 1000봉과 값이 사실상 같고(차이 1e-6 미만), 복구 창 96봉도 넉넉하다
             n = ENGINE_BARS if interval == INTERVAL else btc.LIMIT
             self._cache[interval] = _public(
@@ -4948,7 +4948,7 @@ def run(
         held_txt = f"{_who(pos_symbol(p), p['side'])} {p['qty']}" if p else "없음"
         send(
             f"🤖 BTC 자동매매 엔진 시작 — {mode_ko}\n"
-            f"{_universe_txt(uni)} · SCR 15분 · Stoch 9/CCI 20/RSI 21 · {LEVERAGE}배 · "
+            f"{_universe_txt(uni)} · SCR 15분 · Stoch 5/CCI 20/RSI 14 · {LEVERAGE}배 · "
             "한 번에 한 종목 · 손절·익절은 진입 때 AI(기본 손절 3%) · 롱↔숏 갈아타기\n"
             f"마지막 봉 {summary['bar']}: {decision} · 포지션 {held_txt}"
             + (f"\n진입 정지: {', '.join(halts)}" if halts else "")

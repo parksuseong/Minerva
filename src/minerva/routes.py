@@ -66,10 +66,14 @@ def account_view_token() -> str | None:
     return path.read_text().strip() or None
 
 
-def _check_account_token(token: str) -> None:
+def _token_ok(token: str) -> bool:
     want = account_view_token()
     # 비 ASCII str은 compare_digest가 TypeError(500)를 내서 바이트로 비교한다
-    if want and not hmac.compare_digest(token.encode(), want.encode()):
+    return not want or hmac.compare_digest(token.encode(), want.encode())
+
+
+def _check_account_token(token: str) -> None:
+    if not _token_ok(token):
         raise HTTPException(status_code=403, detail="invalid token")
 
 
@@ -94,9 +98,11 @@ def btc_analysis() -> dict:
 
 
 @router.get("/api/btc/engine")
-def btc_engine() -> dict:
-    """BTC 자동매매 엔진 상태(읽기 전용): 모드·포지션·마지막 신호·AI 손절익절·정지 게이지·거래."""
-    return btc_view.engine_view()
+def btc_engine(x_minerva_token: str = Header("")) -> dict:
+    """BTC 자동매매 엔진 상태(읽기 전용): 모드·포지션·마지막 신호·AI 손절익절·정지 게이지·거래.
+    거래 내역·손익·포지션·잔고는 계좌 탭 비밀번호가 있을 때만(사용자 2026-11-21)."""
+    data = btc_view.engine_view()
+    return data if _token_ok(x_minerva_token) else btc_view.redact_engine(data)
 
 
 @router.get("/api/btc/traded")

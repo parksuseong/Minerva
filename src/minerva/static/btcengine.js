@@ -48,6 +48,7 @@
   const lastClose = () => (bars && bars.length ? bars[bars.length - 1][4] : null);
 
   const posHtml = (p) => {
+    if (!p && eng && eng.locked) return "🔒 계좌 탭에서 열람 비밀번호를 넣으면 보여요";
     if (!p) return "포지션 없음 (다음 신호를 기다려요)";
     // 이 화면의 봉은 BTC라 다른 종목은 평가손익을 계산하지 않는다
     const c = isBtc(p) ? lastClose() : null;
@@ -69,6 +70,9 @@
        종가 ${num(s.close)} → <b>${esc(s.decision)}</b>`;
 
   const gaugeHtml = (g) => {
+    if (eng && eng.locked) {
+      return `<p class="mini">평가액이 시드 −20% 아래로 가거나 최근 ${g.winrate_days}일 승률이 ${num(g.winrate_min * 100, 0)}% 아래면 진입 정지 · 🔒 지금 값은 비밀번호가 있어야 보여요</p>`;
+    }
     const eq = g.equity, floor = g.floor;
     const room = eq != null && floor ? (eq / floor - 1) * 100 : null;
     // winrate_n = 승패가 난 거래(무승부 제외). 승률 = 이김 / (이김 + 짐)
@@ -144,9 +148,11 @@
   };
   const TRADE_HEAD = "<thead><tr><th>청산</th><th>종목·방향</th><th>진입 → 청산</th><th>가격 변화</th><th>손익 USDT</th><th>이유</th><th>승패</th></tr></thead>";
 
+  const LOCKED = '<p class="placeholder">🔒 거래 내역·손익은 계좌 탭에서 열람 비밀번호를 넣으면 보여요</p>';
   const renderTrades = () => {
     if (!$("bte-trades")) return;
     const dry = eng.mode === "dry";
+    if (eng.locked) { $("bte-trades").innerHTML = LOCKED; return; }
     const rows = eng.trades || [];
     let html = dry ? '<div class="regime"><span class="chip">🧪 드라이런 — 가상 거래예요 (주문 없음)</span></div>' : "";
     const hold = holdRow(eng.position);
@@ -165,6 +171,7 @@
   // 계좌 > 비트코인: 실전 시작(start-live) 이후 엔진 거래와 합계
   const renderAcct = () => {
     if (!$("bte-acct")) return;
+    if (eng.locked) { $("bte-acct").innerHTML = LOCKED; return; }
     if (eng.mode !== "live" || !eng.live_since) {
       $("bte-acct").innerHTML = '<p class="placeholder">실전 자동매매를 시작하면 그때부터 여기에 쌓여요 (지금은 드라이런)</p>';
       return;
@@ -275,7 +282,7 @@
   const get = (url, headers) => fetch(url, { headers }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
   // 계좌 탭과 같은 토큰(잠갔을 때만 필요). 못 읽으면 보유 줄의 지금 가격만 빠진다.
   const token = () => { try { return localStorage.getItem("minerva-account-token") || ""; } catch (e) { return ""; } };
-  const load = () => Promise.all([get("/api/btc/engine"), get("/api/btc/klines?interval=15m&days=7"), get("/api/btc"),
+  const load = () => Promise.all([get("/api/btc/engine", { "X-Minerva-Token": token() }), get("/api/btc/klines?interval=15m&days=7"), get("/api/btc"),
     get("/api/account/binance", { "X-Minerva-Token": token() })])
     .then(([e, k, g, a]) => {
       eng = e || { status: "error" };

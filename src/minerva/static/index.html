@@ -136,6 +136,7 @@
     <button role="tab" data-tab="gose" aria-selected="false">📜 고서</button>
     <button role="tab" data-tab="regime" aria-selected="false">🧭 장세</button>
     <button role="tab" data-tab="growth" aria-selected="false">🌱 성장 후보</button>
+    <button role="tab" data-tab="paper" aria-selected="false">🔬 가상 추적</button>
   </nav>
 
   <div class="panel" id="tab-today">
@@ -391,6 +392,15 @@
     <div id="growth-buckets"></div>
   </div>
 
+  <div class="panel" id="tab-paper" hidden>
+    <section class="card">
+      <h2>🔬 실시간 가상 추적 (주문 없음) <span class="mini">바이낸스 USDT-M 상위 30 · 4시간마다 갱신</span></h2>
+      <p><b>연구 시험이지 매매가 아닙니다.</b> 과거로 고른 규칙이 앞으로 오는 자료(2026-11-01~)에서도 통하는지 가상으로만 따라갑니다. 실제 주문·계좌와 연결되지 않아요.</p>
+      <div id="paper-status" class="placeholder">불러오는 중…</div>
+    </section>
+    <div id="paper-rules"></div>
+  </div>
+
   <div class="panel" id="tab-gose" hidden>
     <section class="card">
       <h2>📘 매매 규칙서 <span class="mini">전략마다 이 글만 보고 그대로 매매할 수 있게 · 미검증, 가상 계좌만</span></h2>
@@ -529,5 +539,6 @@
   <script src="/static/office.js?v=20261111a"></script>
   <script src="/static/gose.js?v=20261119b"></script>
   <script src="/static/growth.js?v=20261121a"></script>
+  <script src="/static/edge_paper.js?v=20261121a"></script>
 </body>
 </html>

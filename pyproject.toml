@@ -17,6 +17,13 @@ dev = [
     "pytest>=8",
     "httpx>=0.27",
     "ruff>=0.6",
+    "minerva[research]",
+]
+# 실시간 가상 추적(edge_paper): 연구 모델 파일을 그대로 읽는 버전으로 고정
+research = [
+    "numpy==2.0.2",
+    "scipy==1.13.1",
+    "lightgbm==4.5.0",
 ]
 
 [tool.setuptools.packages.find]

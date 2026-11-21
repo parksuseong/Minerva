@@ -513,6 +513,30 @@ def btc_regime_view(tf: str = "1w") -> dict:
     return {"status": "ok", **data}
 
 
+EDGE_PAPER_STALE_HOURS = 10  # 4시간마다 돌므로 두 번 넘게 빠지면 오래됨
+
+
+@router.get("/api/edge-paper")
+def edge_paper_view() -> dict:
+    """🔬 가상 추적 탭: 연구 규칙 실시간 가상 추적(주문 없음, 계좌 자료 없음).
+
+    `minerva-edge-paper.timer`가 쓴 summary.json만 읽는다(numpy를 부르지 않게 경로만 같이 씀)."""
+    root = Path(os.environ.get("MINERVA_EDGE_PAPER_DIR", "~/.minerva/edge_paper")).expanduser()
+    try:
+        data = json.loads((root / "summary.json").read_text())
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
+        return {"status": "pending", "message": "아직 가상 추적 기록이 없어요 (4시간마다 갱신)"}
+    try:
+        age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(data["generated_at"])
+                 ).total_seconds() / 3600
+    except (KeyError, TypeError, ValueError):
+        age_h = None
+    data["stale"] = age_h is None or age_h > EDGE_PAPER_STALE_HOURS
+    return data
+
+
 @router.get("/api/growth")
 def growth_view() -> dict:
     """🌱 성장 후보 탭: 10배·100배 관심 목록(매수 추천 아님).

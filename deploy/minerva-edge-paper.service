@@ -1,0 +1,24 @@
+# 🔬 가상 추적: 연구 규칙(V01·V06·F) 실시간 가상 추적. 공개 시세 GET + data.binance.vision 월 묶음만(키·주문 없음).
+# 4시간 결정 시각의 1시간봉 마감 뒤 밀린 결정을 처리하고, 달이 바뀌면 그 달 모델을 다시 맞춘다(약 2~4분).
+# 결과: ~/.minerva/edge_paper/summary.json → /api/edge-paper → 🔬 가상 추적 탭
+# 설치: sudo cp deploy/minerva-edge-paper.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-edge-paper.timer
+# 의존성: .venv/bin/pip install -e ".[research]" (numpy·scipy·lightgbm 고정 버전)
+[Unit]
+Description=Minerva edge paper tracker (research rules, no orders)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+Environment=OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+# 겹침은 모듈 안 flock(~/.minerva/edge_paper/.lock), 부하 > 2면 그 회는 건너뜀(--max-load)
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.edge_paper run --max-load 2
+# 실전 엔진과 같은 3.8GB 기계: 낮은 우선순위·메모리·CPU 상한
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=700M
+CPUQuota=50%
+TimeoutStartSec=3600

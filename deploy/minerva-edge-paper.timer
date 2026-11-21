@@ -1,0 +1,10 @@
+# 4시간 UTC 결정 시각(00·04·08·12·16·20시)의 1시간봉 마감 7분 뒤 = KST 10:07·14:07·18:07·22:07·02:07·06:07.
+[Unit]
+Description=Run Minerva edge paper tracker every 4h (UTC 01:07, 05:07, ...)
+
+[Timer]
+OnCalendar=*-*-* 01,05,09,13,17,21:07:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

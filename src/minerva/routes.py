@@ -36,7 +36,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Header, HTTPException, Response
 
-from minerva import btc_regime, btc_review, btc_trade_review, btc_view, gose, perf
+from minerva import btc_regime, btc_review, btc_trade_review, btc_view, gose, growth, perf
 from minerva.strategy import soxl
 
 router = APIRouter()
@@ -510,6 +510,26 @@ def btc_regime_view(tf: str = "1w") -> dict:
     data = _read(btc_regime.out_path(tf))
     if not data or not data.get("bars"):
         return {"status": "pending"}
+    return {"status": "ok", **data}
+
+
+@router.get("/api/growth")
+def growth_view() -> dict:
+    """🌱 성장 후보 탭: 10배·100배 관심 목록(매수 추천 아님).
+
+    `minerva-growth.timer`가 만든 파일만 읽는다. 없거나 깨졌으면 pending, 오래됐으면 stale."""
+    data = growth.read_json(growth.out_path())
+    if not data or not isinstance(data.get("buckets"), list):
+        return {"status": "pending",
+                "message": "아직 성장 후보 목록이 없어요 (화~토 07:40 자동 갱신)"}
+    try:
+        age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(data["generated_at"])
+                 ).total_seconds() / 3600
+    except (KeyError, TypeError, ValueError):
+        age_h = None
+    if age_h is None or age_h > growth.STALE_HOURS:
+        data["stale"] = True
+        data.setdefault("stale_reason", "갱신이 오래 멈춤")
     return {"status": "ok", **data}
 
 

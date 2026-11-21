@@ -135,6 +135,7 @@
     <button role="tab" data-tab="scrlab" aria-selected="false">🧪 SCR 실험실</button>
     <button role="tab" data-tab="gose" aria-selected="false">📜 고서</button>
     <button role="tab" data-tab="regime" aria-selected="false">🧭 장세</button>
+    <button role="tab" data-tab="growth" aria-selected="false">🌱 성장 후보</button>
   </nav>
 
   <div class="panel" id="tab-today">
@@ -380,6 +381,16 @@
     <iframe id="regime-frame" title="비트코인 주봉 장세 지도" style="width:100%;border:0;min-height:900px;display:block"></iframe>
   </div>
 
+  <div class="panel" id="tab-growth" hidden>
+    <section class="card">
+      <h2>🌱 성장 후보 <span class="mini">미국 상장 보통주 · 시총 $1B~$400B · 매일 갱신</span></h2>
+      <p><b>관심 목록이지 매수 추천이 아닙니다.</b> 큰 하락장 공포 구간에서 분할 매수할 후보.</p>
+      <p class="mini">애플만큼 오르려면 시작 시총이 애플의 1/10~1/100 → 10배 후보 $40B~$400B, 100배 후보 $1B~$40B(위험 높음). 매출이 빨리 느는 순서일 뿐 앞으로도 그렇다는 보장은 없어요. 공포 초입 신호가 나면 텔레그램으로 한 번 알려요.</p>
+      <div id="growth-status" class="placeholder">불러오는 중…</div>
+    </section>
+    <div id="growth-buckets"></div>
+  </div>
+
   <div class="panel" id="tab-gose" hidden>
     <section class="card">
       <h2>📘 매매 규칙서 <span class="mini">전략마다 이 글만 보고 그대로 매매할 수 있게 · 미검증, 가상 계좌만</span></h2>
@@ -517,5 +528,6 @@
   <script src="/static/trade.js?v=20261111a"></script>
   <script src="/static/office.js?v=20261111a"></script>
   <script src="/static/gose.js?v=20261119b"></script>
+  <script src="/static/growth.js?v=20261121a"></script>
 </body>
 </html>

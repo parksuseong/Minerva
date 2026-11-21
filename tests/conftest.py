@@ -20,6 +20,8 @@ os.environ["MINERVA_ACCOUNT_DIR"] = str(_TMP / "account")
 os.environ["MINERVA_GOSE_DIR"] = str(_TMP / "gose")
 # 원전 비공개 자료(~/.minerva/feed)도 임시로
 os.environ["MINERVA_FEED_DIR"] = str(_TMP / "feed")
+# 성장 후보 폴더(~/.minerva/growth: 목록·재무 캐시·공포 알림 기록)도 임시로
+os.environ["MINERVA_GROWTH_DIR"] = str(_TMP / "growth")
 
 
 def pytest_sessionstart(session):

@@ -4394,6 +4394,7 @@ def soon_sched(now_ms, start_in_ms, hours):
 
 
 def test_market_closed_before_long_closure(env, monkeypatch):
+    monkeypatch.setattr(bt, "PRE_CLOSE", True)  # 꺼져 있어도 켰을 때 동작은 지킨다
     tf = {"contract": bt.TRADFI, "underlying": "EQUITY"}
 
     def why(start_in_ms, hours):
@@ -4423,6 +4424,7 @@ def preclose_setup(env, multi, monkeypatch):
 
 
 def test_tradfi_position_closed_an_hour_before_weekend(env, multi, monkeypatch):
+    monkeypatch.setattr(bt, "PRE_CLOSE", True)  # 꺼져 있어도 켰을 때 동작은 지킨다
     ex, sched = preclose_setup(env, multi, monkeypatch)
     later = NOW.replace(minute=45)
     sched["s"] = soon_sched(int(later.timestamp() * 1000), 45 * 60_000, 48)
@@ -4464,7 +4466,20 @@ def test_crypto_position_not_closed_before_weekend(env, multi, monkeypatch):
     assert not any("🌙" in m for m in env["sent"])
 
 
+def test_pre_close_off_keeps_tradfi_position_over_weekend(env, multi, monkeypatch):
+    # 2026-11-21 사용자 "휴장전 정리를 왜 하냐 하지마": 기본값은 꺼짐
+    assert bt.PRE_CLOSE is False
+    ex, sched = preclose_setup(env, multi, monkeypatch)
+    later = NOW.replace(minute=45)
+    sched["s"] = soon_sched(int(later.timestamp() * 1000), 45 * 60_000, 48)
+    signals(monkeypatch, multi, {})
+    bt.run(now=later, client=ex, market_=multi, send=env["send"])
+    assert state()["position"]["symbol"] == "NVDAUSDT"
+    assert not any("🌙" in m for m in env["sent"])
+
+
 def test_closure_split_into_adjacent_pieces_still_counts(env, monkeypatch):
+    monkeypatch.setattr(bt, "PRE_CLOSE", True)  # 꺼져 있어도 켰을 때 동작은 지킨다
     start = NOW_MS + 30 * 60_000
     sched = {"EQUITY": {"sessions": [
         {"startTime": start, "endTime": start + 3_600_000, "type": "NO_TRADING"},

@@ -74,7 +74,7 @@ def test_dry_view(files):
     assert [t["mode"] for t in v["trades"]] == ["dry"]  # 지금 모드만
     assert v["gauges"]["seed"] == 815.5 and v["gauges"]["floor"] == pytest.approx(652.4)
     assert v["gauges"]["winrate_n"] == 1 and v["dry_orders"][0]["action"] == "open"
-    assert v["params"]["scr"]["stoch_n"] == 9 and v["params"]["leverage"] == 3
+    assert v["params"]["scr"]["stoch_n"] == 5 and v["params"]["leverage"] == 3
     got = TestClient(app).get("/api/btc/engine").json()
     assert got["mode"] == "dry" and got["position"]["side"] == "long"
 

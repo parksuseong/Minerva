@@ -221,7 +221,7 @@
     const LC = window.LightweightCharts;
     if (!LC || !$("bte-chart") || !$("bte-chart").clientWidth) return false;
     ({ chart, series } = U.scrChart($("bte-chart"), { timeFormatter: (t) => fmt(t),
-      titles: ["Stoch 9 (20/80)", "CCI 20 (±100)", "RSI 21 (30/70)"], up: GREEN, down: RED }));
+      titles: ["Stoch 5 (20/80)", "CCI 20 (±100)", "RSI 14 (30/70)"], up: GREEN, down: RED }));
     series.marks = LC.createSeriesMarkers(series.candle, []);
     return true;
   };
@@ -272,6 +272,7 @@
   const recompute = () => {
     if (!bars || !core || !eng || eng.status !== "ok") return;
     const p = eng.params.scr;
+    window.MinervaEngineScr = p;
     const res = core.signals(bars.map((b) => b[2]), bars.map((b) => b[3]), bars.map((b) => b[4]), p);
     let from = bars.findIndex((b) => b[0] >= (bars.showFrom || 0));
     if (from < 0) from = 0;

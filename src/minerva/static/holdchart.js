@@ -52,7 +52,7 @@ window.HoldChart = (() => {
     if (!LC || !c.clientWidth) return;
     if (!b.chart) {
       ({ chart: b.chart, series: b.series } = U.scrChart(c, { timeFormatter: fmt,
-        titles: ["Stoch 9 (20/80)", "CCI 20 (±100)", "RSI 21 (30/70)"], up: GREEN, down: RED }));
+        titles: ["Stoch 5 (20/80)", "CCI 20 (±100)", "RSI 14 (30/70)"], up: GREEN, down: RED }));
       b.series.marks = LC.createSeriesMarkers(b.series.candle, []);
     }
     const p = (eng && eng.params && eng.params.scr) || core.DEFAULTS;

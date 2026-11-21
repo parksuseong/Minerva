@@ -3193,6 +3193,7 @@ SCHED = {
 
 
 def test_market_closed_by_schedule(env, monkeypatch):
+    monkeypatch.setattr(bt, "MARKET_HOURS", True)  # 꺼져 있어도 켰을 때 동작은 지킨다
     calls = []
 
     def pub(url, timeout=15):
@@ -3219,7 +3220,18 @@ def test_market_closed_by_schedule(env, monkeypatch):
     assert bt.market_closed(ctx2, {}, {**tf, "underlying": "EQUITY"}) == ""  # 못 받으면 허용
 
 
+def test_market_hours_off_allows_tradfi_entry_any_time(env, monkeypatch):
+    # 사용자 2026-11-22 "평일이든 주말이든 24시간 내내 거래해": 시간표를 묻지도 않고 막지 않는다
+    assert bt.MARKET_HOURS is False
+    monkeypatch.setattr(bt, "_sessions", lambda ctx, key: (_ for _ in ()).throw(AssertionError))
+    ctx = bt.Ctx(None, None, lambda t: None, NOW, True)
+    assert bt.market_closed(ctx, {}, {"contract": bt.TRADFI, "underlying": "EQUITY"}) == ""
+    far = {"tradfi_until_ms": ctx.now_ms + 1000}
+    assert "약관" in bt.market_closed(ctx, far, {"contract": bt.TRADFI, "underlying": "EQUITY"})
+
+
 def test_tradfi_entry_skipped_quietly_when_market_closed(env, multi, monkeypatch):
+    monkeypatch.setattr(bt, "MARKET_HOURS", True)  # 꺼져 있어도 켰을 때 동작은 지킨다
     live(env)
     ex = MultiExchange()
     monkeypatch.setitem(
@@ -4394,6 +4406,7 @@ def soon_sched(now_ms, start_in_ms, hours):
 
 
 def test_market_closed_before_long_closure(env, monkeypatch):
+    monkeypatch.setattr(bt, "MARKET_HOURS", True)  # 꺼져 있어도 켰을 때 동작은 지킨다
     monkeypatch.setattr(bt, "PRE_CLOSE", True)  # 꺼져 있어도 켰을 때 동작은 지킨다
     tf = {"contract": bt.TRADFI, "underlying": "EQUITY"}
 
@@ -4424,6 +4437,7 @@ def preclose_setup(env, multi, monkeypatch):
 
 
 def test_tradfi_position_closed_an_hour_before_weekend(env, multi, monkeypatch):
+    monkeypatch.setattr(bt, "MARKET_HOURS", True)  # 꺼져 있어도 켰을 때 동작은 지킨다
     monkeypatch.setattr(bt, "PRE_CLOSE", True)  # 꺼져 있어도 켰을 때 동작은 지킨다
     ex, sched = preclose_setup(env, multi, monkeypatch)
     later = NOW.replace(minute=45)

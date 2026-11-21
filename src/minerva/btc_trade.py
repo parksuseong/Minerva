@@ -120,6 +120,9 @@ SESSION_KEYS = ("EQUITY", "KR_EQUITY", "HK_EQUITY", "CN_EQUITY", "COMMODITY", "F
 # 2026-11-21 사용자 "휴장전 정리를 왜 하냐 하지마" → 끔. 휴장 1시간 전 진입 막기도 같이 꺼지고
 # 주말에는 손절·트레일 주문만 걸린 채로 들고 간다.
 PRE_CLOSE = False
+# 2026-11-22 사용자 "평일이든 주말이든 24시간 내내 거래해" → 끔. TradFi도 시장 쉬는 시간
+# (NO_TRADING, 주말·장 밖)에 새로 들어간다. 바이낸스는 그 시간에도 얇게 거래를 받는다
+MARKET_HOURS = False
 PRE_CLOSE_MS = 60 * 60_000
 PRE_CLOSE_GAP_MS = 6 * 3_600_000
 INTERVAL = "15m"
@@ -4091,7 +4094,7 @@ def market_closed(ctx: Ctx, state: dict, flt: dict) -> str:
     if int(state.get("tradfi_until_ms") or 0) > ctx.now_ms:
         return "TradFi 약관 미동의로 쉬는 중"
     key = flt.get("underlying")
-    if key not in SESSION_KEYS:
+    if key not in SESSION_KEYS or not MARKET_HOURS:
         return ""
     soon = closing_soon(ctx, flt)
     if soon:

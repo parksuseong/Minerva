@@ -1,0 +1,10 @@
+# 화~토 07:40 KST: 미국 장 마감(05:00~06:00 KST) 뒤, 고서 가상매매(07:20)와 겹치지 않게.
+[Unit]
+Description=Refresh Minerva growth watchlist Tue-Sat 07:40 KST
+
+[Timer]
+OnCalendar=Tue..Sat *-*-* 07:40:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,22 @@
+# 🌱 성장 후보(10배·100배 관심 목록) 자료: 나스닥 스크리너 공개 JSON + 야후 공개 재무·가격(키 없음, 주문 없음).
+# 공포 초입 신호가 새로 나면 텔레그램 한 번(--notify, ~/.minerva/growth/alert.json으로 중복 막음).
+# 결과: ~/.minerva/growth/latest.json → /api/growth → 🌱 성장 후보 탭
+# 설치: sudo cp deploy/minerva-growth.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-growth.timer
+[Unit]
+Description=Minerva growth watchlist (10x/100x candidates, read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.growth --notify
+# 실전 엔진·연구 작업과 같은 3.8GB 기계: 낮은 우선순위·메모리·CPU 상한
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=500M
+CPUQuota=40%
+# 재무 캐시가 비면 약 2,400종목 × 0.3초 + 응답(첫 실행·주 1회쯤 20~30분)
+TimeoutStartSec=5400

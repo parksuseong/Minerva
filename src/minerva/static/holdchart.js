@@ -19,7 +19,9 @@ window.HoldChart = (() => {
     const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(s || "");
     return m ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) / 1000 : null;
   };
-  const get = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  // 엔진 포지션(손절선)은 계좌 탭과 같은 비밀번호가 있어야 온다
+  const token = () => { try { return localStorage.getItem("minerva-account-token") || ""; } catch (e) { return ""; } };
+  const get = (url) => fetch(url, { headers: { "X-Minerva-Token": token() } }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
 
   const boxes = new Map(); // symbol → { el, chart, series, bars, pos, dp, at }
   let positions = [];

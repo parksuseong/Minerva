@@ -361,3 +361,37 @@ def test_engine_view_rows_carry_their_leverage(files):
     v = btc_view.engine_view(NOW)
     assert v["position"]["leverage"] == 3
     assert [r["leverage"] for r in v["trades"]] == [1, 3]
+
+
+def test_engine_trades_need_account_token(tmp_path, monkeypatch):
+    # 사용자 2026-11-21: 자동매매 거래 내역·손익·포지션은 비밀번호가 있을 때만
+    from fastapi.testclient import TestClient
+
+    from minerva import btc_view, routes
+    from minerva.main import app
+
+    full = {
+        "status": "ok",
+        "live_totals": {"pnl": 5},
+        "position": {"symbol": "ANTUSDT"},
+        "trades": [{"pnl": 1}],
+        "dry_orders": [],
+        "last_run": {"at": "x", "position": {"symbol": "ANTUSDT"}, "equity": 900, "signal": None},
+        "last_signal": None,
+        "gauges": {"seed": 800, "equity": 900, "floor": 640, "winrate_days": 30},
+        "params": {"leverage": 3},
+    }
+    monkeypatch.setattr(btc_view, "engine_view", lambda: dict(full))
+    tok = tmp_path / "view.token"
+    tok.write_text("secret")
+    monkeypatch.setenv("MINERVA_ACCOUNT_TOKEN_FILE", str(tok))
+    monkeypatch.delenv("MINERVA_ACCOUNT_TOKEN", raising=False)
+    c = TestClient(app)
+    v = c.get("/api/btc/engine").json()
+    assert v["locked"] and v["trades"] == [] and v["position"] is None
+    assert v["live_totals"] is None and v["gauges"]["equity"] is None
+    assert "position" not in v["last_run"] and "equity" not in v["last_run"]
+    assert v["params"] == {"leverage": 3} and v["gauges"]["winrate_days"] == 30
+    v = c.get("/api/btc/engine", headers={"X-Minerva-Token": "secret"}).json()
+    assert v["trades"] == [{"pnl": 1}] and "locked" not in v
+    assert routes.account_view_token() == "secret"

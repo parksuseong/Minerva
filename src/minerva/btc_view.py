@@ -268,3 +268,31 @@ def engine_view(now: datetime | None = None) -> dict:
         "trades": list(reversed(closed)),
         "dry_orders": list(reversed(_tail("dry.jsonl", 30))) if mode == "dry" else [],
     }
+
+
+PRIVATE_RUN_KEYS = ("position", "equity", "balance", "margin", "pnl")
+
+
+def redact_engine(view: dict) -> dict:
+    """비밀번호 없는 사람에게 보여줄 엔진 상태: 거래 내역·손익·포지션·잔고를 뺀다
+    (사용자 2026-11-21 "매매내역까지 다보이는데 이것도 나만 봐야지"). 신호·지표·설정은 그대로."""
+    if view.get("status") != "ok":
+        return view
+
+    def run(e: dict | None) -> dict | None:
+        return {k: v for k, v in e.items() if k not in PRIVATE_RUN_KEYS} if e else e
+
+    gauges = dict(view.get("gauges") or {})
+    for k in ("seed", "equity", "floor", "winrate_n", "winrate_wins", "winrate_draws"):
+        gauges[k] = None
+    return {
+        **view,
+        "locked": True,
+        "live_totals": None,
+        "position": None,
+        "trades": [],
+        "dry_orders": [],
+        "last_run": run(view.get("last_run")),
+        "last_signal": run(view.get("last_signal")),
+        "gauges": gauges,
+    }

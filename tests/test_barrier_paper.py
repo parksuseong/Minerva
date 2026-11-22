@@ -12,6 +12,16 @@ H = bp.HR_MS
 D = bp.DAY_MS
 
 
+@pytest.fixture(autouse=True)
+def _no_real_telegram(monkeypatch):
+    from minerva import notify
+
+    def boom(*_a, **_k):
+        raise AssertionError("테스트에서 실제 텔레그램 전송 금지")
+
+    monkeypatch.setattr(notify, "send", boom)
+
+
 def bar(t, o, h, low, c):
     return [t, o, h, low, c]
 
@@ -189,3 +199,275 @@ def test_non_ascii_symbol_is_quoted():
 
     bp.daily_klines("牛来USDT", get=fake)
     assert seen[0].isascii()
+
+
+# ---------------------------------------------------------------- 규칙별 장벽·자동 교체·주문흐름
+
+
+def test_breakeven_per_geometry():
+    assert bp.breakeven(0.05, 0.03) == pytest.approx(0.3925)
+    assert bp.breakeven(0.03, 0.03) == pytest.approx(0.5233, abs=1e-4)
+    assert bp.breakeven(0.06, 0.03) == pytest.approx(0.3489, abs=1e-4)
+
+
+def test_wilson_upper():
+    assert bp.wilson_upper(0, 0) == 1.0
+    # 30건 중 9승(30%) → 95% 상한 약 47.9%
+    assert bp.wilson_upper(9, 30) == pytest.approx(0.479, abs=0.002)
+    assert bp.wilson_upper(30, 30) == pytest.approx(1.0)
+
+
+def _closed(results, nets, exit_ms):
+    return [{"result": r, "net": n, "exit_ms": exit_ms} for r, n in zip(results, nets)]
+
+
+def test_retire_reason_rules():
+    now = bp.day_ms(date(2026, 12, 31))
+    old = now - 30 * D
+    be = bp.breakeven(0.03, 0.03)
+    # 30건 미만이고 최근 손실 작으면 그대로
+    assert bp.retire_reason(_closed(["loss"] * 29, [-0.031] * 29, old), now, be) is None
+    # 30건 · 승률 30% → 상한 < 52.3%
+    tr = _closed(["win"] * 9 + ["loss"] * 21, [0.03] * 9 + [-0.03] * 21, old)
+    assert "손익분기" in bp.retire_reason(tr, now, be)
+    # 승률은 괜찮지만 거래당 평균 < 0
+    tr = _closed(["win"] * 20 + ["loss"] * 10, [0.001] * 20 + [-0.03] * 10, old)
+    assert "평균" in bp.retire_reason(tr, now, bp.breakeven(0.05, 0.03))
+    # 건수 무관: 최근 14일 합 < −15%
+    tr = _closed(["loss"] * 6, [-0.031] * 6, now - 2 * D)
+    assert "최근 14일" in bp.retire_reason(tr, now, be)
+    # 같은 손실이 14일 전이면 아직
+    assert bp.retire_reason(_closed(["loss"] * 6, [-0.031] * 6, old), now, be) is None
+
+
+def test_auto_retire_logs_and_activates_queue(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    monkeypatch.setattr(bp, "QUEUE", ["QQQ"])
+    monkeypatch.setitem(bp.RULES, "QQQ", {**bp.RULES["FLW"], "name": "대기 후보"})
+    now = bp.day_ms(date(2026, 11, 25)) + 5 * H
+    st: dict = {}
+    assert not bp.rule_open("QQQ", st, now)  # 대기 후보는 꺼져 있음
+    trades = [
+        {
+            "rule": "DUMP",
+            "sym": f"S{k}USDT",
+            "side": "L",
+            "entry_ms": now - 5 * H,
+            "entry": 1.0,
+            "exit": 0.97,
+            "result": "loss",
+            "net": -0.031,
+            "exit_ms": now - H,
+        }
+        for k in range(6)
+    ]
+    out = bp.auto_retire(trades, st, now)
+    assert [x["rule"] for x in out] == ["DUMP"]
+    assert out[0]["auto"] is True and out[0]["replaced_by"] == "QQQ"
+    assert not bp.rule_open("DUMP", st, now + H)
+    assert bp.rule_open("QQQ", st, bp.day_ms(date(2026, 11, 26)))
+    assert not bp.rule_open("QQQ", st, bp.day_ms(date(2026, 11, 25)))
+    log_rows = (tmp_path / "retire.jsonl").read_text().strip().splitlines()
+    assert len(log_rows) == 1 and "DUMP" in log_rows[0]
+    # 두 번 교체하지 않음
+    assert bp.auto_retire(trades, st, now + H) == []
+    summ = bp.build_summary(trades, st, now)
+    keys = {r["key"]: r for r in summ["rules"]}
+    assert keys["DUMP"]["status"] == "retired" and keys["DUMP"]["retired"]["auto"] is True
+    assert any(r["key"] == "DUMP" and r["auto"] for r in summ["retired"])
+    assert summ["queue"] == []
+
+
+def test_fixed_retirement_brk():
+    assert bp.rule_open("BRK", {}, bp.day_ms(date(2026, 11, 21)))
+    assert not bp.rule_open("BRK", {}, bp.day_ms(date(2026, 11, 22)))
+    assert bp.rule_open("ABS", {}, bp.day_ms(date(2026, 11, 1)))
+    assert not bp.rule_open("ABS", {}, bp.day_ms(date(2026, 10, 31)))
+
+
+def test_flow_series_and_pct():
+    i7 = bp.flow_series([100.0] * 10, [60.0] * 10)
+    assert i7[5] is None and i7[6] == pytest.approx(0.2)
+    vals = [None] * 6 + [k / 200 for k in range(200)]
+    vals.append(-1.0)
+    assert bp.flow_pct(vals, len(vals) - 1) == 0.0
+    assert bp.flow_pct(vals, 50) is None  # 직전 값 120개 미만
+
+
+def _flow_bars(n_days, closes, tb_ratio):
+    """tb_ratio[k] = 그날 테이커 매수 비율."""
+    d0 = bp.day_ms(date(2026, 1, 1))
+    out = []
+    for k in range(n_days):
+        c = closes[k]
+        q = 1e9
+        out.append([d0 + k * D, c, c * 1.01, c * 0.99, c, q, q * tb_ratio[k]])
+    return out
+
+
+def test_flow_sides_abs_and_flw():
+    n = 200
+    ratio = [0.5 + 0.01 * ((k * 7) % 5 - 2) for k in range(n - 7)] + [0.40] * 7
+    bars = _flow_bars(n, [100.0] * n, ratio)
+    i7 = bp.flow_series([b[5] for b in bars], [b[6] for b in bars])
+    c = [b[4] for b in bars]
+    i = n - 7  # 강한 매도 흐름이 들어간 첫날(7일 합에 처음 반영)
+    assert bp.flow_pct(i7, i) == 0.0
+    assert bp.flow_sides("ABS", c, i7, i) == ["L"]  # 가격은 안 빠짐 → 흡수 롱
+    assert bp.flow_sides("ABS", c, i7, i + 1) == []  # 첫날만
+    assert bp.flow_sides("FLW", c, i7, i) == []  # 7일 수익률 0 → 추종 숏 아님
+    c2 = c[:i] + [95.0] * (n - i)
+    assert bp.flow_sides("FLW", c2, i7, i) == ["S"]
+    assert bp.flow_sides("ABS", c2, i7, i) == []
+    # 매수 흐름 상위 10% + 상승 → 추종 롱, 하락 → 흡수 숏
+    up = [0.5 + 0.01 * ((k * 7) % 5 - 2) for k in range(n - 7)] + [0.62] * 7
+    i7u = bp.flow_series([1e9] * n, [1e9 * x for x in up])
+    assert bp.flow_sides("FLW", c[:i] + [105.0] * (n - i), i7u, i) == ["L"]
+    assert bp.flow_sides("ABS", c2, i7u, i) == ["S"]
+
+
+def test_scan_day_flow_rule_stores_geometry():
+    n = 200
+    ratio = [0.5 + 0.01 * ((k * 7) % 5 - 2) for k in range(n - 1)] + [0.05]
+    alt = _flow_bars(n, [10.0] * n, ratio)
+    btc = _flow_bars(n, [100.0] * n, [0.5] * n)
+    daily = {"BTCUSDT": btc, "AAAUSDT": alt}
+    onboard = {"BTCUSDT": 0, "AAAUSDT": 0}
+    last = bp.day_of(alt[-1][0])
+    new = bp.scan_day(last, daily, onboard, [], rules={"ABS"})
+    assert [(t["rule"], t["side"], t["tp"], t["sl"]) for t in new] == [("ABS", "L", 0.03, 0.03)]
+    # 옛 6칸 일봉(테이커 값 없음)은 주문흐름 규칙에서 건너뜀
+    old = {k: [b[:6] for b in v] for k, v in daily.items()}
+    assert bp.scan_day(last, old, onboard, [], rules={"ABS"}) == []
+
+
+def test_resolve_uses_trade_geometry():
+    t0 = bp.day_ms(date(2026, 11, 2))
+    trades = [
+        {"rule": "ABS", "sym": "AAAUSDT", "side": "L", "entry_ms": t0, "tp": 0.03, "sl": 0.03}
+    ]
+
+    def fake_get(url):
+        if "interval=1h" in url:
+            return [[t0, 10.0, 10.35, 9.9, 10.3, 0, t0 + H - 1]]
+        if "fundingRate" in url:
+            return []
+        raise AssertionError(url)
+
+    bp.resolve(trades, t0 + 2 * H, get=fake_get)
+    assert trades[0]["result"] == "win" and trades[0]["exit"] == pytest.approx(10.3)
+
+
+def test_old_state_migrates_and_backfills_new_rules(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    import json as _json
+
+    (tmp_path / "state.json").write_text(_json.dumps({"last_scan": "2026-11-21"}))
+    now = bp.day_ms(date(2026, 11, 22)) + 5 * H
+    asked = []
+
+    def fake_get(url):
+        asked.append(url)
+        if "exchangeInfo" in url:
+            return {"symbols": []}
+        if "coinmetrics" in url:
+            return {"data": []}
+        raise AssertionError(url)
+
+    bp.run(get=fake_get, now_ms=now)
+    st = _json.loads((tmp_path / "state.json").read_text())
+    assert st["scanned"]["PUMP"] == "2026-11-21"
+    assert st["scanned"]["ABS"] == "2026-11-21"
+    assert st["scanned"]["BRK"] == "2026-11-21"
+    assert any("exchangeInfo" in u for u in asked)  # 새 규칙 백필 때문에 일봉을 받음
+
+
+def _loss_trades(rule, entry_ms, exit_ms, n, net=-0.031):
+    return [
+        {
+            "rule": rule,
+            "sym": f"L{k}USDT",
+            "side": "L",
+            "entry_ms": entry_ms,
+            "entry": 1.0,
+            "exit": 0.97,
+            "result": "loss",
+            "net": net,
+            "exit_ms": exit_ms,
+        }
+        for k in range(n)
+    ]
+
+
+def test_backfill_losses_do_not_retire(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    now = bp.day_ms(date(2026, 11, 23)) + 5 * H
+    # 11/5 백필 진입 40건 손실(최근 14일 안에 끝남) → live_since(11/22) 전이라 판정에서 빠짐
+    trades = _loss_trades("DUMP", bp.day_ms(date(2026, 11, 5)), now - 3 * D, 40)
+    st: dict = {}
+    assert bp.judged_closed(trades, "DUMP", st) == []
+    assert bp.auto_retire(trades, st, now) == []
+    summ = bp.build_summary(trades, st, now)
+    dump = next(r for r in summ["rules"] if r["key"] == "DUMP")
+    assert dump["status"] == "active" and dump["closed"] == 40 and dump["judged_n"] == 0
+    assert dump["live_since"] == "2026-11-22"
+
+
+def test_post_live_losses_retire_and_notify_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    monkeypatch.setattr(bp, "QUEUE", [])
+    now = bp.day_ms(date(2026, 11, 26)) + 5 * H
+    backfill = _loss_trades("FLW", bp.day_ms(date(2026, 11, 3)), bp.day_ms(date(2026, 11, 4)), 50)
+    live = _loss_trades("FLW", bp.day_ms(date(2026, 11, 22)), now - H, 6)
+    st: dict = {}
+    out = bp.auto_retire(backfill + live, st, now)
+    assert [x["rule"] for x in out] == ["FLW"]
+    assert st["retired"]["FLW"]["judged_n"] == 6  # 백필 50건은 안 셈
+    sent = []
+    assert bp.notify_retired(st, send=lambda t: sent.append(t) or True) == 1
+    msg = sent[0]
+    assert "테이커 흐름 추종 (FLW)" in msg and "2026-11-22 이후 끝난 6건" in msg
+    assert "최근 14일" in msg and "대기열 비어 있음 → 자리 비워 둠" in msg
+    # 같은 교체는 다시 알리지 않음
+    assert bp.notify_retired(st, send=lambda t: sent.append(t) or True) == 0
+    assert bp.auto_retire(backfill + live, st, now + H) == []
+    assert len(sent) == 1
+    summ = bp.build_summary(backfill + live, st, now)
+    assert all("message" not in x for x in summ["retired"])
+
+
+def test_notify_retry_after_failure_and_replacement_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    monkeypatch.setattr(bp, "QUEUE", ["QQQ"])
+    monkeypatch.setitem(bp.RULES, "QQQ", {**bp.RULES["FLW"], "name": "대기 후보"})
+    now = bp.day_ms(date(2026, 11, 26)) + 5 * H
+    st: dict = {}
+    bp.auto_retire(_loss_trades("ABS", bp.day_ms(date(2026, 11, 23)), now - H, 6), st, now)
+    assert bp.notify_retired(st, send=lambda t: False) == 0  # 실패 → 다음에 다시
+    sent = []
+    assert bp.notify_retired(st, send=lambda t: sent.append(t) or True) == 1
+    assert "교체: 대기 후보 (QQQ)" in sent[0]
+
+
+def test_run_sends_retire_notice_through_sender(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    monkeypatch.setattr(bp, "QUEUE", [])
+    now = bp.day_ms(date(2026, 11, 26)) + 5 * H
+    (tmp_path / "state.json").write_text(
+        _json.dumps({"last_scan": "2026-11-25", "scanned": {k: "2026-11-25" for k in bp.RULES}})
+    )
+    bp.save_trades(_loss_trades("PUMP", bp.day_ms(date(2026, 11, 23)), now - H, 6))
+
+    def fake_get(url):
+        if "coinmetrics" in url:
+            return {"data": []}
+        raise AssertionError(url)
+
+    sent = []
+    bp.run(get=fake_get, now_ms=now, send=lambda t: sent.append(t) or True)
+    bp.run(get=fake_get, now_ms=now + H, send=lambda t: sent.append(t) or True)
+    assert len(sent) == 1 and "급등주 기다렸다 숏 (PUMP)" in sent[0]
+    lines = (tmp_path / "retire.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 1

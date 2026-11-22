@@ -40,9 +40,14 @@
       ["누적 수익률(장부)", pct(r.return_pct)],
       ["최대 낙폭", r.maxdd_pct == null ? "-" : `${UI.num(r.maxdd_pct, 2)}%`],
       ["손절", `${r.stops}건`],
+      ["판정 집계", r.live_since ? `${esc(r.live_since.slice(0, 10))} 이후 ${r.judged_n || 0}건` : "-"],
     ].map(([k, v]) => `<div><span class="mini">${k}</span><br><b>${v}</b></div>`).join("");
-    return `<section class="card">
+    const ret = r.retired
+      ? `<p class="chip warn">교체됨 ${esc(r.retired.date)} · ${esc(r.retired.reason)} (새 진입 없음, 기록만 남김)</p>`
+      : "";
+    return `<section class="card"${r.retired ? ' style="opacity:.75"' : ""}>
       <h2>${esc(r.name)} <span class="mini">${esc(r.desc)}</span></h2>
+      ${ret}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:6px 0">${stats}</div>
       ${r.liquidated ? `<p class="chip warn">장부 청산됨</p>` : ""}
       <h3>열린 가상 포지션</h3>${openTable(r.open_positions || [])}
@@ -57,7 +62,8 @@
     const stale = d.stale ? `<p class="chip warn">⚠️ 최신이 아니에요 (${when(d.generated_at)})</p>` : "";
     $("paper-status").innerHTML = `${stale}<p class="mini">시작 ${when(d.start)} · 자료 ${when(d.data_until)}까지 · 마지막 결정 ${when(d.last_decision)} · ${when(d.generated_at)} 갱신</p>
       <p class="mini">손익은 수수료·미끄러짐 왕복 0.14%와 실제 펀딩을 뺀 값. 누적 수익률은 위험 0.5%(평가액 0.1배, 바구니는 칸마다 1/5) 장부, 열린 포지션은 마지막 종가로 평가. 과거 연구에서 V01은 한쪽 검증만 통과(다른 쪽 실패), 이 기록이 첫 깨끗한 시험입니다.</p>`;
-    $("paper-rules").innerHTML = (d.rules || []).map(card).join("");
+    const rules = (d.rules || []).slice().sort((a, b) => (a.retired ? 1 : 0) - (b.retired ? 1 : 0));
+    $("paper-rules").innerHTML = rules.map(card).join("");
   }
 
   function load() {

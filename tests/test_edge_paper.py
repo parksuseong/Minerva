@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -252,7 +253,7 @@ def test_universe_rules():
 # ---------------------------------------------------------------- 전체 실행(가짜 모델·자료)
 
 
-def test_run_end_to_end(paper_dir):
+def test_run_end_to_end(paper_dir, monkeypatch):
     lgb = pytest.importorskip("lightgbm")
     t_start = ep.START_H
     n = t_start + 30
@@ -281,6 +282,8 @@ def test_run_end_to_end(paper_dir):
                        min_data_in_leaf=20), lgb.Dataset(x, y), 20)
     ep.models_dir().mkdir(parents=True)
     m.save_model(str(ep.models_dir() / "H24G_2026-11.txt"))
+    # F는 백필 시작부터 교체된 것으로 → 새 거래가 없어야 한다
+    monkeypatch.setitem(ep.RETIRED, "F", {"date": "2026-11-01", "reason": "시험"})
     monkey_thr = ep.THR
     ep.THR = 0.0  # 가짜 모델 확신도로도 거래가 나게
     try:
@@ -290,8 +293,11 @@ def test_run_end_to_end(paper_dir):
         ep.THR = monkey_thr
     assert out["processed"] == 8  # T = 0,4,…,28시(마감한 t+29시까지)
     state = json.loads((paper_dir / "state.json").read_text())
+    assert not [t for t in state["trades"] if t["rule"] == "F"]
     for rk, rule in ep.RULES.items():
         trs = [t for t in state["trades"] if t["rule"] == rk]
+        if rk == "F":
+            continue
         assert trs
         if rule["long_only"]:
             assert all(t["d"] == 1 for t in trs)
@@ -308,10 +314,25 @@ def test_run_end_to_end(paper_dir):
     assert len(dec) == 8 and json.loads(dec[0])["t"].startswith("2026-11-01T00")
     summ = json.loads((paper_dir / "summary.json").read_text())
     assert [r["key"] for r in summ["rules"]] == ["V01", "V06", "F"]
+    assert {r["key"] for r in summ["retired"]} == {"V06", "F"}
+    assert summ["rules"][1]["retired"]["date"] == "2026-11-22"
+    assert summ["rules"][0]["retired"] is None
+    # 11/1 백필 결정만 있으니 판정 집계(실시간 11/21 08시 UTC 이후)는 0건
+    assert summ["rules"][0]["live_since"].startswith("2026-11-21T08")
+    assert summ["rules"][0]["judged_n"] == 0
     # 다시 돌려도 같은 결정을 두 번 하지 않는다
     again = ep.run(fetch=False, now=now, get=None)
     assert again["processed"] == 0
     assert len((paper_dir / "decisions.jsonl").read_text().splitlines()) == 8
+
+
+def test_retired_rules_stop_new_entries(paper_dir, monkeypatch):
+    stop = (date(2026, 11, 22) - ep.D0).days * 24
+    assert ep.retired_from("V06") == stop and ep.retired_from("F") == stop
+    assert ep.retired_from("V01") is None
+    # 교체 시각을 백필 시작으로 당기면 V06·F는 새 거래가 없다
+    monkeypatch.setitem(ep.RETIRED, "V06", {"date": "2026-11-01", "reason": "시험"})
+    assert ep.retired_from("V06") == ep.START_H
 
 
 # ---------------------------------------------------------------- 화면 API

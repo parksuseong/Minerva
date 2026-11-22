@@ -1,0 +1,16 @@
+# SCR 롱 신호 알림(원전 규칙, 미검증): 미국장 마감 뒤 확정 봉으로 VIX·SPY·QQQ·SOXX·AAPL 점검 → 새로 뜬 신호만 텔레그램. 주문 없음.
+# 설치: sudo cp deploy/minerva-signal-watch.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-signal-watch.timer
+[Unit]
+Description=Minerva SCR long-signal alerts (read-only, no orders)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.signal_watch run
+Nice=10
+MemoryMax=300M
+TimeoutStartSec=600

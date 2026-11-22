@@ -150,7 +150,7 @@ def test_access_view_filters_and_escape_free(env):
     assert d["rows"][0]["at"] >= d["rows"][-1]["at"]  # 최신이 위
     page = next(r for r in d["rows"] if r["kind"] == "page")
     assert page["ua"] == ua  # 서버는 그대로 넘기고 화면이 textContent로만 넣는다
-    assert page["device"] == "Windows · Chrome"
+    assert page["device"] == "Windows 10/11 · Chrome 120"
     only = client.get("/api/admin/access?auth_only=true", headers=H).json()
     assert {r["kind"] for r in only["rows"]} == {"auth"}
     hidden = client.get("/api/admin/access?hide_me=true", headers=H).json()
@@ -172,35 +172,47 @@ def test_static_admin_never_uses_innerhtml():
         (
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 "
             "(KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
-            "iPhone · Safari",
+            "iPhone · iOS 17.1 · Safari 17.1",
             False,
         ),
         (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36",
-            "Windows · Chrome",
+            "Windows 10/11 · Chrome 120",
             False,
         ),
         (
             "Mozilla/5.0 (Linux; Android 14; SM-S918N) AppleWebKit/537.36 (KHTML, like Gecko) "
             "SamsungBrowser/23.0 Chrome/115.0.0.0 Mobile Safari/537.36",
-            "Android · Samsung Internet",
+            "Android 14 · SM-S918N · Samsung Internet 23",
             False,
         ),
         (
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 "
             "(KHTML, like Gecko) Mobile/15E148 KAKAOTALK 10.4.5",
-            "iPhone · 카카오톡",
+            "iPhone · iOS 17.1 · 카카오톡 10.4",
             False,
         ),
         (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like "
             "Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-            "macOS · Edge",
+            "macOS · Edge 120",
             False,
         ),
         ("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", None, True),
         ("TelegramBot (like TwitterBot)", None, True),
+        (
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/142.0.0.0 Mobile Safari/537.36",
+            "Android 10 · Chrome 142",
+            False,
+        ),
+        (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 "
+            "(KHTML, like Gecko) Version/26.1 Mobile/15E148 Safari/604.1",
+            "iPhone · iOS 26.1 · Safari 26.1",
+            False,
+        ),
         ("curl/8.4.0", None, True),
         ("python-requests/2.31", None, True),
         ("", "알 수 없음(UA 없음)", True),
@@ -267,3 +279,16 @@ def test_trim_keeps_recent(env, monkeypatch):
     admin._trim(path, now=datetime(2026, 11, 23, tzinfo=admin.KST))
     rows = [json.loads(x) for x in path.read_text().splitlines()]
     assert rows == [new, new]
+
+
+def test_my_ips_includes_token_ok_ips():
+    rows = [
+        {"ip": "1.1.1.1", "auth": "ok"},
+        {"ip": "2.2.2.2", "auth": "fail"},
+        {"ip": "3.3.3.3", "kind": "page"},
+    ]
+    assert admin.my_ips(rows, "9.9.9.9") == {"9.9.9.9", "1.1.1.1"}
+    v = admin.access_view(
+        rows, me="9.9.9.9", auth_only=False, hide_me=True, hours=None, limit=10, offset=0
+    )
+    assert {r["ip"] for r in v["rows"]} == {"2.2.2.2", "3.3.3.3"}

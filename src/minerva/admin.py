@@ -127,15 +127,43 @@ _APPS = (  # 위에서부터 먼저 맞는 것(인앱 브라우저가 Chrome·Sa
 )
 
 
+_IOS = re.compile(r"(?:iPhone|CPU) OS (\d+)(?:_(\d+))?")
+_ANDROID = re.compile(r"Android (\d+(?:\.\d+)?)(?:; ([^;)]+))?")
+_WIN = {"10.0": "10/11", "6.3": "8.1", "6.2": "8", "6.1": "7"}
+_VER = (  # 앱·브라우저 이름 → 버전 토큰
+    ("카카오톡", r"KAKAOTALK (\d+(?:\.\d+)?)"),
+    ("Samsung Internet", r"SamsungBrowser/(\d+)"),
+    ("Whale", r"Whale/(\d+)"),
+    ("Edge", r"Edg(?:A|iOS)?/(\d+)"),
+    ("Opera", r"OPR/(\d+)"),
+    ("Chrome", r"(?:CriOS|Chrome)/(\d+)"),
+    ("Firefox", r"(?:FxiOS|Firefox)/(\d+)"),
+    ("Safari", r"Version/(\d+(?:\.\d+)?)"),
+)
+
+
 def _os(ua: str) -> str:
-    if "iPhone" in ua:
-        return "iPhone"
-    if "iPad" in ua:
-        return "iPad"
+    """운영체제와 버전. iOS 26부터 사파리는 OS 자리를 18_6으로 고정하고 Version/에 실제 버전을
+    둔다. Android 기기 모델은 크롬이 'K'로 가리면 뺀다. macOS 버전은 브라우저가 10_15_7로 고정."""
+    for dev in ("iPhone", "iPad"):
+        if dev in ua:
+            m = _IOS.search(ua)
+            ver = f"{m.group(1)}.{m.group(2)}" if m and m.group(2) else (m.group(1) if m else "")
+            v = re.search(r"Version/(\d+(?:\.\d+)?)", ua)
+            if v and float(v.group(1).split(".")[0]) >= 26:
+                ver = v.group(1)
+            return f"{dev} · iOS {ver}" if ver else dev
     if "Android" in ua:
-        return "Android"
+        m = _ANDROID.search(ua)
+        if not m:
+            return "Android"
+        model = (m.group(2) or "").strip()
+        model = model.split(" Build/")[0]
+        bad = not model or model in ("K", "wv", "Mobile") or model.startswith(("U", "Linux"))
+        return f"Android {m.group(1)}" + ("" if bad else f" · {model[:30]}")
     if "Windows" in ua:
-        return "Windows"
+        m = re.search(r"Windows NT (\d+\.\d+)", ua)
+        return f"Windows {_WIN.get(m.group(1), m.group(1))}" if m else "Windows"
     if "CrOS" in ua:
         return "ChromeOS"
     if "Macintosh" in ua or "Mac OS X" in ua:
@@ -143,6 +171,14 @@ def _os(ua: str) -> str:
     if "Linux" in ua:
         return "Linux"
     return ""
+
+
+def _with_version(browser: str, ua: str) -> str:
+    for name, pat in _VER:
+        if name == browser:
+            m = re.search(pat, ua)
+            return f"{browser} {m.group(1)}" if m else browser
+    return browser
 
 
 def parse_ua(ua: str | None) -> dict:
@@ -158,9 +194,9 @@ def parse_ua(ua: str | None) -> dict:
     browser = next((name for key, name in _APPS if key in ua), "")
     if not browser and "Safari/" in ua and "Version/" in ua:
         browser = "Safari"
-    if not browser and os_name in ("iPhone", "iPad") and "AppleWebKit" in ua:
+    if not browser and os_name.startswith(("iPhone", "iPad")) and "AppleWebKit" in ua:
         browser = "앱 내 브라우저"
-    parts = [p for p in (os_name, browser) if p]
+    parts = [p for p in (os_name, _with_version(browser, ua)) if p]
     return {"label": " · ".join(parts) if parts else "알 수 없음", "bot": False}
 
 
@@ -366,6 +402,12 @@ def locate(ips: list[str], fetch=None) -> dict[str, str]:
 # ---------------------------------------------------------------- 조회
 
 
+def my_ips(rows: list[dict], me: str) -> set[str]:
+    """'나'로 보는 IP: 지금 보는 IP + 비밀번호(토큰)를 한 번이라도 통과한 IP. 휴대폰은 IP가
+    자주 바뀌어도 저장된 토큰으로 열 때마다 통과 기록이 남는다(사용자 2026-11-23 "나를 제외한")."""
+    return {me} | {str(r.get("ip")) for r in rows if r.get("auth") == "ok"}
+
+
 def access_view(
     rows: list[dict],
     *,
@@ -383,8 +425,9 @@ def access_view(
         rows = [r for r in rows if str(r.get("at", "")) >= cut]
     if auth_only:
         rows = [r for r in rows if r.get("kind") == "auth"]
+    mine = my_ips(rows, me)
     if hide_me:
-        rows = [r for r in rows if r.get("ip") != me]
+        rows = [r for r in rows if r.get("ip") not in mine]
     rows = list(reversed(rows))
     summary: dict[str, dict] = {}
     for r in rows:  # 최신부터라 처음 본 시각이 last
@@ -393,6 +436,7 @@ def access_view(
         if s is None:
             s = summary[ip] = {"ip": ip, "count": 0, "fails": 0, "first": "", "last": r.get("at")}
             s["device"] = parse_ua(r.get("ua"))["label"]
+            s["mine"] = ip in mine
         s["count"] += 1
         s["first"] = r.get("at")
         if r.get("auth") in ("fail", "blocked"):
@@ -409,6 +453,7 @@ def access_view(
             "ref": r.get("ref"),
             "kind": r.get("kind"),
             "auth": r.get("auth"),
+            "mine": r.get("ip") in mine,
         }
         for r in page
     ]

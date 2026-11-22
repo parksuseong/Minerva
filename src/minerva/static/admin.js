@@ -152,12 +152,12 @@
   function renderAccess(d) {
     $("admin-access-note").textContent = `내 IP ${d.me} (${d.me_place}) · ${total}건 중 ${rows.length}건`;
     fill("admin-access", rows.length ? table(["시각", "IP", "위치", "기기", "경로", "인증"], rows.map((r) => [
-      r.at, r.ip, r.place, r.device, r.kind === "auth" ? `🔑 ${r.path}` : r.path, AUTH[r.auth] || "-"]))
+      r.at, r.mine ? `${r.ip} (나)` : r.ip, r.place, r.device, r.kind === "auth" ? `🔑 ${r.path}` : r.path, AUTH[r.auth] || "-"]))
       : el("span", { class: "mini" }, "기록 없음"));
     $("admin-access-more").hidden = rows.length >= total;
     if (!more) {
       fill("admin-ips", d.ips.length ? table(["IP", "위치", "기기", "횟수", "실패", "처음", "마지막"], d.ips.map((s) => [
-        s.ip, s.place, s.device, s.count, s.fails, s.first, s.last]))
+        s.mine ? `${s.ip} (나)` : s.ip, s.place, s.device, s.count, s.fails, s.first, s.last]))
         : el("span", { class: "mini" }, "기록 없음"));
     }
   }

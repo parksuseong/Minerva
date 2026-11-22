@@ -81,6 +81,9 @@ RULES = {
 }
 # 교체(새 진입 멈춤, 기록은 남김). 결정 시각 t ≥ 그날 00:00 UTC부터 새 거래를 만들지 않는다.
 # 후속 규칙은 장벽 가상 추적(barrier_paper)에 들어갔다.
+# 실시간 시작(배포 2026-11-21 17:09 KST = 08:09 UTC, 그 전 결정은 11/1부터 백필).
+# 판정 집계는 이 뒤에 진입한 거래만 센다. 이 추적기에는 자동 교체가 없다(장벽 추적만).
+LIVE_SINCE_H = (date(2026, 11, 21) - D0).days * 24 + 8
 RETIRED = {
     "V06": {"date": "2026-11-22",
             "reason": "11/1~22 103건 승률 35.9%, 거래당 −1.3% · 장벽 추적 새 규칙으로 교체"},
@@ -986,6 +989,8 @@ def build_summary(store: Store, st: dict, global_h: int) -> dict:
         out["rules"].append({
             "key": rk, "name": rule["name"], "desc": rule["desc"],
             "retired": RETIRED.get(rk),
+            "live_since": iso(LIVE_SINCE_H),
+            "judged_n": sum(tr["t"] >= LIVE_SINCE_H for tr in closed),
             "trades": len(trs), "closed": len(closed), "open": len(open_rows),
             "wins": int((nets > 0).sum()),
             "winrate": round(float((nets > 0).mean()) * 100, 1) if len(nets) else None,

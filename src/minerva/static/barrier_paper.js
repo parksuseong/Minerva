@@ -48,6 +48,7 @@
       ["합계(1배·건당 같은 크기)", pct(r.sum_net_pct)],
       ["익절 / 손절", r.tp_pct == null ? "+5% / −3%" : `+${geo(r.tp_pct)}% / −${geo(r.sl_pct)}%`],
       ["손익분기 승률", `${UI.num(be, 1)}%`],
+      ["판정 집계", r.live_since ? `${esc(r.live_since)} 이후 ${r.judged_n || 0}건` : "-"],
     ].map(([k, v]) => `<div><span class="mini">${k}</span><br><b>${v}</b></div>`).join("");
     const ret = r.retired
       ? `<p class="chip warn">${r.retired.auto ? "자동 교체" : "교체됨"} ${esc(r.retired.date)} · ${esc(r.retired.reason)} (새 진입 없음, 기록만 남김)</p>`
@@ -85,7 +86,7 @@
     $("barrier-status").innerHTML = `${stale}<p class="mini">시작 ${esc(d.start)} · 마지막 일봉 ${esc(d.last_scan || "-")} · 종목 ${d.universe_n || "-"}개 · ${when(d.generated_at)} 갱신</p>
       <p class="mini">${nfLine}</p>
       <p class="mini">진입 = 신호 다음 날 00시(UTC) 시가, 1시간봉으로 규칙별 익절·손절 중 먼저 닿는 쪽(같은 봉이면 손절), 14일 넘으면 종가 청산. 손익은 왕복 0.14%와 실제 펀딩을 뺀 값. 11/1~오늘은 백필이고 그 사이 상폐된 종목은 빠져 있어요.</p>
-      <p class="mini">자동 교체: 끝난 거래 30건 이상에서 승률 95% 상한이 손익분기보다 낮거나 거래당 평균이 마이너스면, 또는 최근 14일 끝난 거래 합이 −15%보다 나쁘면 새 진입을 멈추고 기록만 남겨요.</p>`;
+      <p class="mini">자동 교체(판정은 실시간 시작일 이후 진입한 거래만, 백필은 화면에만): 끝난 거래 30건 이상에서 승률 95% 상한이 손익분기보다 낮거나 거래당 평균이 마이너스면, 또는 최근 14일 끝난 거래 합이 −15%보다 나쁘면 새 진입을 멈추고 기록만 남겨요.</p>`;
     const rules = (d.rules || []).slice().sort((a, b) => (a.retired ? 1 : 0) - (b.retired ? 1 : 0));
     $("barrier-rules").innerHTML = watchCard(d.watch || []) + rules.map((r) => card(r, d.breakeven_pct || 39.3)).join("");
   }

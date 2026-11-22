@@ -317,6 +317,9 @@ def test_run_end_to_end(paper_dir, monkeypatch):
     assert {r["key"] for r in summ["retired"]} == {"V06", "F"}
     assert summ["rules"][1]["retired"]["date"] == "2026-11-22"
     assert summ["rules"][0]["retired"] is None
+    # 11/1 백필 결정만 있으니 판정 집계(실시간 11/21 08시 UTC 이후)는 0건
+    assert summ["rules"][0]["live_since"].startswith("2026-11-21T08")
+    assert summ["rules"][0]["judged_n"] == 0
     # 다시 돌려도 같은 결정을 두 번 하지 않는다
     again = ep.run(fetch=False, now=now, get=None)
     assert again["processed"] == 0

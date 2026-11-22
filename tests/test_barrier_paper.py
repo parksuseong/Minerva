@@ -12,6 +12,16 @@ H = bp.HR_MS
 D = bp.DAY_MS
 
 
+@pytest.fixture(autouse=True)
+def _no_real_telegram(monkeypatch):
+    from minerva import notify
+
+    def boom(*_a, **_k):
+        raise AssertionError("테스트에서 실제 텔레그램 전송 금지")
+
+    monkeypatch.setattr(notify, "send", boom)
+
+
 def bar(t, o, h, low, c):
     return [t, o, h, low, c]
 
@@ -370,3 +380,94 @@ def test_old_state_migrates_and_backfills_new_rules(tmp_path, monkeypatch):
     assert st["scanned"]["ABS"] == "2026-11-21"
     assert st["scanned"]["BRK"] == "2026-11-21"
     assert any("exchangeInfo" in u for u in asked)  # 새 규칙 백필 때문에 일봉을 받음
+
+
+def _loss_trades(rule, entry_ms, exit_ms, n, net=-0.031):
+    return [
+        {
+            "rule": rule,
+            "sym": f"L{k}USDT",
+            "side": "L",
+            "entry_ms": entry_ms,
+            "entry": 1.0,
+            "exit": 0.97,
+            "result": "loss",
+            "net": net,
+            "exit_ms": exit_ms,
+        }
+        for k in range(n)
+    ]
+
+
+def test_backfill_losses_do_not_retire(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    now = bp.day_ms(date(2026, 11, 23)) + 5 * H
+    # 11/5 백필 진입 40건 손실(최근 14일 안에 끝남) → live_since(11/22) 전이라 판정에서 빠짐
+    trades = _loss_trades("DUMP", bp.day_ms(date(2026, 11, 5)), now - 3 * D, 40)
+    st: dict = {}
+    assert bp.judged_closed(trades, "DUMP", st) == []
+    assert bp.auto_retire(trades, st, now) == []
+    summ = bp.build_summary(trades, st, now)
+    dump = next(r for r in summ["rules"] if r["key"] == "DUMP")
+    assert dump["status"] == "active" and dump["closed"] == 40 and dump["judged_n"] == 0
+    assert dump["live_since"] == "2026-11-22"
+
+
+def test_post_live_losses_retire_and_notify_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    monkeypatch.setattr(bp, "QUEUE", [])
+    now = bp.day_ms(date(2026, 11, 26)) + 5 * H
+    backfill = _loss_trades("FLW", bp.day_ms(date(2026, 11, 3)), bp.day_ms(date(2026, 11, 4)), 50)
+    live = _loss_trades("FLW", bp.day_ms(date(2026, 11, 22)), now - H, 6)
+    st: dict = {}
+    out = bp.auto_retire(backfill + live, st, now)
+    assert [x["rule"] for x in out] == ["FLW"]
+    assert st["retired"]["FLW"]["judged_n"] == 6  # 백필 50건은 안 셈
+    sent = []
+    assert bp.notify_retired(st, send=lambda t: sent.append(t) or True) == 1
+    msg = sent[0]
+    assert "테이커 흐름 추종 (FLW)" in msg and "2026-11-22 이후 끝난 6건" in msg
+    assert "최근 14일" in msg and "대기열 비어 있음 → 자리 비워 둠" in msg
+    # 같은 교체는 다시 알리지 않음
+    assert bp.notify_retired(st, send=lambda t: sent.append(t) or True) == 0
+    assert bp.auto_retire(backfill + live, st, now + H) == []
+    assert len(sent) == 1
+    summ = bp.build_summary(backfill + live, st, now)
+    assert all("message" not in x for x in summ["retired"])
+
+
+def test_notify_retry_after_failure_and_replacement_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    monkeypatch.setattr(bp, "QUEUE", ["QQQ"])
+    monkeypatch.setitem(bp.RULES, "QQQ", {**bp.RULES["FLW"], "name": "대기 후보"})
+    now = bp.day_ms(date(2026, 11, 26)) + 5 * H
+    st: dict = {}
+    bp.auto_retire(_loss_trades("ABS", bp.day_ms(date(2026, 11, 23)), now - H, 6), st, now)
+    assert bp.notify_retired(st, send=lambda t: False) == 0  # 실패 → 다음에 다시
+    sent = []
+    assert bp.notify_retired(st, send=lambda t: sent.append(t) or True) == 1
+    assert "교체: 대기 후보 (QQQ)" in sent[0]
+
+
+def test_run_sends_retire_notice_through_sender(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    monkeypatch.setattr(bp, "QUEUE", [])
+    now = bp.day_ms(date(2026, 11, 26)) + 5 * H
+    (tmp_path / "state.json").write_text(
+        _json.dumps({"last_scan": "2026-11-25", "scanned": {k: "2026-11-25" for k in bp.RULES}})
+    )
+    bp.save_trades(_loss_trades("PUMP", bp.day_ms(date(2026, 11, 23)), now - H, 6))
+
+    def fake_get(url):
+        if "coinmetrics" in url:
+            return {"data": []}
+        raise AssertionError(url)
+
+    sent = []
+    bp.run(get=fake_get, now_ms=now, send=lambda t: sent.append(t) or True)
+    bp.run(get=fake_get, now_ms=now + H, send=lambda t: sent.append(t) or True)
+    assert len(sent) == 1 and "급등주 기다렸다 숏 (PUMP)" in sent[0]
+    lines = (tmp_path / "retire.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 1

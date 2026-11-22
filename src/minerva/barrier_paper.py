@@ -81,10 +81,14 @@ CM_URL = (
     "&metrics=FlowInExNtv,FlowOutExNtv&frequency=1d&page_size=400&start_time={start}"
 )
 
+# 실시간 시작일: 이날 00:00 UTC 이후 진입만 자동 교체 판정에 센다(11/1~21은 백필 = 이미 본 자료).
+LIVE_DAY = "2026-11-22"
+
 FLOW_RULES = {
     "FLW": {
         "side": "LS",
         "kind": "daily",
+        "live_since": LIVE_DAY,
         "tp": 0.06,
         "sl": 0.03,
         "name": "테이커 흐름 추종",
@@ -96,6 +100,7 @@ FLOW_RULES = {
     "ABS": {
         "side": "LS",
         "kind": "daily",
+        "live_since": LIVE_DAY,
         "tp": 0.03,
         "sl": 0.03,
         "name": "테이커 흡수 역추세(대조군)",
@@ -120,6 +125,7 @@ RULES = {
     "BRK": {
         "side": "S",
         "kind": "daily",
+        "live_since": LIVE_DAY,
         "tp": 0.05,
         "sl": 0.03,
         "name": "알트 55일 신저가 이탈 숏",
@@ -133,6 +139,7 @@ RULES = {
     "PUMP": {
         "side": "S",
         "kind": "daily",
+        "live_since": LIVE_DAY,
         "tp": 0.05,
         "sl": 0.03,
         "name": "급등주 기다렸다 숏",
@@ -142,6 +149,7 @@ RULES = {
     "DUMP": {
         "side": "L",
         "kind": "daily",
+        "live_since": LIVE_DAY,
         "tp": 0.05,
         "sl": 0.03,
         "name": "급락주 반등 롱",
@@ -151,6 +159,7 @@ RULES = {
     "NF": {
         "side": "S",
         "kind": "nf",
+        "live_since": LIVE_DAY,
         "tp": 0.05,
         "sl": 0.03,
         "name": "BTC 거래소 순유입 급증 숏",
@@ -750,22 +759,103 @@ def trade_geom(t: dict) -> tuple[float, float]:
     return t.get("tp", TP), t.get("sl", SL)
 
 
+def live_since_ms(key: str, st: dict) -> int:
+    """자동 교체 판정에 세는 진입 시각 하한: 규칙의 live_since와 실제 시작 중 늦은 쪽."""
+    live = RULES[key].get("live_since")
+    lo = day_ms(date.fromisoformat(live)) if live else 0
+    return max(lo, rule_start_ms(key, st))
+
+
+def judged_closed(trades: list[dict], key: str, st: dict) -> list[dict]:
+    """자동 교체 판정 대상: 실시간 시작 뒤 진입해 끝난 거래(백필 거래는 화면에만)."""
+    lo = live_since_ms(key, st)
+    return [
+        t
+        for t in trades
+        if t["rule"] == key and t.get("result") is not None and t["entry_ms"] >= lo
+    ]
+
+
+def retire_message(row: dict, closed: list[dict]) -> str:
+    """자동 교체 텔레그램 한 통(글만)."""
+    r = RULES[row["rule"]]
+    n = len(closed)
+    wins = sum(t["result"] == "win" for t in closed)
+    be = 100 * breakeven(r["tp"], r["sl"])
+    lines = [
+        "[가상 추적 자동 교체] 주문 없음",
+        f"규칙: {r['name']} ({row['rule']}) · 익절 +{100 * r['tp']:g}% / 손절 −{100 * r['sl']:g}%",
+    ]
+    if n:
+        avg = statistics.fmean(t["net"] for t in closed)
+        tot = sum(t["net"] for t in closed)
+        lines.append(
+            f"판정 집계: {row['live_since']} 이후 끝난 {n}건 · 승률 {100 * wins / n:.1f}% "
+            f"(손익분기 {be:.1f}%) · 거래당 {_signed(100 * avg, 2)}% · 합 {_signed(100 * tot, 1)}%"
+        )
+    lines.append(f"사유: {row['reason']}")
+    nxt = row.get("replaced_by")
+    if nxt:
+        lines.append(
+            f"교체: {RULES[nxt]['name']} ({nxt}) → {row['date']} 다음 날 00시(UTC)부터 진입"
+        )
+    else:
+        lines.append("교체: 대기열 비어 있음 → 자리 비워 둠")
+    lines.append("새 진입만 멈추고 기록은 화면에 남겨요.")
+    return "\n".join(lines)
+
+
+def notify_retired(st: dict, send=None) -> int:
+    """아직 못 알린 자동 교체를 한 번씩 보낸다(성공하면 notified, 실패하면 다음 실행에 다시)."""
+    pending = [
+        (k, v)
+        for k, v in (st.get("retired") or {}).items()
+        if v.get("auto") and not v.get("notified")
+    ]
+    if not pending:
+        return 0
+    if send is None:
+        from minerva import notify
+
+        send = notify.send
+    n = 0
+    for key, v in pending:
+        try:
+            ok = send(v["message"]) if v.get("message") else True
+        except Exception as e:  # noqa: BLE001 - 알림 실패로 추적을 멈추지 않는다
+            log.warning("자동 교체 알림 실패 %s: %s", key, type(e).__name__)
+            ok = False
+        if ok:
+            v["notified"] = True
+            n += 1
+    return n
+
+
 def auto_retire(trades: list[dict], st: dict, now_ms: int) -> list[dict]:
     """진입 중인 규칙을 점검해 기준에 걸리면 교체(새 진입 멈춤)하고 대기 후보를 켠다.
 
-    `retire.jsonl`에 남기고 새로 교체된 목록을 돌려준다."""
+    판정은 live_since 이후 진입한 거래만 센다(백필 제외). `retire.jsonl`에 남기고
+    새로 교체된 목록을 돌려준다. 알림 문구는 state에 두고 `notify_retired`가 한 번 보낸다."""
     out = []
     retired = st.setdefault("retired", {})
     activated = st.setdefault("activated", {})
     for key, r in RULES.items():
         if retired_info(key, st) is not None or not rule_open(key, st, now_ms):
             continue
-        closed = [t for t in trades if t["rule"] == key and t.get("result") is not None]
+        closed = judged_closed(trades, key, st)
         why = retire_reason(closed, now_ms, breakeven(r["tp"], r["sl"]))
         if why is None:
             continue
         today = day_of(now_ms)
-        info = {"date": today.isoformat(), "reason": why, "auto": True, "at_ms": now_ms}
+        live = datetime.fromtimestamp(live_since_ms(key, st) / 1000, timezone.utc).date()
+        info = {
+            "date": today.isoformat(),
+            "reason": why,
+            "auto": True,
+            "at_ms": now_ms,
+            "live_since": live.isoformat(),
+            "judged_n": len(closed),
+        }
         nxt = next((q for q in QUEUE if q not in activated and q not in retired), None)
         if nxt:
             activated[nxt] = {
@@ -774,8 +864,10 @@ def auto_retire(trades: list[dict], st: dict, now_ms: int) -> list[dict]:
                 "replaces": key,
             }
             info["replaced_by"] = nxt
-        retired[key] = info
         row = {"rule": key, "name": r["name"], **info}
+        info["message"] = retire_message(row, closed)
+        info["notified"] = False
+        retired[key] = info
         out.append(row)
         log_path = base_dir() / "retire.jsonl"
         with log_path.open("a") as f:
@@ -810,7 +902,7 @@ def resolve(trades: list[dict], now_ms: int, get=get_json) -> None:
         )
 
 
-def run(get=get_json, now_ms: int | None = None) -> dict:
+def run(get=get_json, now_ms: int | None = None, send=None) -> dict:
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     root = base_dir()
     root.mkdir(parents=True, exist_ok=True)
@@ -863,6 +955,8 @@ def run(get=get_json, now_ms: int | None = None) -> dict:
     resolve(trades, now_ms, get=get)
     save_trades(trades)
     auto_retire(trades, st, now_ms)
+    write_json(root / "state.json", st)  # 알림 전에 교체 상태를 먼저 남긴다
+    notify_retired(st, send=send)
     st["ran_at"] = datetime.now(timezone.utc).isoformat()
     write_json(root / "state.json", st)
     summ = build_summary(trades, st, now_ms)
@@ -924,9 +1018,16 @@ def build_summary(trades: list[dict], st: dict, now_ms: int) -> dict:
                 "sl_pct": 100 * r["sl"],
                 "breakeven_pct": round(100 * breakeven(r["tp"], r["sl"]) + 1e-9, 1),
                 "status": "retired" if ret is not None else "active",
+                "live_since": datetime.fromtimestamp(live_since_ms(key, st) / 1000, timezone.utc)
+                .date()
+                .isoformat(),
+                "judged_n": len(judged_closed(trades, key, st)),
                 "retired": None
                 if ret is None
-                else {k: ret.get(k) for k in ("date", "reason", "auto", "replaced_by")},
+                else {
+                    k: ret.get(k)
+                    for k in ("date", "reason", "auto", "replaced_by", "live_since", "judged_n")
+                },
                 "start": datetime.fromtimestamp(rule_start_ms(key, st) / 1000, timezone.utc)
                 .date()
                 .isoformat(),
@@ -964,7 +1065,7 @@ def build_summary(trades: list[dict], st: dict, now_ms: int) -> dict:
         "breakeven_pct": 39.3,
         "rules": rules,
         "retired": [
-            {k: v for k, v in x.items() if k != "at_ms"}
+            {k: v for k, v in x.items() if k not in ("at_ms", "message")}
             for x in sorted(retired_all, key=lambda x: x["date"])
         ],
         "queue": [q for q in QUEUE if q not in (st.get("activated") or {})],

@@ -40,6 +40,7 @@
       ["누적 수익률(장부)", pct(r.return_pct)],
       ["최대 낙폭", r.maxdd_pct == null ? "-" : `${UI.num(r.maxdd_pct, 2)}%`],
       ["손절", `${r.stops}건`],
+      ["판정 집계", r.live_since ? `${esc(r.live_since.slice(0, 10))} 이후 ${r.judged_n || 0}건` : "-"],
     ].map(([k, v]) => `<div><span class="mini">${k}</span><br><b>${v}</b></div>`).join("");
     const ret = r.retired
       ? `<p class="chip warn">교체됨 ${esc(r.retired.date)} · ${esc(r.retired.reason)} (새 진입 없음, 기록만 남김)</p>`

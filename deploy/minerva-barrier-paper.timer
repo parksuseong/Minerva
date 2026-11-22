@@ -1,0 +1,10 @@
+# 매시 23분(edge-paper 07분과 엇갈림). UTC 00:23 실행이 전날 일봉 신호를 처리하고 00시 시가로 진입.
+[Unit]
+Description=Run Minerva barrier paper tracker hourly
+
+[Timer]
+OnCalendar=*-*-* *:23:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

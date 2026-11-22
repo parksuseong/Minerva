@@ -13,7 +13,12 @@
     return `${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;
   };
   const px = (v) => (v == null ? "-" : UI.num(v, v >= 100 ? 2 : v >= 1 ? 4 : 6));
-  const RES = { win: "익절 +5%", loss: "손절 −3%", timeout: "14일 청산" };
+  const geo = (v) => UI.num(v == null ? 0 : v, 0);
+  const resText = (r) => {
+    const tp = r.tp_pct == null ? 5 : r.tp_pct;
+    const sl = r.sl_pct == null ? 3 : r.sl_pct;
+    return { win: `익절 +${geo(tp)}%`, loss: `손절 −${geo(sl)}%`, timeout: "14일 청산" }[r.result] || r.result;
+  };
 
   function openTable(rows) {
     if (!rows.length) return `<p class="mini">열린 가상 포지션 없음</p>`;
@@ -30,19 +35,27 @@
       <th>진입가</th><th>청산가</th><th>결과</th><th>손익(비용·펀딩 후)</th></tr></thead><tbody>${rows.map((r) => `<tr>
       <td><b>${esc(r.sym)}</b></td><td>${esc(r.dir)}</td><td class="mini">${when(r.at)}</td>
       <td class="mini">${when(r.exit_at)}</td><td>${px(r.entry)}</td><td>${px(r.exit)}</td>
-      <td>${esc(RES[r.result] || r.result)}</td><td>${pct(r.net_pct)}</td></tr>`).join("")}</tbody></table></div>`;
+      <td>${esc(resText(r))}</td><td>${pct(r.net_pct)}</td></tr>`).join("")}</tbody></table></div>`;
   }
 
-  function card(r, be) {
+  function card(r, beAll) {
+    const be = r.breakeven_pct == null ? beAll : r.breakeven_pct;
     const wr = r.winrate == null ? "-" : `${UI.num(r.winrate, 1)}% (${r.wins}/${r.closed})`;
     const stats = [
       ["거래", `${r.trades}건 (끝남 ${r.closed} · 열림 ${r.open})`],
       ["승률", r.winrate == null ? wr : `<span class="${r.winrate >= be ? "up" : "down"}">${wr}</span>`],
       ["거래당 평균", pct(r.avg_net_pct, 3)],
       ["합계(1배·건당 같은 크기)", pct(r.sum_net_pct)],
+      ["익절 / 손절", r.tp_pct == null ? "+5% / −3%" : `+${geo(r.tp_pct)}% / −${geo(r.sl_pct)}%`],
+      ["손익분기 승률", `${UI.num(be, 1)}%`],
     ].map(([k, v]) => `<div><span class="mini">${k}</span><br><b>${v}</b></div>`).join("");
-    return `<section class="card">
-      <h2>${esc(r.name)} <span class="mini">${esc(r.desc)}</span></h2>
+    const ret = r.retired
+      ? `<p class="chip warn">${r.retired.auto ? "자동 교체" : "교체됨"} ${esc(r.retired.date)} · ${esc(r.retired.reason)} (새 진입 없음, 기록만 남김)</p>`
+      : "";
+    const since = r.start && r.start !== "2026-11-01" ? ` · ${esc(r.start)}부터` : "";
+    return `<section class="card"${r.retired ? ' style="opacity:.75"' : ""}>
+      <h2>${esc(r.name)} <span class="mini">${esc(r.desc)}${since}</span></h2>
+      ${ret}
       <p class="mini">${esc(r.past)}</p>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:6px 0">${stats}</div>
       <h3>열린 가상 포지션</h3>${openTable(r.open_positions || [])}
@@ -71,8 +84,10 @@
       : "BTC 거래소 순유입: 아직 저장 전";
     $("barrier-status").innerHTML = `${stale}<p class="mini">시작 ${esc(d.start)} · 마지막 일봉 ${esc(d.last_scan || "-")} · 종목 ${d.universe_n || "-"}개 · ${when(d.generated_at)} 갱신</p>
       <p class="mini">${nfLine}</p>
-      <p class="mini">진입 = 신호 다음 날 00시(UTC) 시가, 1시간봉으로 +5%·−3% 먼저 닿는 쪽(같은 봉이면 손절), 14일 넘으면 종가 청산. 손익은 왕복 0.14%와 실제 펀딩을 뺀 값. 11/1~오늘은 백필이고 그 사이 상폐된 종목은 빠져 있어요.</p>`;
-    $("barrier-rules").innerHTML = watchCard(d.watch || []) + (d.rules || []).map((r) => card(r, d.breakeven_pct || 39.3)).join("");
+      <p class="mini">진입 = 신호 다음 날 00시(UTC) 시가, 1시간봉으로 규칙별 익절·손절 중 먼저 닿는 쪽(같은 봉이면 손절), 14일 넘으면 종가 청산. 손익은 왕복 0.14%와 실제 펀딩을 뺀 값. 11/1~오늘은 백필이고 그 사이 상폐된 종목은 빠져 있어요.</p>
+      <p class="mini">자동 교체: 끝난 거래 30건 이상에서 승률 95% 상한이 손익분기보다 낮거나 거래당 평균이 마이너스면, 또는 최근 14일 끝난 거래 합이 −15%보다 나쁘면 새 진입을 멈추고 기록만 남겨요.</p>`;
+    const rules = (d.rules || []).slice().sort((a, b) => (a.retired ? 1 : 0) - (b.retired ? 1 : 0));
+    $("barrier-rules").innerHTML = watchCard(d.watch || []) + rules.map((r) => card(r, d.breakeven_pct || 39.3)).join("");
   }
 
   function load() {

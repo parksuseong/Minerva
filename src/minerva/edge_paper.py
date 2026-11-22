@@ -79,6 +79,20 @@ RULES = {
     "F": {"k": 1, "long_only": False, "name": "F 동결 규칙(참고)",
           "desc": "롱·숏 · 결정마다 확신도 ≥0.198 중 1개 · 손절 5% · 24시간 · 위험 0.5%"},
 }
+# 교체(새 진입 멈춤, 기록은 남김). 결정 시각 t ≥ 그날 00:00 UTC부터 새 거래를 만들지 않는다.
+# 후속 규칙은 장벽 가상 추적(barrier_paper)에 들어갔다.
+RETIRED = {
+    "V06": {"date": "2026-11-22",
+            "reason": "11/1~22 103건 승률 35.9%, 거래당 −1.3% · 장벽 추적 새 규칙으로 교체"},
+    "F": {"date": "2026-11-22",
+          "reason": "11/1~22 31건 승률 32.3%, 거래당 −1.1% · 장벽 추적 새 규칙으로 교체"},
+}
+
+
+def retired_from(rule: str) -> int | None:
+    """교체된 규칙이면 새 진입을 멈추는 시각(2020-01-01부터 시간 index), 아니면 None."""
+    r = RETIRED.get(rule)
+    return None if r is None else (date.fromisoformat(r["date"]) - D0).days * 24
 FIT_PARAMS = dict(objective="multiclass", num_class=3, learning_rate=0.05, min_data_in_leaf=400,
                   feature_fraction=0.7, bagging_fraction=0.7, bagging_freq=1, lambda_l2=10.0,
                   num_threads=1, verbose=-1, seed=7, max_bin=63)
@@ -899,6 +913,10 @@ def run(fetch: bool = True, max_steps: int | None = None, get=get_json,
         rows = decide(store, t, members[month_key(t)], panel)
         entries = {}
         for rk, rule in RULES.items():
+            stop_t = retired_from(rk)
+            if stop_t is not None and t >= stop_t:
+                entries[rk] = []
+                continue
             picks = select(rows, held_at(st["trades"], rk, t), rule)
             entries[rk] = [p["sym"] for p in picks]
             for p in picks:
@@ -935,7 +953,9 @@ def build_summary(store: Store, st: dict, global_h: int) -> dict:
     out = {"status": "ok", "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
            "start": iso(START_H), "data_until": iso(global_h + 1),
            "last_decision": iso(st["last_t"]) if st["last_t"] >= START_H else None,
-           "rules": []}
+           "rules": [],
+           "retired": [{"key": k, "name": RULES[k]["name"], "auto": False, **v}
+                       for k, v in RETIRED.items()]}
     prices = {}
     for tr in st["trades"]:
         if tr["sym"] not in prices:
@@ -965,6 +985,7 @@ def build_summary(store: Store, st: dict, global_h: int) -> dict:
                   for tr in sorted(closed, key=lambda r: -r["x"])[:20]]
         out["rules"].append({
             "key": rk, "name": rule["name"], "desc": rule["desc"],
+            "retired": RETIRED.get(rk),
             "trades": len(trs), "closed": len(closed), "open": len(open_rows),
             "wins": int((nets > 0).sum()),
             "winrate": round(float((nets > 0).mean()) * 100, 1) if len(nets) else None,

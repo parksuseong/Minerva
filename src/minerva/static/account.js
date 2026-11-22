@@ -11,6 +11,7 @@
   const KEY = "minerva-account-token";
   let mem = "";
   let boss = "사장님";
+  let login = false;
   const store = (op, value) => {
     if (op === "set") mem = value;
     if (op === "del") mem = "";
@@ -42,6 +43,7 @@
     $("acct-unlock").onsubmit = (e) => {
       e.preventDefault();
       store("set", $("acct-token").value.trim());
+      login = true;
       load();
     };
   }
@@ -287,7 +289,11 @@
 
   function load() {
     loadBinance();
-    fetch("/api/account", { headers: { "X-Minerva-Token": store("get") } })
+    // 방금 입력한 토큰이면 서버 접속 기록에 "직접 입력"으로 남긴다(어드민 탭)
+    const headers = { "X-Minerva-Token": store("get") };
+    if (login) headers["X-Minerva-Login"] = "1";
+    login = false;
+    fetch("/api/account", { headers })
       .then((r) => {
         if (r.status === 403) {
           const had = store("get");

@@ -1310,8 +1310,13 @@ def tally(rows: list[dict]) -> dict:
     "winrate"(이김/(이김+짐), 없으면 None)}."""
     got = [outcome(r) for r in rows]
     w, lo, d = got.count("win"), got.count("loss"), got.count("draw")
-    return {"wins": w, "losses": lo, "draws": d, "n": w + lo + d,
-            "winrate": w / (w + lo) if w + lo else None}
+    return {
+        "wins": w,
+        "losses": lo,
+        "draws": d,
+        "n": w + lo + d,
+        "winrate": w / (w + lo) if w + lo else None,
+    }
 
 
 def record_text(t: dict) -> str:
@@ -2626,6 +2631,8 @@ def no_stop(symbol: str | None) -> bool:
     except OSError:
         return False
     return symbol.upper() in {n.strip().upper() for n in names}
+
+
 GUARD_ERR_FILE = "trail_guard_error"  # 오류 알림을 한 시간에 한 번만
 GUARD_ERR_GAP_MS = 3_600_000
 GUARD_SKIP_FILE = "trail_guard_skip"  # 마지막 건너뜀 이유: 바뀔 때만 events.jsonl에 적는다
@@ -3654,6 +3661,44 @@ def _enter(
     return ladder(venue, side, qty, sig, gate, flt, base, ctx.market.price, ctx.deadline, fast)
 
 
+YIELD_FILE = "yield_orders.json"
+
+
+def yield_standing_orders(ctx: Ctx) -> list[str]:
+    """사용자가 걸어 둔 대기 진입 지정가(yield_orders.json)를 엔진 신호에 양보한다.
+
+    다른 종목 신호로 진입하기 직전에 부른다. 아직 한 주문도 체결되지 않은(NEW) 주문만 취소한다.
+    일부라도 체결됐으면 그 포지션은 엔진이 이어받으니 건드리지 않는다. 취소한 주문 설명 목록.
+    (사용자 2026-11-23 "다른 종목 신호 생기면 저거 취소하고 들어가야지")
+    """
+    path = DIR / YIELD_FILE
+    rows = _load(path, [])
+    if not isinstance(rows, list) or not rows:
+        return []
+    keep, done = [], []
+    for r in rows:
+        sym, cid = (r or {}).get("symbol"), (r or {}).get("cid")
+        if not sym or not cid:
+            continue
+        if sym == ctx.symbol:
+            keep.append(r)  # 같은 종목 신호는 foreign_orders 검사가 막는다
+            continue
+        c = ctx.at(sym).client
+        try:
+            o = _query(c, "/fapi/v1/order", "origClientOrderId", cid)
+            if not o or o.get("status") != "NEW" or float(o.get("executedQty") or 0) > 0:
+                continue  # 이미 끝났거나 일부 체결: 목록에서만 뺀다
+            c.request("DELETE", "/fapi/v1/order", {"symbol": sym, "origClientOrderId": cid})
+        except (Rejected, NetworkError) as e:
+            ctx.event(event="yield_cancel_error", symbol=sym, cid=cid, error=str(e))
+            keep.append(r)
+            continue
+        ctx.event(event="yield_cancel", symbol=sym, cid=cid, price=o.get("price"))
+        done.append(f"{_name(sym)} {o.get('side')} {o.get('origQty')} @ {o.get('price')}")
+    _save(path, keep)
+    return done
+
+
 def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan: dict) -> None:
     """4) 진입(지정가만: post-only 사다리 → 바로 체결되는 지정가, 급변동이면 바로 뒤쪽부터)
     5) 평균 체결가 6) 지정가 손절 STOP(+익절 TAKE_PROFIT, 체결 수량) 7) 걸렸는지 확인.
@@ -3675,6 +3720,10 @@ def open_position(ctx: Ctx, state: dict, sig: dict, gate: dict, flt: dict, plan:
             pct=gate["pct"],
         )
         return
+    if ctx.live:
+        gone = yield_standing_orders(ctx)
+        if gone:
+            ctx.say(f"↩️ {who} 신호라 대기 지정가를 취소했어요: " + ", ".join(gone))
     acct = _get(ctx.client, "/fapi/v2/account")
     if ctx.live and not acct.get("canTrade", False):
         ctx.say("❌ 계좌가 거래 불가(canTrade=false)라 진입하지 않아요")

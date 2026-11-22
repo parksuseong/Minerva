@@ -112,6 +112,11 @@
     #tab-gose ul, #tab-gose ol { margin: 4px 0; padding-left: 20px; }
     #tab-gose details > summary { cursor: pointer; margin: 6px 0; }
     table.acct th, table.acct td { text-align: left; padding: 6px 4px; border-top: 1px solid var(--line); }
+    #tab-admin table.acct { font-size: 12px; }
+    #tab-admin table.acct td { word-break: break-all; min-width: 56px; }
+    .admin-btns { margin: 10px 0 4px; }
+    .admin-more { margin: 6px 0 2px; padding: 4px 12px; font-size: 13px; cursor: pointer; }
+    .admin-btns button { font-size: 15px; padding: 8px 14px; }
     footer { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0 24px; }
   </style>
 </head>
@@ -137,6 +142,7 @@
     <button role="tab" data-tab="regime" aria-selected="false">🧭 장세</button>
     <button role="tab" data-tab="growth" aria-selected="false">🌱 성장 후보</button>
     <button role="tab" data-tab="paper" aria-selected="false">🔬 가상 추적</button>
+    <button role="tab" data-tab="admin" aria-selected="false">🛠 어드민</button>
   </nav>
 
   <div class="panel" id="tab-today">
@@ -440,6 +446,42 @@
     </section>
   </div>
 
+  <div class="panel" id="tab-admin" hidden>
+    <section class="card" id="admin-lock" hidden></section>
+    <div id="admin-body" hidden>
+    <section class="card">
+      <h2>🛠 자동매매 제어 <span class="mini">바이낸스 엔진 · 주문·청산은 하지 않아요</span></h2>
+      <div id="admin-engine" class="placeholder">불러오는 중…</div>
+      <div class="filters admin-btns" id="admin-buttons"></div>
+      <div id="admin-msg" class="mini"></div>
+      <p class="mini">정지(HALT)는 신규 진입만 멈춰요. 들고 있는 포지션의 손절·따라가는 손절·반대 신호 청산은 계속해요. 조작마다 텔레그램으로 알리고 기록을 남겨요.</p>
+    </section>
+    <section class="card">
+      <h2>🧾 조작 기록 <span class="mini">최근 30개</span></h2>
+      <div id="admin-actions" class="placeholder">-</div>
+    </section>
+    <section class="card">
+      <h2>👣 접속 기록 <span class="mini">페이지 열기·토큰 시도만 · 90일 보관</span></h2>
+      <div class="filters" id="admin-filters" role="group" aria-label="기간">
+        <button type="button" data-hours="24" class="on" aria-pressed="true">24시간</button>
+        <button type="button" data-hours="168" aria-pressed="false">7일</button>
+        <button type="button" data-hours="720" aria-pressed="false">30일</button>
+        <button type="button" data-hours="0" aria-pressed="false">전체</button>
+        <label><input type="checkbox" id="admin-auth-only"> 토큰 시도만</label>
+        <label><input type="checkbox" id="admin-hide-me"> 내 IP 숨기기</label>
+        <button type="button" id="admin-refresh">🔄 새로고침</button>
+      </div>
+      <div id="admin-access-note" class="mini"></div>
+      <div id="admin-access" class="placeholder">-</div>
+      <button type="button" class="admin-more" id="admin-access-more" hidden>더 보기</button>
+    </section>
+    <section class="card">
+      <h2>🌐 IP별 요약 <span class="mini">위 기간·필터 기준, 최근 접속 순 200개</span></h2>
+      <div id="admin-ips" class="placeholder">-</div>
+    </section>
+    </div>
+  </div>
+
   <footer>투자 판단의 책임은 본인에게 있습니다.</footer>
 
   <script>
@@ -544,7 +586,8 @@
   <script src="/static/soxl.js?v=20261113a"></script>
   <script src="/static/scrnear.js?v=20261117a"></script>
   <script src="/static/holdchart.js?v=20261118a"></script>
-  <script src="/static/account.js?v=20261122k"></script>
+  <script src="/static/account.js?v=20261123a"></script>
+  <script src="/static/admin.js?v=20261123a"></script>
   <script src="/static/trade.js?v=20261111a"></script>
   <script src="/static/office.js?v=20261111a"></script>
   <script src="/static/gose.js?v=20261119b"></script>

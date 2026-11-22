@@ -22,6 +22,8 @@ os.environ["MINERVA_GOSE_DIR"] = str(_TMP / "gose")
 os.environ["MINERVA_FEED_DIR"] = str(_TMP / "feed")
 # 성장 후보 폴더(~/.minerva/growth: 목록·재무 캐시·공포 알림 기록)도 임시로
 os.environ["MINERVA_GROWTH_DIR"] = str(_TMP / "growth")
+# 어드민 접속·조작 기록(~/.minerva/admin)도 임시로(페이지를 여는 시험마다 기록이 남는다)
+os.environ["MINERVA_ADMIN_DIR"] = str(_TMP / "admin")
 
 
 def pytest_sessionstart(session):

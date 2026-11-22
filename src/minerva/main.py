@@ -4,11 +4,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from minerva import __version__, notify
+from minerva import __version__, admin, notify, routes
 from minerva.kis import KST
 from minerva.office import router as office_router
 from minerva.routes import router as data_router
@@ -36,6 +36,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Minerva", version=__version__, lifespan=lifespan)
 app.include_router(office_router)
 app.include_router(data_router)
+app.include_router(admin.router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -47,6 +48,31 @@ async def revalidate(request, call_next):
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    """어드민 탭 접속 기록: 페이지 열기와 토큰 시도만 남긴다(30초 갱신 API·정적 파일은 빼서
+    기록이 묻히지 않게). 서로 다른 틀린 토큰을 15분에 10개 보낸 IP는 잠시 토큰 요청을 막는다."""
+    path = request.url.path
+    token = request.headers.get("x-minerva-token", "")
+    ip = admin.request_ip(request)
+    ua = request.headers.get("user-agent")
+    ref = request.headers.get("referer")
+    if token and path.startswith("/api/"):
+        area = "admin" if path.startswith("/api/admin") else "account"
+        if admin.blocked(ip):
+            admin.log_access(admin.access_entry(ip, ua, path, ref, "auth", "blocked"))
+            return JSONResponse({"detail": "too many attempts"}, status_code=429)
+        ok = admin.admin_token_ok(token) if area == "admin" else routes._token_ok(token)
+        if not ok:
+            admin.note_fail(ip, token)
+        explicit = request.headers.get("x-minerva-login") == "1"
+        if admin.should_log_auth(ip, ua or "", area, ok, explicit, token):
+            admin.log_access(admin.access_entry(ip, ua, path, ref, "auth", "ok" if ok else "fail"))
+    elif admin.is_page(request.method, path):
+        admin.log_access(admin.access_entry(ip, ua, path, ref, "page", None))
+    return await call_next(request)
 
 
 @app.get("/", include_in_schema=False)

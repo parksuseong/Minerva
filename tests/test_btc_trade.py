@@ -929,10 +929,14 @@ def test_unknown_pnl_not_counted_in_winrate(env):
         ({"why": "trail", "pct": 4.0, "pnl": 12.0}, "win"),
         ({"why": "stop", "side": "short", "entry": 100.0, "exit": 100.3, "pnl": -1.2}, "draw"),
         ({"why": "stop", "side": "short", "entry": 100.0, "exit": 100.6, "pnl": -2.0}, "loss"),
-        # 손절이 아닌 청산은 진입가 근처여도 예전처럼 손익으로
-        ({"why": "signal", "pct": 0.1, "pnl": -0.2}, "loss"),
-        ({"why": "tp", "pct": 0.2, "pnl": 0.1}, "win"),
-        ({"why": "manual", "pct": 0.0, "pnl": 0.0}, "loss"),
+        # 2026-11-23부터 청산 이유와 상관없이 ±0.5% 안이면 무승부
+        ({"why": "signal", "pct": 0.1, "pnl": -0.2}, "draw"),
+        ({"why": "tp", "pct": 0.2, "pnl": 0.1}, "draw"),
+        ({"why": "manual", "pct": 0.0, "pnl": 0.0}, "draw"),
+        # TQQQ 숏 44.03 → 43.98 = +0.11% 수동 청산
+        ({"why": "manual", "side": "short", "entry": 44.03, "exit": 43.98, "pnl": 2.71}, "draw"),
+        ({"why": "signal", "pct": 0.8, "pnl": 2.0}, "win"),
+        ({"why": "signal", "pct": -0.8, "pnl": -2.0}, "loss"),
         ({"why": "stop", "pct": 0.1, "pnl": None}, None),  # 손익 모름은 어디에도 안 셈
         ({"why": "stop", "pnl": -0.5}, "loss"),  # 가격 없으면 손익으로
     ],
@@ -976,7 +980,7 @@ def test_winrate_min_trades_counts_decided_only(env):
     assert bt.winrate("live", NOW) == (7, 3, 10)
     assert bt.check_halts("live", {}, 1000.0, NOW, lambda m: None) == []
     bt._append("closed.jsonl", {"at": "2026-11-05 10:00:00", "mode": "live", "pnl": -1.0,
-                                "why": "signal", "pct": -0.1})
+                                "why": "signal", "pct": -0.8})
     sent = []
     why = bt.check_halts("live", {}, 1000.0, NOW, sent.append)
     assert any("승률 3/8" in h and "3승 5패 10무" in h for h in why)

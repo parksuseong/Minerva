@@ -1,0 +1,20 @@
+# 🔬 가상 추적 탭 아래 🎯 칸: +5%/−3% 장벽 규칙(알트 이탈 숏·급등주 기다렸다 숏·급락주 반등 롱·BTC 순유입 숏) 가상 추적.
+# 공개 시세 GET + 코인메트릭스 커뮤니티 API만(키·주문 없음). 하루 한 번 일봉 훑기(약 5분), 나머지는 열린 가상 포지션만 확인.
+# 결과: ~/.minerva/barrier_paper/summary.json → /api/barrier-paper
+# 설치: sudo cp deploy/minerva-barrier-paper.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-barrier-paper.timer
+[Unit]
+Description=Minerva barrier paper tracker (+5/-3, no orders)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.barrier_paper run
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=300M
+CPUQuota=30%
+TimeoutStartSec=1800

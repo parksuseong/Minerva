@@ -537,6 +537,32 @@ def edge_paper_view() -> dict:
     return data
 
 
+BARRIER_PAPER_STALE_HOURS = 3  # 한 시간마다 돎
+
+
+@router.get("/api/barrier-paper")
+def barrier_paper_view() -> dict:
+    """🔬 가상 추적 탭 아래: +5%/−3% 장벽 규칙(급등·급락주 자동 감지 포함) 가상 추적, 주문 없음.
+
+    `minerva-barrier-paper.timer`가 쓴 summary.json만 읽는다."""
+    root = Path(os.environ.get("MINERVA_BARRIER_PAPER_DIR", "~/.minerva/barrier_paper"))
+    root = root.expanduser()
+    try:
+        data = json.loads((root / "summary.json").read_text())
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
+        return {"status": "pending",
+                "message": "아직 장벽 가상 추적 기록이 없어요 (한 시간마다 갱신)"}
+    try:
+        age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(data["generated_at"])
+                 ).total_seconds() / 3600
+    except (KeyError, TypeError, ValueError):
+        age_h = None
+    data["stale"] = age_h is None or age_h > BARRIER_PAPER_STALE_HOURS
+    return data
+
+
 @router.get("/api/growth")
 def growth_view() -> dict:
     """🌱 성장 후보 탭: 10배·100배 관심 목록(매수 추천 아님).

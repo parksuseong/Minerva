@@ -186,7 +186,7 @@
     const t = eng.live_totals || { n: rows.length, wins: count("win"), losses: count("loss"),
       draws: count("draw"), pnl: rows.reduce((a, r) => a + (r.pnl || 0), 0) };
     const sum = t.pnl, wins = t.wins || 0, losses = t.losses || 0, draws = t.draws || 0;
-    // 승률 = 이김 / (이김 + 짐). 무승부(진입가 근처 손절)는 빼고 따로 센다
+    // 승률 = 이김 / (이김 + 짐). 무승부(가격 ±0.5% 안 청산)는 빼고 따로 센다
     const pct = (w, n) => (n ? `${num((100 * w) / n, 0)}%` : "-");
     const g = eng.gauges || {};
     const days = g.winrate_days || 30;

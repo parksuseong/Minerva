@@ -245,14 +245,15 @@ EQUITY_FLOOR = 0.80
 WINRATE_MIN = 0.50
 WINRATE_MIN_TRADES = 8  # 승패가 난 거래(무승부 제외) 수
 WINRATE_DAYS = 30
-# 무승부(사용자 2026-11-17 "진입가 근처에 손절나간거면 무승부로 하자"): 손절·따라간 손절로
+# 무승부(사용자 2026-11-17 "진입가 근처에 손절나간거면 무승부로 하자"): 처음엔 손절·따라간 손절로
 # 닫혔는데 청산가가 진입가에서 ±DRAW_PCT%(가격, 3배면 증거금 ±1.5%) 안이면 이긴 것도 진 것도
 # 아니다. 본전 잠금이 진입가 +TRAIL_LOCK_PCT(0.2%)에 걸리고 지정가 손절이 0.5%까지 미끄러질 수
 # 있어(STOP_LIMIT_SLIP_PCT) 본전 손절은 대개 −0.3%~+0.2% 언저리에 닫힌다
 # (예: 2026-11-17 NVDA 롱 158.44 → 158.69 = +0.16%). 손익(pnl)은 그대로 두고 승패 분류만 바꾼다.
 # 승률 = 이긴 수 / (이긴 수 + 진 수). 무승부는 분모에서 빼고 따로 보인다.
+# 2026-11-23 사용자 "레버리지 전에 0.5% 이하는 무로 기록해": 청산 이유와 상관없이(신호·익절·수동
+# 포함) 가격 기준 ±DRAW_PCT% 안이면 무승부
 DRAW_PCT = 0.5
-DRAW_WHY = ("stop", "trail")
 RETRIES = 3
 RETRY_GAP = 10
 # 타이머가 한 번 빠져도 따라잡되, 30분 넘은 신호로는 진입하지 않는다
@@ -1294,14 +1295,13 @@ def price_pct(row: dict) -> float | None:
 def outcome(row: dict) -> str | None:
     """청산 한 건의 승패: "win" | "loss" | "draw", 손익을 모르면 None(어디에도 안 셈).
 
-    손절·따라간 손절(`DRAW_WHY`)이 진입가 ±DRAW_PCT% 안에서 났으면 무승부. 나머지는 손익 > 0이면
-    이김, 아니면 짐(예전과 같다). 손익 값은 바꾸지 않는다."""
+    청산 이유와 상관없이 레버리지 전 가격으로 진입가 ±DRAW_PCT% 안이면 무승부. 나머지는
+    손익 > 0이면 이김, 아니면 짐. 손익 값은 바꾸지 않는다. 가격을 모르면 손익으로."""
     if row.get("pnl") is None:
         return None
-    if row.get("why") in DRAW_WHY:
-        pct = price_pct(row)
-        if pct is not None and abs(pct) <= DRAW_PCT + 1e-9:
-            return "draw"
+    pct = price_pct(row)
+    if pct is not None and abs(pct) <= DRAW_PCT + 1e-9:
+        return "draw"
     return "win" if float(row["pnl"]) > 0 else "loss"
 
 
@@ -1506,7 +1506,7 @@ def _record_close(ctx: Ctx, pos: dict, exit_px: float | None, pnl: float | None,
     px = _px(exit_px) if exit_px else "?"
     money = f", 손익 {pnl:+.2f} USDT" if pnl is not None else ""
     pc = f" ({pct:+.2f}% × {pos_leverage(pos)}배)" if pct is not None else ""
-    res = {"win": " · 승", "loss": " · 패", "draw": " · 무승부(진입가 근처 손절)"}.get(
+    res = {"win": " · 승", "loss": " · 패", "draw": f" · 무승부(가격 ±{DRAW_PCT:g}% 안)"}.get(
         outcome({"pnl": pnl, "pct": pct, "why": why}) or "", ""
     )
     ctx.say(f"{_who(sym, pos['side'])} {label}: {pos['qty']} {_name(sym)} @ {px}{pc}{money}{res}")

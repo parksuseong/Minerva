@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from minerva import __version__, admin, notify, routes
@@ -33,7 +33,15 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Minerva", version=__version__, lifespan=lifespan)
+# API 설명서(/docs·/openapi.json)는 끈다: 바깥 스캐너에게 경로 목록을 보여 줄 이유가 없다
+app = FastAPI(
+    title="Minerva",
+    version=__version__,
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.include_router(office_router)
 app.include_router(data_router)
 app.include_router(admin.router)
@@ -47,7 +55,24 @@ async def revalidate(request, call_next):
     response = await call_next(request)
     if request.url.path == "/" or request.url.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-cache"
+    response.headers.update(SECURITY_HEADERS)
     return response
+
+
+# 검색엔진에 안 나오게(사용자 2026-11-23), 다른 사이트 iframe에 못 넣게, 형식 추측·리퍼러 노출 막기
+SECURITY_HEADERS = {
+    "X-Robots-Tag": "noindex, nofollow, noarchive, nosnippet",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "same-origin",
+    "Strict-Transport-Security": "max-age=31536000",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+}
+
+
+@app.get("/robots.txt", include_in_schema=False)
+def robots() -> PlainTextResponse:
+    return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
 
 @app.middleware("http")
@@ -63,10 +88,15 @@ async def access_log(request: Request, call_next):
         area = "admin" if path.startswith("/api/admin") else "account"
         if admin.blocked(ip):
             admin.log_access(admin.access_entry(ip, ua, path, ref, "auth", "blocked"))
+            if admin.auth_alert_kind(ip, False, True):
+                admin.send_auth_alert("blocked", ip, ua, path)
             return JSONResponse({"detail": "too many attempts"}, status_code=429)
         ok = admin.admin_token_ok(token) if area == "admin" else routes._token_ok(token)
         if not ok:
             admin.note_fail(ip, token)
+        kind = admin.auth_alert_kind(ip, ok, False)
+        if kind:
+            admin.send_auth_alert(kind, ip, ua, path)
         explicit = request.headers.get("x-minerva-login") == "1"
         if admin.should_log_auth(ip, ua or "", area, ok, explicit, token):
             admin.log_access(admin.access_entry(ip, ua, path, ref, "auth", "ok" if ok else "fail"))

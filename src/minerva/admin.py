@@ -320,10 +320,12 @@ def blocked(ip: str) -> bool:
 
 def reset_memory() -> None:
     """시험용: 메모리에 든 중복·실패 기록을 비운다."""
-    global _appends
+    global _appends, _known_ok
     with _lock:
         _seen_ok.clear()
         _fails.clear()
+        _alerted.clear()
+        _known_ok = None
         _appends = 0
 
 
@@ -635,3 +637,83 @@ def admin_access(
         s["place"] = places.get(s["ip"], "-")
     out["me_place"] = places.get(me, "-")
     return out
+
+
+# ---------------------------------------------------------------- 보안 알림(텔레그램)
+
+ALERT_GAP_SEC = 30 * 60  # 같은 IP·같은 종류 알림은 30분에 한 번
+_alerted: dict[tuple[str, str], float] = {}
+_known_ok: set[str] | None = None  # 비밀번호를 통과한 적 있는 IP(기록 파일에서 한 번 읽어 둔다)
+
+
+def _prefix(ip: str) -> str:
+    """같은 통신사 대역으로 볼 앞자리(IPv4 /16, IPv6 /32). 휴대폰은 IP가 자주 바뀐다."""
+    if ":" in ip:
+        return ":".join(ip.split(":")[:2])
+    return ".".join(ip.split(".")[:2])
+
+
+def _known_ips() -> set[str]:
+    global _known_ok
+    if _known_ok is None:
+        rows = read_jsonl("access.jsonl")
+        _known_ok = {str(r.get("ip")) for r in rows if r.get("auth") == "ok"}
+    return _known_ok
+
+
+def auth_alert_kind(ip: str, ok: bool, was_blocked: bool) -> str | None:
+    """보낼 알림 종류: blocked(막힘) · fail(비밀번호 틀림) · new_ok(새 대역에서 통과) · None.
+    통과는 전에 통과한 IP나 같은 대역이면 조용히(사용자 휴대폰 IP가 바뀌어도 울리지 않게)."""
+    if not _valid_ip(ip) or is_internal(ip):
+        return None
+    if was_blocked:
+        kind = "blocked"
+    elif not ok:
+        kind = "fail"
+    else:
+        with _lock:
+            known = _known_ips()
+            if ip in known:
+                return None
+            new_range = not any(_prefix(k) == _prefix(ip) for k in known)
+            known.add(ip)
+        if not new_range:
+            return None
+        kind = "new_ok"
+    t = time.monotonic()
+    with _lock:
+        if t - _alerted.get((ip, kind), -1e18) < ALERT_GAP_SEC:
+            return None
+        _alerted[(ip, kind)] = t
+        if len(_alerted) > 5000:
+            _alerted.clear()
+    return kind
+
+
+_ALERT_TEXT = {
+    "fail": "⚠️ 사이트 비밀번호 틀린 시도",
+    "blocked": "⛔ 비밀번호를 여러 번 틀려 15분 차단된 IP",
+    "new_ok": "🔑 처음 보는 곳에서 비밀번호 통과 — 본인이 아니면 바로 비밀번호를 바꾸세요",
+}
+
+
+def send_auth_alert(kind: str, ip: str, ua: str | None, path: str, send=None) -> None:
+    """위치 조회(느릴 수 있음)와 전송은 요청을 붙잡지 않게 따로 돈다."""
+
+    def run() -> None:
+        try:
+            place = locate([ip]).get(ip, "-")
+        except Exception:  # noqa: BLE001 — 위치를 못 구해도 알림은 보낸다
+            place = "-"
+        text = (
+            f"{_ALERT_TEXT[kind]}\n"
+            f"• IP {ip} ({place})\n"
+            f"• 기기 {parse_ua(ua)['label']}\n"
+            f"• 경로 {_clean(path, 80)} · {now_kst()}"
+        )
+        try:
+            (send or notify.send)(text)
+        except Exception as e:  # noqa: BLE001
+            log.warning("auth alert failed: %s", type(e).__name__)
+
+    threading.Thread(target=run, daemon=True).start()

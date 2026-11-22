@@ -292,3 +292,46 @@ def test_my_ips_includes_token_ok_ips():
         rows, me="9.9.9.9", auth_only=False, hide_me=True, hours=None, limit=10, offset=0
     )
     assert {r["ip"] for r in v["rows"]} == {"2.2.2.2", "3.3.3.3"}
+
+
+def test_security_headers_robots_and_no_docs(env):
+    client = TestClient(app)
+    r = client.get("/")
+    assert r.headers["X-Robots-Tag"].startswith("noindex")
+    assert r.headers["X-Frame-Options"] == "DENY"
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
+    assert client.get("/robots.txt").text == "User-agent: *\nDisallow: /\n"
+    for p in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(p).status_code == 404
+
+
+def test_auth_alert_kinds(env):
+    admin.reset_memory()
+    # 틀림은 IP·종류별 30분에 한 번
+    assert admin.auth_alert_kind("12.34.56.78", False, False) == "fail"
+    assert admin.auth_alert_kind("12.34.56.78", False, False) is None
+    assert admin.auth_alert_kind("12.34.56.78", False, True) == "blocked"
+    # 처음 통과: 기록이 없으면 새 대역 → 알림, 같은 대역의 다른 IP는 조용히
+    assert admin.auth_alert_kind("11.22.5.247", True, False) == "new_ok"
+    assert admin.auth_alert_kind("11.22.5.247", True, False) is None
+    assert admin.auth_alert_kind("11.22.9.1", True, False) is None
+    assert admin.auth_alert_kind("13.57.9.11", True, False) == "new_ok"
+    # 내부 접속은 알리지 않는다
+    assert admin.auth_alert_kind("127.0.0.1", False, False) is None
+    admin.reset_memory()
+
+
+def test_send_auth_alert_text(env, monkeypatch):
+    import threading as th
+
+    monkeypatch.setattr(admin, "locate", lambda ips: {ips[0]: "Korea · Seoul · SKT"})
+    got = []
+    done = th.Event()
+
+    def send(text):
+        got.append(text)
+        done.set()
+
+    admin.send_auth_alert("fail", "12.34.56.78", "curl/8", "/api/admin/status", send=send)
+    assert done.wait(2)
+    assert "비밀번호 틀린" in got[0] and "12.34.56.78" in got[0] and "Seoul" in got[0]

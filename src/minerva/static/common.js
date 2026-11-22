@@ -95,5 +95,38 @@ window.MinervaUI = (() => {
     if (left > 0) b.textContent = `더 보기 (${left}줄 더 있음)`; else b.remove();
   });
 
-  return { esc, num, pad, css, kst, scrChart, scrFill, pgAttr, moreBtn };
+  // 원화 보기(계좌 탭 "₩ 원화로 보기" 버튼): 켜면 USDT 금액을 조회 환율(달러/원, 1 USDT = 1달러)로
+  // 바꿔 보인다. 가격(진입가·손절가)은 그대로 USDT. 상태는 이 기기에 기억하고, 바뀌면 "minerva-fx" 이벤트.
+  const FX_KEY = "minerva-fx-krw";
+  const fx = { on: false, rate: null, at: null, stale: false };
+  try { fx.on = localStorage.getItem(FX_KEY) === "1"; } catch (e) { /* 기본 USDT */ }
+  const krw = () => fx.on && fx.rate > 0;
+  const fxEmit = () => {
+    if (document.dispatchEvent && typeof Event === "function") document.dispatchEvent(new Event("minerva-fx"));
+  };
+  // 금액 한 칸: "12.34 USDT" 또는 "16,508원". unit=false면 단위 없이 숫자만(표 머리에 단위가 있을 때)
+  const money = (v, d = 2, unit = true) => {
+    if (v == null || Number.isNaN(Number(v))) return "-";
+    if (krw()) return `${num(Math.round(v * fx.rate), 0)}${unit ? "원" : ""}`;
+    return `${num(v, d)}${unit ? " USDT" : ""}`;
+  };
+  const moneyUnit = () => (krw() ? "원" : "USDT");
+  const fxFactor = () => (krw() ? fx.rate : 1);
+  const fxSet = (on) => {
+    fx.on = !!on;
+    try { localStorage.setItem(FX_KEY, fx.on ? "1" : "0"); } catch (e) { /* 이번 화면만 */ }
+    fxEmit();
+  };
+  const fxLoad = () => (typeof fetch === "function" ? fetch("/api/fx/usdkrw")
+    .then((r) => r.json())
+    .then((d) => {
+      if (d.status !== "ok") return;
+      const changed = d.rate !== fx.rate;
+      Object.assign(fx, { rate: d.rate, at: d.at, stale: !!d.stale });
+      if (changed && fx.on) fxEmit();
+    })
+    .catch(() => { /* 환율 없으면 USDT 그대로 */ }) : Promise.resolve());
+
+  return { esc, num, pad, css, kst, scrChart, scrFill, pgAttr, moreBtn,
+    fx, money, moneyUnit, fxFactor, fxSet, fxLoad };
 })();

@@ -638,3 +638,40 @@ def gose_spec() -> dict:
         reference=index.get("reference") or [],
         replay_def=index.get("replay_def"),
     )
+
+
+# 계좌 탭 "₩ 원화로 보기": 달러/원 조회 환율(야후 KRW=X 현재가). 10분 메모리 캐시,
+# 받기 실패하면 마지막 값을 stale로 돌려준다. 1 USDT = 1달러로 보는 건 화면 몫.
+FX_URL = "https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?range=1d&interval=5m"
+FX_TTL = 600
+_fx: dict = {"rate": None, "at": None, "ts": 0.0}
+_fx_lock = threading.Lock()
+
+
+def _fetch_usdkrw() -> tuple[float, int]:
+    req = urllib.request.Request(FX_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        meta = json.load(resp)["chart"]["result"][0]["meta"]
+    rate = float(meta["regularMarketPrice"])
+    if not 500 < rate < 5000:
+        raise ValueError(f"이상한 환율 {rate}")
+    return rate, int(meta.get("regularMarketTime") or time.time())
+
+
+@router.get("/api/fx/usdkrw")
+def fx_usdkrw() -> dict:
+    with _fx_lock:
+        now = time.time()
+        if _fx["rate"] is None or now - _fx["ts"] >= FX_TTL:
+            try:
+                rate, at = _fetch_usdkrw()
+                _fx.update(rate=rate, at=at, ts=now)
+            except (OSError, ValueError, KeyError, IndexError, TypeError):
+                if _fx["rate"] is None:
+                    return {"status": "error", "message": "환율을 받지 못했어요"}
+                return {"status": "ok", "rate": _fx["rate"], "stale": True,
+                        "at": datetime.fromtimestamp(_fx["at"], timezone.utc).isoformat(),
+                        "source": "Yahoo Finance KRW=X"}
+        return {"status": "ok", "rate": _fx["rate"], "stale": False,
+                "at": datetime.fromtimestamp(_fx["at"], timezone.utc).isoformat(),
+                "source": "Yahoo Finance KRW=X"}

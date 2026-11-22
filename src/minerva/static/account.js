@@ -3,7 +3,8 @@
 // 서버에 열람 토큰이 설정돼 있으면 입력을 받고, 한 번 입력하면 이 기기에 기억한다.
 (() => {
   const $ = (id) => document.getElementById(id);
-  const { esc } = window.MinervaUI;
+  const U = window.MinervaUI;
+  const { esc } = U;
   const num = (v) => window.MinervaUI.num(v, 2);
   const won = (v) => (v == null ? "-" : `${num(Math.round(v))}원`);
   const signed = (v, s) => `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${s}</span>`;
@@ -83,12 +84,17 @@
         ["price", "체결가"]], d.trades, "acct-trades");
   }
 
-  const usdt = (v) => (v == null ? "-" : `${num(v)} USDT`);
+  // 금액은 U.money: 평소 USDT, "₩ 원화로 보기"가 켜지면 조회 환율로 원화(가격은 그대로 USDT)
+  const usdt = (v) => U.money(v);
+  const amt = (v) => U.money(v, 2, false);
   const ugain = (v, p) => signed(v, `${v > 0 ? "+" : ""}${usdt(v)} (${pct(p)})`);
   // 선물 체결내역은 화면에서 뺐다(사용자 2026-11-17 "화면에서는 보여줄 필요 없을 것 같다"). 승패는 엔진 거래 표에
   const BN = ["bn-daily", "bn-positions", "bn-orders"];
 
+  let lastBn = null;
+  let lastSeries = null;
   function renderBinance(d) {
+    lastBn = d;
     if (d.status !== "ok" && !d.updated_at) {
       $("bn-status").textContent = d.message || d.error || "바이낸스 계좌 정보가 없어요";
       BN.forEach((id) => { $(id).textContent = "-"; });
@@ -148,7 +154,7 @@
       if (v === undefined) return "-";
       if (v == null) return "없음";
       const u = x ? exitUsdt(v, x) : null;
-      const money = u == null ? "" : `<br>${signed(u, `${u > 0 ? "+" : ""}${num(u)} USDT`)}`;
+      const money = u == null ? "" : `<br>${signed(u, `${u > 0 ? "+" : ""}${usdt(u)}`)}`;
       return `${num(v)} (${pct == null ? "-" : (pct > 0 ? "+" : "") + num(pct)}%)${money}`;
     };
     $("bn-positions").innerHTML = table([["symbol", "종목"], ["side", "방향"], ["qty", "수량"],
@@ -157,7 +163,7 @@
       ["tp", "익절가", (v, x) => exitCell(v, x.tp_pct, x)],
       ["mark", "현재가"], ["liq", "청산가"],
       ["leverage", "레버리지", (v, x) => `${v}배 ${esc(x.margin_type)}`],
-      ["pnl", "미실현손익", (v, x) => signed(v, `${num(v)} (${x.pnl_pct == null ? "-" : num(x.pnl_pct)}%)`)]],
+      ["pnl", "미실현손익", (v, x) => signed(v, `${usdt(v)} (${x.pnl_pct == null ? "-" : num(x.pnl_pct)}%)`)]],
     d.positions);
     if (window.HoldChart) {
       try { window.HoldChart.update(d.positions); } catch (err) { console.error(err); }
@@ -169,14 +175,14 @@
     $("bn-daily").innerHTML = (d.daily || []).length ? table([["date", "날짜",
         (v, x) => esc(v) + (x.open ? ' <span class="mini">(오늘, 지금까지 확정분)</span>' : "")],
       ["pct", "수익률", (v) => signed(v, pctTxt(v))],
-      ["pnl", "확정 손익 (USDT)", (v) => opt(v, (x) => signed(x, num(x)))],
+      ["pnl", `확정 손익 (${U.moneyUnit()})`, (v) => opt(v, (x) => signed(x, amt(x)))],
       ["equity", "확정 평가액", (v, x) => (x.pnl == null ? "-" : usdt(v))
-        + (x.deposit ? ` <span class="mini">(입출금 ${x.deposit > 0 ? "+" : ""}${num(x.deposit)})</span>` : "")],
-      ["realized", "실현손익", (v) => opt(v, (x) => signed(x, num(x)))],
-      ["commission", "낸 수수료", (v) => opt(v, num)],
-      ["funding", "펀딩비", (v) => opt(v, (x) => signed(x, num(x)))],
+        + (x.deposit ? ` <span class="mini">(입출금 ${x.deposit > 0 ? "+" : ""}${amt(x.deposit)})</span>` : "")],
+      ["realized", "실현손익", (v) => opt(v, (x) => signed(x, amt(x)))],
+      ["commission", "낸 수수료", (v) => opt(v, amt)],
+      ["funding", "펀딩비", (v) => opt(v, (x) => signed(x, amt(x)))],
       ["unrealized", "보유 중 평가손익 (따로)", (v, x) => (x.open && v != null
-        ? signed(v, `${v > 0 ? "+" : ""}${num(v)} <span class="mini">미확정</span>`) : "-")]], d.daily, "bn-daily")
+        ? signed(v, `${v > 0 ? "+" : ""}${amt(v)} <span class="mini">미확정</span>`) : "-")]], d.daily, "bn-daily")
       + `<div class="mini">확정 손익 기준: 그날(KST) 청산 체결로 확정된 실현손익 − 낸 수수료 + 펀딩비(바이낸스 손익 내역).
         수익률 = 그 손익 ÷ 그날 시작 확정 평가액(시드 + 입출금 + 전날까지 확정 손익). 들고 있는 포지션의 평가손익은
         넣지 않아서 지난 날 숫자는 자정이 지나도 바뀌지 않아요. 입출금은 손익에서 빼요. "-"는 손익 내역을 못 받은 날이에요.</div>` : "없음";
@@ -203,7 +209,10 @@
   let seedLine = null;
 
   function drawSeries(d) {
+    lastSeries = d;
     const LC = window.LightweightCharts;
+    const k = U.fxFactor();
+    if ($("bn-chart-unit")) $("bn-chart-unit").textContent = U.moneyUnit();
     // 일별: KST 날짜마다 마지막 점(그날 마감값, 오늘은 지금 값). 시각은 이미 KST를 UTC 자리에 둔 값
     const byDay = new Map();
     for (const p of d.points || []) {
@@ -216,8 +225,8 @@
     // 보유 중 평가손익은 넣지 않는다. 서버가 아직 안 주면 예전처럼 순평가액
     const realized = Array.isArray(d.realized) && d.realized.length;
     const pts = realized
-      ? d.realized.map((p) => ({ time: p.date, value: p.equity }))
-      : [...byDay.keys()].sort().map((k) => ({ time: k, value: byDay.get(k).v }));
+      ? d.realized.map((p) => ({ time: p.date, value: p.equity * k }))
+      : [...byDay.keys()].sort().map((t) => ({ time: t, value: byDay.get(t).v * k }));
     if (d.live === false) {
       $("bn-chart-note").textContent = "실전 자동매매를 시작하면 그때부터 그려요";
       if (line) line.setData([]);
@@ -240,14 +249,14 @@
     if (!chart) {
       chart = LC.createChart($("bn-chart"), { autoSize: true, ...look,
         localization: { locale: "ko-KR", timeFormatter: dayText,
-          priceFormatter: (v) => `${num(v)}` },
+          priceFormatter: (v) => U.num(v, U.fxFactor() === 1 ? 2 : 0) },
         crosshair: { mode: LC.CrosshairMode.Magnet },
         timeScale: { ...look.timeScale, timeVisible: false, secondsVisible: false,
           tickMarkFormatter: dayText } });
       line = chart.addSeries(LC.BaselineSeries, { lineWidth: 2, priceLineVisible: false });
     }
     chart.applyOptions(look);
-    const seed = d.seed ?? pts[0].value;
+    const seed = d.seed != null ? d.seed * k : pts[0].value;
     line.applyOptions({ baseValue: { type: "price", price: seed },
       topLineColor: up, topFillColor1: `${up}33`, topFillColor2: `${up}05`,
       bottomLineColor: down, bottomFillColor1: `${down}05`, bottomFillColor2: `${down}33` });
@@ -265,6 +274,7 @@
   }
 
   function loadBinance() {
+    if (U.fx.on) U.fxLoad().then(fxNote);
     loadSeries();
     fetch("/api/account/binance", { headers: { "X-Minerva-Token": store("get") } })
       .then((r) => (r.status === 403 ? null : r.json()))
@@ -290,6 +300,33 @@
       .then((d) => { if (d) render(d); })
       .catch(() => { $("acct-status").textContent = "계좌 정보를 불러오지 못했어요"; });
   }
+
+  // "₩ 원화로 보기": 조회 환율(달러/원)로 금액만 바꿔 다시 그린다. 계좌 데이터는 다시 받지 않는다.
+  const fxBtn = $("fx-toggle");
+  const fxNote = () => {
+    if (!fxBtn) return;
+    const f = U.fx;
+    fxBtn.classList.toggle("on", f.on);
+    fxBtn.setAttribute("aria-pressed", String(f.on));
+    fxBtn.textContent = f.on ? "💵 USDT로 보기" : "₩ 원화로 보기";
+    const when = f.at ? new Date(new Date(f.at).getTime() + 9 * 3600 * 1000).toISOString().slice(5, 16).replace("T", " ") : "";
+    $("fx-note").textContent = f.rate
+      ? `환율 1달러 = ${num(f.rate)}원 (${when} KST 시세${f.stale ? ", 최신 아님" : ""}) · 1 USDT = 1달러로 계산 · 가격은 그대로 USDT`
+      : (f.on ? "환율을 받는 중이에요…" : "");
+  };
+  const redraw = () => {
+    fxNote();
+    if (lastBn) renderBinance(lastBn);
+    if (lastSeries) drawSeries(lastSeries);
+  };
+  document.addEventListener("minerva-fx", redraw);
+  if (fxBtn) {
+    fxBtn.onclick = () => {
+      U.fxSet(!U.fx.on);
+      if (U.fx.on && !U.fx.rate) U.fxLoad().then(redraw);
+    };
+  }
+  U.fxLoad().then(fxNote);
 
   // 주식/바이낸스 중 하나만 보인다. 고른 쪽은 이 기기에 기억한다.
   const PICK = "minerva-account-pick";

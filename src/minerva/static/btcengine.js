@@ -113,6 +113,9 @@
     renderAi(); renderTrades(); renderAcct();
   };
 
+  // 계좌 탭 "₩ 원화로 보기"를 누르면 손익 칸만 다시 그린다
+  document.addEventListener("minerva-fx", () => { if (eng) { renderTrades(); renderAcct(); } });
+
   const renderAi = () => {
     if (!$("bte-ai")) return;
     const list = eng.ai_recent || [];
@@ -128,7 +131,7 @@
   const tradeRows = (rows, key) => rows.map((r, i) => `<tr${window.MinervaUI.pgAttr(key, i)}><td>${esc((r.at || "").slice(5, 16))}</td>
       <td><span class="chip ${r.side === "long" ? "good" : "warn"}">${who(r, r.side)}</span></td>
       <td>${num(r.entry)} → ${num(r.exit)}</td><td>${pct(r.pct)} <span class="mini">×${levOf(r)} ${pct(r.pct == null ? null : r.pct * levOf(r))}</span></td>
-      <td>${r.pnl == null ? "-" : `${r.pnl > 0 ? "+" : ""}${num(r.pnl, 2)}`}</td><td>${esc(WHY[r.why] || r.why)}</td><td>${resCell(r.outcome)}</td></tr>`).join("");
+      <td>${r.pnl == null ? "-" : `${r.pnl > 0 ? "+" : ""}${U.money(r.pnl, 2, false)}`}</td><td>${esc(WHY[r.why] || r.why)}</td><td>${resCell(r.outcome)}</td></tr>`).join("");
   // 들고 있는 포지션을 거래 표 맨 위에 "보유 중"으로 (사용자 2026-11-14). 지금 가격·평가손익은
   // 계좌 조회(/api/account/binance, 1분마다, 마크 가격)에서, 없으면 BTC만 이 화면 봉 종가로.
   const holdRow = (p) => {
@@ -143,10 +146,11 @@
       <td><span class="chip ${p.side === "long" ? "good" : "warn"}">${who(p, p.side)}</span></td>
       <td>${num(p.entry)} → ${now == null ? "-" : `지금 ${num(now)}`}</td>
       <td>${pct(u)} <span class="mini">×${levOf(p)} ${pct(u == null ? null : u * levOf(p))}</span></td>
-      <td>${pnl == null ? "-" : `${pnl > 0 ? "+" : ""}${num(pnl, 2)}`}</td>
+      <td>${pnl == null ? "-" : `${pnl > 0 ? "+" : ""}${U.money(pnl, 2, false)}`}</td>
       <td>평가 중 <span class="mini">${esc((p.opened_at || "").slice(5, 16))} 진입 · 수수료 빼기 전</span></td><td>-</td></tr>`;
   };
-  const TRADE_HEAD = "<thead><tr><th>청산</th><th>종목·방향</th><th>진입 → 청산</th><th>가격 변화</th><th>손익 USDT</th><th>이유</th><th>승패</th></tr></thead>";
+  // 손익 칸 단위는 계좌 탭 "₩ 원화로 보기"를 따른다(U.money)
+  const tradeHead = () => `<thead><tr><th>청산</th><th>종목·방향</th><th>진입 → 청산</th><th>가격 변화</th><th>손익 ${U.moneyUnit()}</th><th>이유</th><th>승패</th></tr></thead>`;
 
   const LOCKED = '<p class="placeholder">🔒 거래 내역·손익은 계좌 탭에서 열람 비밀번호를 넣으면 보여요</p>';
   const renderTrades = () => {
@@ -156,7 +160,7 @@
     const rows = eng.trades || [];
     let html = dry ? '<div class="regime"><span class="chip">🧪 드라이런 — 가상 거래예요 (주문 없음)</span></div>' : "";
     const hold = holdRow(eng.position);
-    html += rows.length || hold ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${hold}${tradeRows(rows, "bte-trades")}</tbody></table>${window.MinervaUI.moreBtn("bte-trades", rows.length)}</div>`
+    html += rows.length || hold ? `<div style="overflow-x:auto"><table class="acct">${tradeHead()}<tbody>${hold}${tradeRows(rows, "bte-trades")}</tbody></table>${window.MinervaUI.moreBtn("bte-trades", rows.length)}</div>`
       : '<p class="placeholder">끝난 거래가 아직 없어요</p>';
     if (dry && (eng.dry_orders || []).length) {
       html += `<h3 style="margin:10px 0 4px;font-size:14px">드라이런 주문 기록 (냈을 주문)</h3><div style="overflow-x:auto"><table class="acct">
@@ -190,9 +194,9 @@
       ? ` · 최근 ${days}일 ${g.winrate_wins}승 ${g.winrate_n - g.winrate_wins}패 ${g.winrate_draws || 0}무 (승률 ${pct(g.winrate_wins, g.winrate_n)}, ${num((g.winrate_min || 0.5) * 100, 0)}% 아래면 진입 정지)`
       : "";
     $("bte-acct").innerHTML = `<div class="detail" style="font-size:1.05em"><b>${wins}승 ${losses}패 ${draws}무</b> (승률 <b>${pct(wins, wins + losses)}</b>)${wr30}</div>
-      <div class="detail">실전 시작 ${esc(eng.live_since)} KST 이후 ${t.n}번 · 합계 <b>${sum > 0 ? "+" : ""}${num(sum, 2)} USDT</b> (수수료 포함) · 무승부 = 진입가 ±${num(g.draw_pct ?? 0.5, 1)}% 안에서 난 손절(손익은 그대로 합계에 들어감)</div>
+      <div class="detail">실전 시작 ${esc(eng.live_since)} KST 이후 ${t.n}번 · 합계 <b>${sum > 0 ? "+" : ""}${U.money(sum)}</b> (수수료 포함) · 무승부 = 진입가 ±${num(g.draw_pct ?? 0.5, 1)}% 안에서 난 손절(손익은 그대로 합계에 들어감)</div>
       <div class="detail">지금: ${posHtml(eng.position)}</div>
-      ${rows.length || eng.position ? `<div style="overflow-x:auto"><table class="acct">${TRADE_HEAD}<tbody>${holdRow(eng.position)}${tradeRows(rows, "bte-acct")}</tbody></table>${window.MinervaUI.moreBtn("bte-acct", rows.length)}</div>` : ""}`;
+      ${rows.length || eng.position ? `<div style="overflow-x:auto"><table class="acct">${tradeHead()}<tbody>${holdRow(eng.position)}${tradeRows(rows, "bte-acct")}</tbody></table>${window.MinervaUI.moreBtn("bte-acct", rows.length)}</div>` : ""}`;
   };
 
   // ---- 지표·추격 한도 ----

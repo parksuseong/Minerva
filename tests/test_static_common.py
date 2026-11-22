@@ -139,3 +139,27 @@ console.log(JSON.stringify({
     assert got["over"] == ' data-pg="t" hidden'
     assert got["none"] == "" and "25줄 더 있음" in got["more"] and 'data-more="t"' in got["more"]
     assert got["bad"] == ' data-pg="a&quot;b"'
+
+
+@pytest.mark.skipif(bun() is None, reason="bun 없음")
+def test_money_switches_to_krw_with_rate(tmp_path):
+    out = run_js(
+        tmp_path,
+        "const a = U.money(12.5);\n"
+        "U.fx.rate = 1400; const b = U.money(12.5);\n"
+        "U.fx.on = true; const c = U.money(12.5); const d = U.money(-1.25, 2, false);\n"
+        "const e = [U.moneyUnit(), U.fxFactor()];\n"
+        "U.fx.rate = null; const f = U.money(3);\n"
+        "console.log(JSON.stringify([a, b, c, d, e, f, U.money(null)]));\n",
+    )
+    assert out == ["12.5 USDT", "12.5 USDT", "17,500원", "-1,750", ["원", 1400], "3 USDT", "-"]
+
+
+def test_account_and_engine_use_money_helper():
+    acct = (STATIC / "account.js").read_text()
+    eng = (STATIC / "btcengine.js").read_text()
+    html = (STATIC / "index.html").read_text()
+    assert 'id="fx-toggle"' in html and 'id="bn-chart-unit"' in html
+    assert "U.money" in acct and "minerva-fx" in acct
+    assert "U.money" in eng and "minerva-fx" in eng
+    assert "num(u)} USDT" not in acct and "num(v)} USDT" not in acct  # 금액은 U.money로

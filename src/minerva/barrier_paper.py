@@ -30,6 +30,14 @@
   평균 < 0, 또는 건수와 무관하게 최근 14일 끝난 거래 합 < −15%면 새 진입을 멈추고 `retire.jsonl`에
   남긴다. `QUEUE`에 사전 등록 후보가 있으면 다음 날 00시 UTC부터 켠다(지금은 비어 있음).
 - 범위: 바이낸스 USDT-M 무기한, 상장 90일 이상, 직전 30일 거래대금 순위(BTC·지수·스테이블 제외).
+- WZ 주봉 바닥·천장 + 15분 SCR(11/23 추가, 사용자 "15분봉 매매인데 일봉·주봉이 바닥권이면 롱 위주"):
+  엔진 범위 종목(`btc_trade/universe.json`)의 엔진 SCR ① 15분 신호(SCR_PARAMS) 중, 지난 마감 주봉
+  2개 안에 Stoch 5·CCI 20·RSI 14 셋 중 둘 이상 과매도면 롱 신호만, 과매수면 숏 신호만 → 다음 15분봉
+  시가 진입, ±3%, 15분봉으로 판정, 384봉(4일) 넘으면 종가. 백필 없음(켠 뒤 신호만).
+  과거 1년 50종목: 52.1%, 거래당 −0.01%, 사전 등록 기준 탈락(레드팀: 37주 표본, 우연 가능성 큼).
+- 교체 대기(`QUEUE`, 11/23 사용자 "가상추적 결과가 별로면 실시간으로 교체해 너가알아서"):
+  TRD 주봉·일봉 추세 같은 방향(±3%) → TRM 같은 조건 + 30일 수익률 상위/하위 25%(±3%).
+  둘 다 11/23 사전 등록 시험 탈락(51.3% −0.07%, 50.7% −0.10%). 교체되는 규칙 다음 날 00시(UTC)부터.
 
 자료: 바이낸스 공개 GET(exchangeInfo·klines·fundingRate)과 코인메트릭스 커뮤니티 API만.
 키·주문·계좌 조회 없음. 엔진 타이머 앞뒤는 비킨다(edge_paper.get_json).
@@ -74,6 +82,11 @@ COST_RT = 0.0014
 START = date(2026, 11, 1)  # 백필 시작(그 뒤 상폐된 종목은 빠짐 = 3주치 작은 생존편향)
 DAY_MS = 86_400_000
 HR_MS = 3_600_000
+M15_MS = 900_000
+M15_CAP = 384  # 15분봉 4일
+M15_KEEP = 600  # 신호 계산에 쓰는 15분봉 수(엔진은 499봉)
+WZ_WEEKS = 60
+UNIVERSE_MAX_AGE_MS = 14 * 86_400_000
 MIN_LIST_DAYS = 90
 DAILY_BARS = 320  # 주문흐름 규칙: 180일 백분위 + 7일 합 + 11/1부터 백필
 CM_URL = (
@@ -111,7 +124,8 @@ FLOW_RULES = {
     },
 }
 # 자동 교체 때 차례로 켜는 사전 등록 후보(맨 앞부터, 켠 날 다음 00시 UTC부터 진입).
-QUEUE: list[str] = []
+QUEUE: list[str] = ["TRD", "TRM"]
+TREND_TOP = 50  # 추세 규칙 범위: 거래대금 상위 50(시험한 엔진 범위 크기)
 FLOW_P = 0.10
 FLOW_WIN = 180
 FLOW_MIN = 120
@@ -169,6 +183,41 @@ RULES = {
     # ---- 2026-11-22 교체분(사전 등록 후 검증, 아래 past에 창별 수치). 주문흐름 = 일봉의
     # 테이커 매수 거래대금(klines 10번째 값). 1~300위 · 롱·숏 대칭.
     **FLOW_RULES,
+    # ---- 2026-11-23 추가(사전 등록 시험 결과는 past)
+    "WZ": {
+        "side": "B",
+        "kind": "m15",
+        "start": "2026-11-23",
+        "live_since": "2026-11-23",
+        "tp": 0.03,
+        "sl": 0.03,
+        "name": "주봉 바닥·천장 + 15분 SCR",
+        "desc": "엔진 범위 종목 · 주봉 바닥권(스토캐·CCI·RSI 중 2개 과매도)이면 15분 SCR 롱만, "
+        "천장권이면 숏만 · ±3% · 4일",
+        "past": "과거 1년 50종목: 52.1%, 거래당 −0.01% (무작위 −0.17%) · 기준 탈락, 37주 표본",
+    },
+    # ---- 교체 대기(QUEUE): 켜지기 전에는 진입하지 않는다
+    "TRD": {
+        "side": "B",
+        "kind": "daily",
+        "live_since": None,
+        "tp": 0.03,
+        "sl": 0.03,
+        "name": "주봉·일봉 추세 같은 방향",
+        "desc": "거래대금 상위 50 · 일봉(종가>20일선·20일선 5일 전보다 위)과 주봉(종가>10주선·"
+        "10주선 4주 전보다 위)이 같은 방향 → 그 방향 · ±3% · 14일",
+        "past": "과거 1년 50종목: 51.3%, 거래당 −0.07% (탈락, 교체 대기 1번)",
+    },
+    "TRM": {
+        "side": "B",
+        "kind": "daily",
+        "live_since": None,
+        "tp": 0.03,
+        "sl": 0.03,
+        "name": "추세 + 30일 모멘텀 상·하위",
+        "desc": "TRD 조건 + 30일 수익률이 상위 50 안 상위 25%(롱)·하위 25%(숏) · ±3% · 14일",
+        "past": "과거 1년 50종목: 50.7%, 거래당 −0.10% (탈락, 교체 대기 2번)",
+    },
 }
 PUMP_UP = 0.60
 PUMP_BTC = 0.10
@@ -421,6 +470,102 @@ def flow_sides(rule: str, c: list[float], i7: list, i: int) -> list[str]:
 # ---------------------------------------------------------------- 자료
 
 
+def _sma_at(x: list[float], n: int, i: int) -> float | None:
+    if i - n + 1 < 0 or i >= len(x):
+        return None
+    return sum(x[i - n + 1 : i + 1]) / n
+
+
+def trend_side(t_: list[int], c_: list[float], i: int) -> str | None:
+    """i일(마감) 기준 일봉·주봉 추세가 같은 방향이면 'L'·'S', 아니면 None.
+
+    일봉: 종가 > SMA20 그리고 SMA20(i) > SMA20(i−5) → 상승(반대는 하락).
+    주봉: 다음 날(진입일)이 든 주 전까지 마감한 주(월요일 시작 UTC)의 마지막 일봉 종가로
+    종가 > SMA10 그리고 SMA10(지난주) > SMA10(4주 전) → 상승."""
+    s20, s20p = _sma_at(c_, 20, i), _sma_at(c_, 20, i - 5)
+    if s20 is None or s20p is None:
+        return None
+    if c_[i] > s20 and s20 > s20p:
+        d = 1
+    elif c_[i] < s20 and s20 < s20p:
+        d = -1
+    else:
+        return None
+    entry_week = (t_[i] // DAY_MS + 1 + 3) // 7
+    wclose: list[float] = []
+    last_w = None
+    for k in range(i + 1):
+        w = (t_[k] // DAY_MS + 3) // 7
+        if w >= entry_week:
+            break
+        if w == last_w:
+            wclose[-1] = c_[k]
+        else:
+            wclose.append(c_[k])
+            last_w = w
+    j = len(wclose) - 1
+    w10, w10p = _sma_at(wclose, 10, j), _sma_at(wclose, 10, j - 4)
+    if w10 is None or w10p is None:
+        return None
+    if wclose[j] > w10 and w10 > w10p:
+        w = 1
+    elif wclose[j] < w10 and w10 < w10p:
+        w = -1
+    else:
+        return None
+    if d != w:
+        return None
+    return "L" if d == 1 else "S"
+
+
+def quartiles(vals: list[float]) -> tuple[float, float] | None:
+    """numpy 기본(선형 보간)과 같은 25%·75% 분위."""
+    if len(vals) < 8:
+        return None
+    v = sorted(vals)
+
+    def q(p):
+        x = p * (len(v) - 1)
+        lo = int(x)
+        hi = min(lo + 1, len(v) - 1)
+        return v[lo] + (v[hi] - v[lo]) * (x - lo)
+
+    return q(0.25), q(0.75)
+
+
+def scr_ind(h: list[float], low: list[float], c: list[float]):
+    """Stoch fast %K 5 · CCI 20 · RSI 14(와일더) 마지막까지 값 목록(엔진·원전 설정)."""
+    from minerva.strategy import scr_lab
+
+    return scr_lab.stoch(h, low, c, 5), scr_lab.cci(h, low, c, 20), scr_lab.rsi(c, 14)
+
+
+def zone_flags(h: list[float], low: list[float], c: list[float]) -> list[int]:
+    """봉마다 1(셋 중 둘 이상 과매도) · −1(과매수) · 0."""
+    st, cc, rs = scr_ind(h, low, c)
+    out = []
+    for a, b, r in zip(st, cc, rs):
+        if r is None or a is None or b is None:
+            out.append(0)
+            continue
+        lo = (a <= 20) + (b <= -100) + (r <= 30)
+        hi = (a >= 80) + (b >= 100) + (r >= 70)
+        out.append(1 if lo >= 2 and hi < 2 else (-1 if hi >= 2 and lo < 2 else 0))
+    return out
+
+
+def weekly_zone(weeks: list[list[float]], at_ms: int, n: int = 2) -> int:
+    """at_ms 시점에 마감돼 있던 주봉(열린 시각 + 7일 ≤ at_ms) 마지막 n개 중 바닥권이 있으면 1,
+    천장권이 있으면 −1, 둘 다거나 없으면 0. weeks = [시각, 시가, 고가, 저가, 종가]."""
+    done = [w for w in weeks if w[0] + 7 * DAY_MS <= at_ms]
+    if len(done) < 20:
+        return 0
+    z = zone_flags([w[2] for w in done], [w[3] for w in done], [w[4] for w in done])
+    tail = z[-n:]
+    b, t = 1 in tail, -1 in tail
+    return 1 if b and not t else (-1 if t and not b else 0)
+
+
 def perps(get=get_json) -> dict[str, int]:
     info = get(f"{FAPI}/fapi/v1/exchangeInfo")
     out = {}
@@ -460,20 +605,24 @@ def daily_klines(sym: str, get=get_json) -> list[list[float]]:
     ]
 
 
-def hourly_from(sym: str, start_ms: int, now_ms: int, get=get_json) -> list[list[float]]:
-    """start_ms부터 마감된 1시간봉."""
+def hourly_from(
+    sym: str, start_ms: int, now_ms: int, get=get_json, interval: str = "1h"
+) -> list[list[float]]:
+    """start_ms부터 마감된 봉(기본 1시간봉, interval="15m"이면 15분봉)."""
+    step = M15_MS if interval == "15m" else HR_MS
     out = []
     t = start_ms
     while t < now_ms:
         rows = get(
-            f"{FAPI}/fapi/v1/klines?symbol={urllib.parse.quote(sym)}&interval=1h&startTime={t}&limit=500"
+            f"{FAPI}/fapi/v1/klines?symbol={urllib.parse.quote(sym)}&interval={interval}"
+            f"&startTime={t}&limit=500"
         )
         if not rows:
             break
         for r in rows:
             if int(r[6]) < now_ms:
                 out.append([int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4])])
-        nxt = int(rows[-1][0]) + HR_MS
+        nxt = int(rows[-1][0]) + step
         if nxt <= t or len(rows) < 500:
             break
         t = nxt
@@ -523,7 +672,8 @@ def rule_start_ms(key: str, st: dict) -> int:
         return act["from_ms"]
     if key in QUEUE:
         return 10**15
-    return day_ms(START)
+    own = RULES[key].get("start")
+    return day_ms(date.fromisoformat(own)) if own else day_ms(START)
 
 
 def retired_info(key: str, st: dict) -> dict | None:
@@ -584,6 +734,15 @@ def scan_day(d: date, daily: dict, onboard: dict, trades: list[dict], rules=None
     bleed = len(rel) >= 10 and statistics.median(rel) < 0
     held = {r: _open_syms(trades, r) for r in RULES}
     flow = [k for k in FLOW_RULES if k in rules]
+    trend = {}  # 추세 규칙: 상위 50의 (방향, 30일 수익률)
+    if "TRD" in rules or "TRM" in rules:
+        for s in uni[:TREND_TOP]:
+            t_, h_, l_, c_ = ser[s]
+            if not t_ or t_[-1] != dm or len(c_) < 40:
+                continue
+            i = len(c_) - 1
+            trend[s] = (trend_side(t_, c_, i), _ret(c_, 30, i))
+    mq = quartiles([m for _, m in trend.values() if m is not None])
 
     def add(rule, s, side, **kw):
         r = RULES[rule]
@@ -629,6 +788,18 @@ def scan_day(d: date, daily: dict, onboard: dict, trades: list[dict], rules=None
                     watch_since=day_of(t_[st]).isoformat(),
                     peak=max(h_[max(0, st - 6) : i + 1]),
                 )
+        if s in trend and trend[s][0]:
+            side, mom = trend[s]
+            if "TRD" in rules and s not in held["TRD"]:
+                add("TRD", s, side)
+            if (
+                "TRM" in rules
+                and s not in held["TRM"]
+                and mq is not None
+                and mom is not None
+                and ((side == "L" and mom >= mq[1]) or (side == "S" and mom <= mq[0]))
+            ):
+                add("TRM", s, side, mom30_pct=round(100 * mom, 1))
         if flow:
             cols = _flow_cols(daily[s], dm)
             if cols is None:
@@ -752,6 +923,140 @@ def run_netflow(now_ms: int, trades: list[dict], st: dict, get=get_json) -> dict
     st["nf_signaled"] = sorted(seen)[-50:]
     st["netflow"] = info
     return info
+
+
+def engine_symbols(now_ms: int) -> list[str]:
+    """엔진 범위 종목(`btc_trade/universe.json`, 14일 안). 없거나 오래되면 빈 목록."""
+    root = Path(os.environ.get("MINERVA_BTC_TRADE_DIR", "~/.minerva/btc_trade")).expanduser()
+    d = read_json(root / "universe.json", {}) or {}
+    try:
+        at = datetime.strptime(d["updated_at"], "%Y-%m-%d %H:%M").replace(
+            tzinfo=timezone(timedelta(hours=9))
+        )
+    except (KeyError, TypeError, ValueError):
+        return []
+    if now_ms - at.timestamp() * 1000 > UNIVERSE_MAX_AGE_MS:
+        return []
+    return [s for s in d.get("symbols", []) if isinstance(s, str)]
+
+
+def _klines(
+    sym: str,
+    interval: str,
+    now_ms: int,
+    get=get_json,
+    start_ms: int | None = None,
+    limit: int = 500,
+) -> list[list[float]]:
+    q = f"symbol={urllib.parse.quote(sym)}&interval={interval}&limit={limit}"
+    if start_ms is not None:
+        q += f"&startTime={start_ms}"
+    rows = get(f"{FAPI}/fapi/v1/klines?{q}")
+    return [
+        [int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4])]
+        for r in rows
+        if int(r[6]) < now_ms
+    ]
+
+
+def m15_bars(sym: str, now_ms: int, get=get_json) -> list[list[float]]:
+    """15분봉 캐시(`m15/<종목>.json`)를 이어 받아 마지막 M15_KEEP개(마감 봉만)."""
+    p = base_dir() / "m15" / f"{sym}.json"
+    have = read_json(p, []) or []
+    if have and now_ms - have[-1][0] < 900 * M15_MS:
+        new = _klines(sym, "15m", now_ms, get=get, start_ms=have[-1][0] + M15_MS, limit=1000)
+        bars = have + [b for b in new if b[0] > have[-1][0]]
+    else:
+        bars = _klines(sym, "15m", now_ms, get=get, limit=M15_KEEP)
+    bars = bars[-M15_KEEP:]
+    for a, b in zip(bars, bars[1:]):  # 끊긴 캐시는 버리고 새로
+        if b[0] - a[0] != M15_MS:
+            bars = _klines(sym, "15m", now_ms, get=get, limit=M15_KEEP)
+            break
+    p.parent.mkdir(parents=True, exist_ok=True)
+    write_json(p, bars)
+    return bars
+
+
+def wz_signals(bars: list[list[float]], weeks: list[list[float]], after_ms: int) -> list[tuple]:
+    """after_ms 뒤 마감 15분봉의 WZ 신호 [(신호 봉 시각, 'L'|'S', 구역)]."""
+    from minerva.btc_trade import SCR_PARAMS
+    from minerva.strategy import scr_lab
+
+    if len(bars) < 100:
+        return []
+    sig = scr_lab.signals(
+        [b[2] for b in bars], [b[3] for b in bars], [b[4] for b in bars], SCR_PARAMS
+    )
+    lo, sh = set(sig["long"]), set(sig["short"])
+    out = []
+    for i in sorted(lo ^ sh):
+        if i < 60 or bars[i][0] <= after_ms:
+            continue
+        side = "L" if i in lo else "S"
+        z = weekly_zone(weeks, bars[i][0])
+        if (z == 1 and side == "L") or (z == -1 and side == "S"):
+            out.append((bars[i][0], side, z))
+    return out
+
+
+def run_m15(now_ms: int, trades: list[dict], st: dict, get=get_json) -> int:
+    """WZ: 엔진 범위 종목의 새 마감 15분봉에서 신호를 찾아 다음 봉 시가 가상 진입. 새 거래 수."""
+    key = "WZ"
+    if not rule_open(key, st, now_ms):
+        return 0
+    syms = engine_symbols(now_ms)
+    if not syms:
+        log.warning("WZ: 엔진 범위 파일이 없거나 오래됨 → 건너뜀")
+        return 0
+    last = st.setdefault("wz_last", {})
+    wk = st.setdefault("wz_weeks", {})
+    today = day_of(now_ms).isoformat()
+    held = _open_syms(trades, key)
+    n = 0
+    for sym in syms:
+        try:
+            if (wk.get(sym) or {}).get("day") != today:
+                wk[sym] = {
+                    "day": today,
+                    "bars": _klines(sym, "1w", now_ms, get=get, limit=WZ_WEEKS),
+                }
+            bars = m15_bars(sym, now_ms, get=get)
+        except RateLimited:
+            raise
+        except Exception as e:  # noqa: BLE001 - 한 종목 실패는 건너뜀
+            log.warning("WZ %s 봉 실패: %s", sym, e)
+            continue
+        if not bars:
+            continue
+        if sym not in last:  # 처음 본 종목: 백필 없이 지금부터
+            last[sym] = bars[-1][0]
+            continue
+        for t0, side, z in wz_signals(bars, wk[sym]["bars"], last[sym]):
+            entry_ms = t0 + M15_MS
+            if sym in held or not rule_open(key, st, entry_ms):
+                continue
+            trades.append(
+                {
+                    "rule": key,
+                    "sym": sym,
+                    "side": side,
+                    "tf": "15m",
+                    "signal_day": day_of(t0).isoformat(),
+                    "signal_ms": t0,
+                    "entry_ms": entry_ms,
+                    "zone": "바닥권" if z == 1 else "천장권",
+                    "tp": RULES[key]["tp"],
+                    "sl": RULES[key]["sl"],
+                }
+            )
+            held.add(sym)
+            n += 1
+        last[sym] = bars[-1][0]
+    for sym in list(wk):
+        if sym not in syms:
+            wk.pop(sym, None)
+    return n
 
 
 def trade_geom(t: dict) -> tuple[float, float]:
@@ -880,18 +1185,22 @@ def resolve(trades: list[dict], now_ms: int, get=get_json) -> None:
     for t in trades:
         if t.get("result") is not None or t["entry_ms"] >= now_ms:
             continue
-        bars = hourly_from(t["sym"], t["entry_ms"], now_ms, get=get)
+        m15 = t.get("tf") == "15m"
+        step = M15_MS if m15 else HR_MS
+        bars = hourly_from(
+            t["sym"], t["entry_ms"], now_ms, get=get, interval="15m" if m15 else "1h"
+        )
         if not bars or bars[0][0] != t["entry_ms"]:
             continue
         t["entry"] = bars[0][1]
         t["last"] = bars[-1][4]
-        t["last_ms"] = bars[-1][0] + HR_MS
+        t["last_ms"] = bars[-1][0] + step
         tp, sl = trade_geom(t)
-        r = barrier_exit(t["side"], t["entry"], bars, tp=tp, sl=sl)
+        r = barrier_exit(t["side"], t["entry"], bars, tp=tp, sl=sl, cap=M15_CAP if m15 else CAP_H)
         if r is None:
             continue
         res, px, k = r
-        exit_ms = bars[k][0] + HR_MS
+        exit_ms = bars[k][0] + step
         f = funding_sum(t["sym"], t["entry_ms"], exit_ms, get=get)
         t.update(
             result=res,
@@ -952,6 +1261,7 @@ def run(get=get_json, now_ms: int | None = None, send=None) -> dict:
         save_trades(trades)
     st["watch"] = watch
     run_netflow(now_ms, trades, st, get=get)
+    run_m15(now_ms, trades, st, get=get)
     resolve(trades, now_ms, get=get)
     save_trades(trades)
     auto_retire(trades, st, now_ms)

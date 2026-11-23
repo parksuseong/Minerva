@@ -471,3 +471,204 @@ def test_run_sends_retire_notice_through_sender(tmp_path, monkeypatch):
     assert len(sent) == 1 and "급등주 기다렸다 숏 (PUMP)" in sent[0]
     lines = (tmp_path / "retire.jsonl").read_text().strip().splitlines()
     assert len(lines) == 1
+
+
+# ---------------------------------------------------------------- 11/23 WZ·TRD·TRM·교체 대기
+
+
+def test_queue_has_preregistered_candidates_and_they_start_closed():
+    assert bp.QUEUE == ["TRD", "TRM"]
+    for k in bp.QUEUE:
+        assert bp.RULES[k]["kind"] == "daily"
+        assert not bp.rule_open(k, {}, bp.day_ms(date(2027, 1, 1)))
+
+
+def test_trend_side_up_down_and_mixed():
+    d0 = bp.day_ms(date(2026, 1, 5))  # 월요일
+    n = 200
+    up = [100 * 1.01**k for k in range(n)]
+    t_ = [d0 + k * D for k in range(n)]
+    assert bp.trend_side(t_, up, n - 1) == "L"
+    dn = [100 * 0.99**k for k in range(n)]
+    assert bp.trend_side(t_, dn, n - 1) == "S"
+    # 주봉은 오르는데 최근 일봉만 꺾이면 방향 없음
+    mixed = up[:-15] + [up[-16] * 0.97**k for k in range(1, 16)]
+    assert bp.trend_side(t_, mixed, n - 1) is None
+    # 자료가 짧으면 없음
+    assert bp.trend_side(t_[:30], up[:30], 29) is None
+
+
+def test_trend_side_ignores_entry_week_bars():
+    """진입일이 든 주는 주봉에 쓰지 않는다: 일요일 마감 신호면 그 주가 통째로 마감 주."""
+    d0 = bp.day_ms(date(2026, 1, 5))  # 월요일
+    n = 7 * 30  # 30주, 마지막 날은 일요일
+    up = [100 * 1.01**k for k in range(n)]
+    t_ = [d0 + k * D for k in range(n)]
+    assert date.fromtimestamp(t_[-1] / 1000).weekday() in (5, 6)
+    assert bp.trend_side(t_, up, n - 1) == "L"
+
+
+def test_scan_day_trend_rules_and_momentum_quartile():
+    d0 = bp.day_ms(date(2026, 1, 5))
+    n = 200
+    daily = {"BTCUSDT": _daily(d0, [100.0] * n)}
+    onboard = {"BTCUSDT": 0}
+    for k in range(10):  # 상승 추세, 오름폭이 종목마다 다름
+        s = f"U{k}USDT"
+        daily[s] = _daily(d0, [10 * (1 + 0.002 * (k + 1)) ** j for j in range(n)])
+        onboard[s] = 0
+    daily["DNUSDT"] = _daily(d0, [10 * 0.995**j for j in range(n)])
+    onboard["DNUSDT"] = 0
+    last = date(2026, 1, 5) + timedelta(days=n - 1)
+    new = bp.scan_day(last, daily, onboard, [], rules={"TRD", "TRM"})
+    trd = {(t["sym"], t["side"]) for t in new if t["rule"] == "TRD"}
+    assert ("DNUSDT", "S") in trd and ("U9USDT", "L") in trd and len(trd) == 11
+    trm = {(t["sym"], t["side"]) for t in new if t["rule"] == "TRM"}
+    # 30일 수익률 상위 25%만 롱, 하위 25%만 숏
+    assert ("U9USDT", "L") in trm and ("U0USDT", "L") not in trm and ("DNUSDT", "S") in trm
+    assert all(t["tp"] == 0.03 and t["sl"] == 0.03 for t in new)
+
+
+def _weeks(start_ms, closes):
+    return [[start_ms + k * 7 * D, c, c * 1.01, c * 0.99, c] for k, c in enumerate(closes)]
+
+
+def test_weekly_zone_bottom_top_and_only_closed_weeks():
+    w0 = bp.day_ms(date(2026, 1, 5))
+    down = _weeks(w0, [100 * 0.9**k for k in range(30)])
+    after = w0 + 30 * 7 * D
+    assert bp.weekly_zone(down, after) == 1
+    up = _weeks(w0, [100 * 1.1**k for k in range(30)])
+    assert bp.weekly_zone(up, after) == -1
+    # 마지막 주가 아직 안 끝났으면 그 주는 보지 않음(그 앞 두 주로 판단)
+    flat_then_drop = _weeks(w0, [100.0 + (k % 2) for k in range(29)] + [50.0])
+    assert bp.weekly_zone(flat_then_drop, after - D) == 0
+    assert bp.weekly_zone(flat_then_drop, after) == 1
+    # 주봉 20개 미만이면 판단 안 함
+    assert bp.weekly_zone(down[:10], w0 + 10 * 7 * D) == 0
+
+
+def test_wz_signals_filter_by_zone_and_time(monkeypatch):
+    from minerva.strategy import scr_lab
+
+    bars = [[k * bp.M15_MS, 1.0, 1.0, 1.0, 1.0] for k in range(200)]
+    monkeypatch.setattr(
+        scr_lab, "signals", lambda *a, **k: {"long": [100, 150, 199], "short": [120, 150]}
+    )
+    monkeypatch.setattr(bp, "weekly_zone", lambda weeks, at: 1)
+    out = bp.wz_signals(bars, [], after_ms=110 * bp.M15_MS)
+    # 150은 롱·숏 동시라 버림, 120 숏은 바닥권이라 버림, 100은 이미 처리한 봉
+    assert out == [(199 * bp.M15_MS, "L", 1)]
+    monkeypatch.setattr(bp, "weekly_zone", lambda weeks, at: -1)
+    assert bp.wz_signals(bars, [], after_ms=110 * bp.M15_MS) == [(120 * bp.M15_MS, "S", -1)]
+
+
+def test_run_m15_no_backfill_then_trades_and_resolves_on_15m(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path / "bp"))
+    eng = tmp_path / "eng"
+    eng.mkdir()
+    monkeypatch.setenv("MINERVA_BTC_TRADE_DIR", str(eng))
+    (eng / "universe.json").write_text(
+        _json.dumps({"updated_at": "2026-11-23 06:05", "symbols": ["AAAUSDT"]})
+    )
+    M = bp.M15_MS
+    base = bp.day_ms(date(2026, 11, 23)) + 6 * H
+    px = {"n": 600}
+
+    def fake_get(url):
+        if "interval=1w" in url:
+            return []
+        if "interval=15m" in url:
+            rows = [
+                [base + k * M, 10.0, 10.0, 10.0, 10.0, 0, base + (k + 1) * M - 1]
+                for k in range(px["n"])
+            ]
+            if "startTime=" in url:
+                st = int(url.split("startTime=")[1].split("&")[0])
+                rows = [r for r in rows if r[0] >= st]
+                if rows and rows[0][0] == st and px.get("pop"):
+                    rows[0] = [st, 10.0, 10.4, 9.99, 10.35, 0, st + M - 1]
+            return rows
+        if "fundingRate" in url:
+            return []
+        raise AssertionError(url)
+
+    sig = {"at": None}
+    monkeypatch.setattr(
+        bp,
+        "wz_signals",
+        lambda bars, weeks, after: (
+            [] if sig["at"] is None or sig["at"] <= after else [(sig["at"], "L", 1)]
+        ),
+    )
+    st: dict = {}
+    trades: list = []
+    now = base + 600 * M + 1
+    assert bp.run_m15(now, trades, st, get=fake_get) == 0  # 처음은 기억만
+    assert st["wz_last"]["AAAUSDT"] == base + 599 * M
+    px["n"] = 604
+    sig["at"] = base + 601 * M
+    now2 = base + 604 * M + 1
+    assert bp.run_m15(now2, trades, st, get=fake_get) == 1
+    t = trades[0]
+    assert t["rule"] == "WZ" and t["tf"] == "15m" and t["entry_ms"] == base + 602 * M
+    # 같은 종목이 열려 있으면 또 안 들어감
+    sig["at"] = base + 603 * M
+    assert bp.run_m15(now2 + M, trades, st, get=fake_get) == 0
+    px["pop"] = True
+    bp.resolve(trades, now2, get=fake_get)
+    assert t["result"] == "win" and t["exit"] == pytest.approx(10.3)
+    assert t["exit_ms"] == t["entry_ms"] + M
+
+
+def test_run_m15_skips_when_universe_missing_or_stale(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path / "bp"))
+    eng = tmp_path / "eng"
+    eng.mkdir()
+    monkeypatch.setenv("MINERVA_BTC_TRADE_DIR", str(eng))
+
+    def boom(url):
+        raise AssertionError(url)
+
+    now = bp.day_ms(date(2026, 11, 24))
+    assert bp.run_m15(now, [], {}, get=boom) == 0
+    (eng / "universe.json").write_text(
+        _json.dumps({"updated_at": "2026-10-01 06:05", "symbols": ["AAAUSDT"]})
+    )
+    assert bp.run_m15(now, [], {}, get=boom) == 0
+
+
+def test_wz_not_open_before_start_and_after_retire():
+    assert not bp.rule_open("WZ", {}, bp.day_ms(date(2026, 11, 22)))
+    assert bp.rule_open("WZ", {}, bp.day_ms(date(2026, 11, 23)) + H)
+    st = {"retired": {"WZ": {"at_ms": bp.day_ms(date(2026, 11, 30))}}}
+    assert not bp.rule_open("WZ", st, bp.day_ms(date(2026, 12, 1)))
+
+
+def test_wz_retire_activates_trd_next_day(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path))
+    now = bp.day_ms(date(2026, 12, 3)) + 5 * H
+    trades = [
+        {
+            "rule": "WZ",
+            "sym": f"S{k}USDT",
+            "side": "L",
+            "tf": "15m",
+            "entry_ms": now - 5 * H,
+            "entry": 1.0,
+            "exit": 0.97,
+            "result": "loss",
+            "net": -0.031,
+            "exit_ms": now - H,
+        }
+        for k in range(6)
+    ]
+    st: dict = {}
+    out = bp.auto_retire(trades, st, now)
+    assert [x["rule"] for x in out] == ["WZ"] and out[0]["replaced_by"] == "TRD"
+    assert bp.rule_open("TRD", st, bp.day_ms(date(2026, 12, 4)))
+    assert "주봉·일봉 추세 같은 방향" in st["retired"]["WZ"]["message"]

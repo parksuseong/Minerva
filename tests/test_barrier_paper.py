@@ -672,3 +672,64 @@ def test_wz_retire_activates_trd_next_day(tmp_path, monkeypatch):
     assert [x["rule"] for x in out] == ["WZ"] and out[0]["replaced_by"] == "TRD"
     assert bp.rule_open("TRD", st, bp.day_ms(date(2026, 12, 4)))
     assert "주봉·일봉 추세 같은 방향" in st["retired"]["WZ"]["message"]
+
+
+def test_run_m15_reentry_after_exit_catchup_reset_and_prune(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("MINERVA_BARRIER_PAPER_DIR", str(tmp_path / "bp"))
+    eng = tmp_path / "eng"
+    eng.mkdir()
+    monkeypatch.setenv("MINERVA_BTC_TRADE_DIR", str(eng))
+    uni = eng / "universe.json"
+    uni.write_text(_json.dumps({"updated_at": "2026-11-23 06:05", "symbols": ["AAAUSDT"]}))
+    M = bp.M15_MS
+    base = bp.day_ms(date(2026, 11, 23)) + 6 * H
+    n = {"v": 600}
+    urls = []
+
+    def fake_get(url):
+        urls.append(url)
+        if "interval=1w" in url:
+            return []
+        rows = [
+            [base + k * M, 10.0, 10.0, 10.0, 10.0, 0, base + (k + 1) * M - 1] for k in range(n["v"])
+        ]
+        if "startTime=" in url:
+            st_ = int(url.split("startTime=")[1].split("&")[0])
+            rows = [r for r in rows if r[0] >= st_]
+        return rows
+
+    sigs = {"v": []}
+    monkeypatch.setattr(
+        bp, "wz_signals", lambda bars, weeks, after: [x for x in sigs["v"] if x[0] > after]
+    )
+    st: dict = {}
+    closed = {
+        "rule": "WZ",
+        "sym": "AAAUSDT",
+        "side": "L",
+        "result": "loss",
+        "entry_ms": base,
+        "exit_ms": base + 601 * M,
+    }
+    trades = [closed]
+    bp.run_m15(base + 600 * M + 1, trades, st, get=fake_get)
+    n["v"] = 604
+    sigs["v"] = [(base + 600 * M, "L", 1), (base + 602 * M, "L", 1)]
+    # 600번 신호는 앞 포지션이 아직 열려 있던 때라 건너뛰고, 602번은 끝난 뒤라 들어간다
+    assert bp.run_m15(base + 604 * M + 1, trades, st, get=fake_get) == 1
+    assert trades[-1]["entry_ms"] == base + 603 * M
+    # 증분 요청은 필요한 만큼만(무게 1)
+    inc = [u for u in urls if "interval=15m" in u and "startTime=" in u]
+    assert inc and all(int(u.split("limit=")[1].split("&")[0]) < 100 for u in inc)
+    # 오래 끊기면 지난 신호를 넣지 않고 지금부터
+    n["v"] = 700
+    sigs["v"] = [(base + 650 * M, "S", -1)]
+    trades2: list = []
+    assert bp.run_m15(base + 700 * M + 1, trades2, st, get=fake_get) == 0
+    assert st["wz_last"]["AAAUSDT"] == base + 699 * M
+    # 범위에서 빠진 종목은 상태에서 지운다
+    uni.write_text(_json.dumps({"updated_at": "2026-11-23 06:05", "symbols": ["BBBUSDT"]}))
+    bp.run_m15(base + 701 * M + 1, [], st, get=fake_get)
+    assert "AAAUSDT" not in st["wz_last"] and "AAAUSDT" not in st["wz_weeks"]

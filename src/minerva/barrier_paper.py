@@ -87,6 +87,7 @@ M15_CAP = 384  # 15분봉 4일
 M15_KEEP = 600  # 신호 계산에 쓰는 15분봉 수(엔진은 499봉)
 WZ_WEEKS = 60
 UNIVERSE_MAX_AGE_MS = 14 * 86_400_000
+WZ_CATCHUP_MS = 2 * 3_600_000  # 이보다 오래 끊기면 지난 신호를 건너뛴다(백필 없음)
 MIN_LIST_DAYS = 90
 DAILY_BARS = 320  # 주문흐름 규칙: 180일 백분위 + 7일 합 + 11/1부터 백필
 CM_URL = (
@@ -204,7 +205,8 @@ RULES = {
         "tp": 0.03,
         "sl": 0.03,
         "name": "주봉·일봉 추세 같은 방향",
-        "desc": "거래대금 상위 50 · 일봉(종가>20일선·20일선 5일 전보다 위)과 주봉(종가>10주선·"
+        "desc": "코인 거래대금 상위 50(BTC 제외, 시험은 엔진 50종목) · 일봉(종가>20일선·20일선 5일 "
+        "전보다 위)과 주봉(종가>10주선·"
         "10주선 4주 전보다 위)이 같은 방향 → 그 방향 · ±3% · 14일",
         "past": "과거 1년 50종목: 51.3%, 거래당 −0.07% (탈락, 교체 대기 1번)",
     },
@@ -964,7 +966,10 @@ def m15_bars(sym: str, now_ms: int, get=get_json) -> list[list[float]]:
     p = base_dir() / "m15" / f"{sym}.json"
     have = read_json(p, []) or []
     if have and now_ms - have[-1][0] < 900 * M15_MS:
-        new = _klines(sym, "15m", now_ms, get=get, start_ms=have[-1][0] + M15_MS, limit=1000)
+        need = (now_ms - have[-1][0]) // M15_MS + 2  # 보통 4~6봉 → 무게 1
+        new = _klines(
+            sym, "15m", now_ms, get=get, start_ms=have[-1][0] + M15_MS, limit=min(1000, need)
+        )
         bars = have + [b for b in new if b[0] > have[-1][0]]
     else:
         bars = _klines(sym, "15m", now_ms, get=get, limit=M15_KEEP)
@@ -1011,14 +1016,18 @@ def run_m15(now_ms: int, trades: list[dict], st: dict, get=get_json) -> int:
         return 0
     last = st.setdefault("wz_last", {})
     wk = st.setdefault("wz_weeks", {})
-    today = day_of(now_ms).isoformat()
-    held = _open_syms(trades, key)
+    week = str((now_ms // DAY_MS + 3) // 7)  # 월요일 시작 주: 주봉은 주에 한 번
+    held_until: dict[str, int] = {}  # 종목별 WZ 포지션이 끝나는 시각(열려 있으면 무한)
+    for t in trades:
+        if t["rule"] == key:
+            end = 10**15 if t.get("result") is None else t["exit_ms"]
+            held_until[t["sym"]] = max(held_until.get(t["sym"], 0), end)
     n = 0
     for sym in syms:
         try:
-            if (wk.get(sym) or {}).get("day") != today:
+            if (wk.get(sym) or {}).get("week") != week:
                 wk[sym] = {
-                    "day": today,
+                    "week": week,
                     "bars": _klines(sym, "1w", now_ms, get=get, limit=WZ_WEEKS),
                 }
             bars = m15_bars(sym, now_ms, get=get)
@@ -1029,12 +1038,13 @@ def run_m15(now_ms: int, trades: list[dict], st: dict, get=get_json) -> int:
             continue
         if not bars:
             continue
-        if sym not in last:  # 처음 본 종목: 백필 없이 지금부터
+        if sym not in last or bars[-1][0] - last[sym] > WZ_CATCHUP_MS:
+            # 처음 본 종목·오래 끊긴 종목: 지난 신호를 늦게 넣지 않고 지금부터
             last[sym] = bars[-1][0]
             continue
         for t0, side, z in wz_signals(bars, wk[sym]["bars"], last[sym]):
             entry_ms = t0 + M15_MS
-            if sym in held or not rule_open(key, st, entry_ms):
+            if held_until.get(sym, 0) > t0 or not rule_open(key, st, entry_ms):
                 continue
             trades.append(
                 {
@@ -1050,12 +1060,13 @@ def run_m15(now_ms: int, trades: list[dict], st: dict, get=get_json) -> int:
                     "sl": RULES[key]["sl"],
                 }
             )
-            held.add(sym)
+            held_until[sym] = 10**15
             n += 1
         last[sym] = bars[-1][0]
-    for sym in list(wk):
-        if sym not in syms:
-            wk.pop(sym, None)
+    for d in (wk, last):
+        for sym in list(d):
+            if sym not in syms:
+                d.pop(sym, None)
     return n
 
 
@@ -1261,8 +1272,10 @@ def run(get=get_json, now_ms: int | None = None, send=None) -> dict:
         save_trades(trades)
     st["watch"] = watch
     run_netflow(now_ms, trades, st, get=get)
+    resolve(trades, now_ms, get=get)  # 끝난 WZ 포지션을 먼저 닫아야 같은 종목 재진입을 안 놓친다
+    before = len(trades)
     run_m15(now_ms, trades, st, get=get)
-    resolve(trades, now_ms, get=get)
+    resolve(trades[before:], now_ms, get=get)
     save_trades(trades)
     auto_retire(trades, st, now_ms)
     write_json(root / "state.json", st)  # 알림 전에 교체 상태를 먼저 남긴다

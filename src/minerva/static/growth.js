@@ -25,7 +25,27 @@
       <tbody>${rows}</tbody></table></div>`;
   }
 
+  function krTable(k) {
+    if (!k || k.status !== "ok") return "";
+    const tag = (s) => (s === "정배" ? `<span class="up">정배</span>` : s === "역배" ? `<span class="down">역배</span>` : esc(s || "-"));
+    const rows = (k.rows || []).map((r) => `<tr>
+      <td><b>${esc(r.name)}</b><br><span class="mini">${esc(r.code)}</span></td>
+      <td>${tag(r.state)}<br><span class="mini">${esc(r.state_since || "-")}부터</span></td>
+      <td class="mini">${esc(r.last_reverse || "-")}</td>
+      <td>${UI.num(r.pairs_up, 0)}/3</td>
+      <td>${r.stoch == null ? "-" : UI.num(r.stoch, 0)}</td>
+      <td class="mini">${r.caution ? "⚠️ 볼밴 상단 과매수 이탈" : r.buy_zone ? "매수각(20일선 위·스토캐 돌파)" : "-"}</td>
+      <td>${UI.num(r.close, 0)}원</td></tr>`).join("");
+    const errs = (k.errors || []).map((e) => `${esc(e.name || e.code)}: ${esc(e.error)}`).join(" · ");
+    return `<section class="card"><h2>🇰🇷 국장 역배→정배 감시 <span class="mini">일봉 5·20·50·120일선 · ${esc(k.generated_at || "")}</span></h2>
+      <p class="mini">${esc(k.note || "")}</p>
+      <div class="scroll"><table class="acct"><thead><tr><th>종목</th><th>배열</th><th>마지막 역배</th><th>정배 쌍</th>
+      <th>스토캐</th><th>참고</th><th>종가</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${errs ? `<p class="mini">받기 실패: ${errs}</p>` : ""}</section>`;
+  }
+
   function draw(d) {
+    $("growth-kr").innerHTML = krTable(d.kr);
     if (d.status !== "ok") {
       $("growth-status").textContent = d.message || "아직 목록이 없어요";
       return;

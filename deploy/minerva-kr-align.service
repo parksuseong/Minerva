@@ -1,0 +1,19 @@
+# 🌱 국장 역배→정배 감시: 야후 공개 일봉(키 없음, 주문 없음). 정배 전환이면 텔레그램 한 번.
+# 종목 ~/.minerva/growth/kr_watch.json → 결과 ~/.minerva/growth/kr.json → /api/growth의 kr
+# 설치: sudo cp deploy/minerva-kr-align.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now minerva-kr-align.timer
+[Unit]
+Description=Minerva KR MA alignment watch (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/work/Minerva
+Environment=HOME=/home/ec2-user
+ExecStart=/home/ec2-user/work/Minerva/.venv/bin/python -m minerva.kr_align --notify
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=300M
+CPUQuota=40%
+TimeoutStartSec=900

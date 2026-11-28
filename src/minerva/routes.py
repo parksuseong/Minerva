@@ -570,7 +570,7 @@ def growth_view() -> dict:
     `minerva-growth.timer`가 만든 파일만 읽는다. 없거나 깨졌으면 pending, 오래됐으면 stale."""
     data = growth.read_json(growth.out_path())
     if not data or not isinstance(data.get("buckets"), list):
-        return {"status": "pending",
+        return {"status": "pending", "kr": kr_align_view(),
                 "message": "아직 성장 후보 목록이 없어요 (화~토 07:40 자동 갱신)"}
     try:
         age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(data["generated_at"])
@@ -580,7 +580,17 @@ def growth_view() -> dict:
     if age_h is None or age_h > growth.STALE_HOURS:
         data["stale"] = True
         data.setdefault("stale_reason", "갱신이 오래 멈춤")
-    return {"status": "ok", **data}
+    return {"status": "ok", **data, "kr": kr_align_view()}
+
+
+def kr_align_view() -> dict:
+    """🌱 국장 역배→정배 감시 칸(`minerva-kr-align.timer`가 쓴 파일만). 없으면 pending."""
+    from minerva import kr_align
+
+    kr = kr_align.read_json(kr_align.growth_dir() / "kr.json")
+    if not isinstance(kr, dict) or not isinstance(kr.get("rows"), list):
+        return {"status": "pending"}
+    return {"status": "ok", **kr}
 
 
 @router.get("/api/gose")

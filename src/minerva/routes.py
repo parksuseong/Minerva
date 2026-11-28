@@ -588,7 +588,7 @@ def kr_align_view() -> dict:
     from minerva import kr_align
 
     kr = kr_align.read_json(kr_align.growth_dir() / "kr.json")
-    if not kr or not isinstance(kr.get("rows"), list):
+    if not isinstance(kr, dict) or not isinstance(kr.get("rows"), list):
         return {"status": "pending"}
     return {"status": "ok", **kr}
 

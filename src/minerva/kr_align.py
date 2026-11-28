@@ -10,8 +10,9 @@
 - 알림: 마지막 확정 봉이 정배이고, 지난 `LOOKBACK`봉 안에 역배였던 날이 있고,
   알림 상태(`kr_alert.json`)의 직전 상태가 정배가 아니면 텔레그램 한 번.
   정배가 풀리면 상태를 되돌려 다음 전환 때 다시 알린다.
-- 참고 칸(원문 규칙, 미검증):
-  - 주의: 종가가 볼린저(20,2) 상단 이상이고 스토캐(5) 80 이상이었다가 최근 3봉 안에 80 아래로 꺾임
+- 참고 칸(지표 분석 참고, 미검증):
+  - 주의: 최근 3봉 고가가 볼린저(20,2) 상단 이상이고
+    스토캐(5)가 최근 3봉 안에 80 아래로 꺾임
     → "볼밴 상단 + SCR 과매수 이탈" 자리. 접근하면 물릴 수 있다.
   - 매수각: 종가가 20일선 위(단기 지지 유지)이고 최근 3봉 안에 스토캐가 20 위로 돌파.
 - 장 마감 뒤(평일 16:20 KST) 타이머로 돈다. 장중에 돌리면 오늘 봉은 미확정이라 빼고 판단한다.
@@ -37,9 +38,13 @@ MAS = (5, 20, 50, 120)
 LOOKBACK = 250
 BB_N, BB_K = 20, 2.0
 RECENT = 3
-CLOSE_HHMM = (15, 40)  # 이 시각(KST) 전에는 오늘 봉을 미확정으로 본다
+CLOSE_HHMM = (16, 0)  # 이 시각(KST) 전에는 오늘 봉을 미확정으로 본다(15:30 마감 + 야후 지연)
+MAX_AGE_DAYS = 7  # 마지막 봉이 이보다 오래되면 거래 정지·상장폐지로 보고 뺀다
 SLEEP = 0.3
-NOTE = "관심 목록이지 매수 추천이 아닙니다. 정배 전환 알림과 참고 칸은 원문 규칙이고 미검증입니다."
+NOTE = (
+    "관심 목록이지 매수 추천이 아닙니다."
+    " 정배 전환 알림과 참고 칸은 지표 분석 참고이고 미검증입니다."
+)
 
 
 def growth_dir() -> Path:
@@ -135,13 +140,16 @@ def analyze(bars: list[Bar]) -> dict:
 def fetch(code: str, fetch_bars: Callable | None = None) -> tuple[str, list[Bar]]:
     from minerva.strategy.report import fetch_yahoo
 
-    fetch_bars = fetch_bars or (lambda t: fetch_yahoo(t, "2y", ttl=3600))
+    fetch_bars = fetch_bars or (lambda t: fetch_yahoo(t, "2y", ttl=0))
     last: Exception | None = None
     for suf in (".KS", ".KQ"):
         try:
             bars = fetch_bars(code + suf)
         except Exception as e:  # noqa: BLE001 — 시장 접미사가 틀리면 야후가 404
             last = e
+            continue
+        if bars and (datetime.now(KST).date() - bars[-1].day).days > MAX_AGE_DAYS:
+            last = RuntimeError(f"마지막 봉 {bars[-1].day} (오래됨)")
             continue
         if len(bars) >= max(MAS) + 2:
             return code + suf, bars
@@ -152,7 +160,9 @@ def run(
     now: datetime | None = None, fetch_bars: Callable | None = None, sleep: Callable = time.sleep
 ) -> dict:
     now = now or datetime.now(KST)
-    watch = read_json(growth_dir() / "kr_watch.json") or {"stocks": []}
+    watch = read_json(growth_dir() / "kr_watch.json")
+    if not isinstance(watch, dict):
+        watch = {"stocks": []}
     rows, errors = [], []
     for s in watch.get("stocks", []):
         try:
@@ -182,11 +192,15 @@ def run(
 
 
 def flips(data: dict, state: dict) -> list[dict]:
-    """알림 대상: 지금 정배, 지난 LOOKBACK봉 안에 역배 있었음, 알림 상태가 정배 아님."""
+    """알림 대상: 지금 정배, 지난 LOOKBACK봉 안에 역배 있었음, 직전 상태가 정배 아님,
+    그 역배가 지난번 알린 역배보다 뒤(정배↔혼합 흔들림으로 같은 전환을 다시 알리지 않게).
+    처음 보는 종목(상태에 없음)은 기억만 한다(오래전 전환을 한꺼번에 보내지 않게)."""
     out = []
     for r in data.get("rows", []):
-        prev = state.get(r["code"], {}).get("state")
-        if r["state"] == "정배" and r.get("last_reverse") and prev != "정배":
+        st = state.get(r["code"])
+        if st is None or r["state"] != "정배" or not r.get("last_reverse"):
+            continue
+        if st.get("state") != "정배" and r["last_reverse"] > (st.get("alerted_rev") or ""):
             out.append(r)
     return out
 
@@ -206,7 +220,7 @@ def alert_text(rows: list[dict]) -> str:
             f"마지막 역배 {r['last_reverse']}, 스토캐 {r['stoch']}{tag}"
         )
     lines.append(
-        "원문 규칙·미검증. 볼밴 상단+과매수 이탈 자리는 피하고,"
+        "지표 분석 참고·미검증. 볼밴 상단+과매수 이탈 자리는 피하고,"
         " 눌림 뒤 지지선 위 스토캐 돌파에서 분할로."
     )
     lines.append("관심 목록이지 매수 추천이 아닙니다.")
@@ -226,9 +240,13 @@ def notify(data: dict, state_path: Path, send: Callable | None = None) -> list[d
             return []
     # 지금 상태를 남긴다. 역배 이력 없이 정배인 종목도 정배로 남겨
     # 같은 정배 구간에 다시 알리지 않는다
+    sent = {r["code"] for r in todo}
     for r in data.get("rows", []):
-        if r["state"] is not None:
-            state[r["code"]] = {"state": r["state"], "date": r["date"]}
+        if r["state"] is None:
+            continue
+        old = state.get(r["code"]) or {}
+        rev = r.get("last_reverse") if r["code"] in sent else old.get("alerted_rev")
+        state[r["code"]] = {"state": r["state"], "date": r["date"], "alerted_rev": rev}
     write_json(state_path, state)
     return todo
 

@@ -47,12 +47,21 @@ def test_flips_and_notify_once(tmp_path):
     data = {"rows": [row, plain]}
     sent = []
     st = tmp_path / "a.json"
+    # 첫 실행은 기억만
+    assert K.notify(data, st, send=lambda t: sent.append(t) or True) == [] and not sent
+    K.notify({"rows": [dict(row, state="혼합"), plain]}, st, send=lambda t: True)
     out = K.notify(data, st, send=lambda t: sent.append(t) or True)
     assert [r["code"] for r in out] == ["000001"] and len(sent) == 1
     assert K.notify(data, st, send=lambda t: sent.append(t) or True) == []
-    # 정배가 풀렸다가 다시 정배가 되면 다시 알린다
+    # 같은 역배 뒤 정배↔혼합 흔들림은 다시 알리지 않는다
     K.notify({"rows": [dict(row, state="혼합")]}, st, send=lambda t: True)
-    assert len(K.notify(data, st, send=lambda t: sent.append(t) or True)) == 1
+    assert K.notify(data, st, send=lambda t: sent.append(t) or True) == []
+    # 새 역배를 거친 뒤 정배면 다시 알린다
+    K.notify(
+        {"rows": [dict(row, state="역배", last_reverse="2026-11-28")]}, st, send=lambda t: True
+    )
+    again = dict(row, last_reverse="2026-11-28")
+    assert len(K.notify({"rows": [again]}, st, send=lambda t: sent.append(t) or True)) == 1
 
 
 def test_notify_send_fail_keeps_state(tmp_path):
@@ -69,15 +78,23 @@ def test_notify_send_fail_keeps_state(tmp_path):
         "buy_zone": False,
     }
     st = tmp_path / "a.json"
+    K.write_json(st, {"1": {"state": "혼합", "date": "c"}})
     assert K.notify({"rows": [row]}, st, send=lambda t: False) == []
-    assert not st.exists()
+    assert K.read_json(st)["1"]["state"] == "혼합"
 
 
 def test_fetch_falls_back_to_kq():
     def fb(t):
         if t.endswith(".KS"):
             raise OSError("404")
-        return bars_from([1.0] * 130)
+        return bars_from([1.0] * 130, start=date.today() - timedelta(days=129))
 
     t, b = K.fetch("123456", fb)
     assert t == "123456.KQ" and len(b) == 130
+
+
+def test_fetch_rejects_stale():
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        K.fetch("1", lambda t: bars_from([1.0] * 130, start=date(2020, 1, 1)))
